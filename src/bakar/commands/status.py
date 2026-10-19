@@ -24,7 +24,7 @@ from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption, _find_run
 from bakar.commands.monitor import _build_progress
 from bakar.commands.triage import _read_structured_failures, _resolve_triage_dirs
-from bakar.observability import last_run_event
+from bakar.observability import iter_run_events, last_run_event
 
 _IS_ACTIVE_TIMEOUT = 5
 
@@ -111,10 +111,38 @@ def _failure(run_dir: Path | None) -> dict[str, str | None] | None:
     if run_dir is None:
         return None
     failures = _read_structured_failures(run_dir)
-    if not failures:
-        return None
-    first = failures[0]
-    return {"recipe": first.get("recipe"), "task": first.get("task")}
+    if failures:
+        first = failures[0]
+        return {"recipe": first.get("recipe"), "task": first.get("task"), "step": None, "error": None}
+    return _event_failure(run_dir)
+
+
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _event_failure(run_dir: Path) -> dict[str, str | None] | None:
+    """The reason a run failed before any task ran, from structured events only.
+
+    The first ``step_fail`` names the step and its recorded text (``error``,
+    else ``reason``); with none, the terminal ``run_error`` supplies its
+    ``error_type`` as the step and its ``error`` text.
+    """
+    run_error: dict[str, Any] | None = None
+    for rec in iter_run_events(run_dir / "events.jsonl"):
+        event = rec.get("event")
+        if event == "step_fail" and (step := _text(rec.get("step"))):
+            return {
+                "recipe": None,
+                "task": None,
+                "step": step,
+                "error": _text(rec.get("error")) or _text(rec.get("reason")),
+            }
+        if event == "run_error":
+            run_error = rec
+    if run_error is not None and (step := _text(run_error.get("error_type"))):
+        return {"recipe": None, "task": None, "step": step, "error": _text(run_error.get("error"))}
+    return None
 
 
 def _find_foreground(handle: str | None, workspace: Path | None) -> Path | None:
@@ -249,12 +277,74 @@ def render_summary(rec: StatusRecord) -> str:
         parts.append(f"exit={rec.exit_code}")
     parts.append(tasks_fragment(rec))
     if rec.failure:
-        parts.append(f"failed={_fmt(rec.failure.get('recipe'))}:{_fmt(rec.failure.get('task'))}")
+        if rec.failure.get("step") is not None:
+            parts.append(f"failed={rec.failure['step']}")
+        else:
+            parts.append(f"failed={_fmt(rec.failure.get('recipe'))}:{_fmt(rec.failure.get('task'))}")
     return " ".join(parts)
 
 
 SSH_TRANSPORT_FAILURE = 255
 REMOTE_STATUS_TIMEOUT = 30.0
+EXIT_REFUSED = 2
+
+# Same probe as remote_dispatch.preflight_remote, run here so the ssh exit
+# status stays visible: that helper folds an unreachable host and a missing
+# bakar into one message.
+_PROBE_SCRIPT = "command -v bakar >/dev/null 2>&1 || exit 127\nbakar --version 2>&1\n"
+
+
+def _report_transport(host: str, proc: subprocess.CompletedProcess[str]) -> None:
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
+    print(f"ssh to {host} failed (ssh exit status {proc.returncode})", file=sys.stderr)
+
+
+def _preflight(host: str, *, transport_exit: int) -> int | None:
+    """None when ``host`` can be queried, else the exit status to return.
+
+    An unreachable host (ssh exit 255) is a transport failure and returns
+    ``transport_exit``; a bakar that is missing or differs from the local one is
+    a refusal (exit 2) because the caller must install bakar there.
+    """
+    from bakar.steps import remote_dispatch as rd
+
+    if host.startswith("-"):
+        print(
+            f"bakar: invalid host {host!r}: must not begin with '-' (it would parse as an ssh option)",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSED
+    proc = rd._ssh_bash_capture(host, _PROBE_SCRIPT)
+    if proc.returncode == SSH_TRANSPORT_FAILURE:
+        _report_transport(host, proc)
+        return transport_exit
+    if proc.returncode != 0:
+        reason = (
+            "bakar is not installed on the remote non-login PATH"
+            if proc.returncode == 127
+            else f"the remote probe failed (ssh exit status {proc.returncode})"
+        )
+        print(f"remote preflight failed for {host}: {reason}; install a matching bakar there", file=sys.stderr)
+        if proc.stderr:
+            print(proc.stderr.strip(), file=sys.stderr)
+        return EXIT_REFUSED
+    version = proc.stdout.strip() or proc.stderr.strip() or None
+    if not rd.check_versions(version, assume_yes=False):
+        return EXIT_REFUSED
+    return None
+
+
+def _fill_host(stdout: str, host: str) -> str:
+    """Set a null ``host`` in a one-object JSON status to ``host``; anything else is unchanged."""
+    try:
+        obj = json.loads(stdout)
+    except ValueError:
+        return stdout
+    if not isinstance(obj, dict) or "host" not in obj or obj["host"] is not None:
+        return stdout
+    obj["host"] = host
+    return json.dumps(obj) + "\n"
 
 
 def run_on_host(
@@ -272,17 +362,16 @@ def run_on_host(
     """
     from bakar.steps import remote_dispatch as rd
 
-    if not rd.preflight_or_report(host, assume_yes=False):
-        return 2
+    refused = _preflight(host, transport_exit=transport_exit)
+    if refused is not None:
+        return refused
     script = shlex.join(["bakar", *argv]) + "\n"
     proc = rd._ssh_bash_capture(host, script, timeout=capture_timeout)  # type: ignore[arg-type]
     if proc.returncode == SSH_TRANSPORT_FAILURE:
-        if proc.stderr:
-            print(proc.stderr, end="", file=sys.stderr)
-        print(f"ssh to {host} failed (ssh exit status {proc.returncode})", file=sys.stderr)
+        _report_transport(host, proc)
         return transport_exit
     if proc.stdout:
-        print(proc.stdout, end="")
+        print(_fill_host(proc.stdout, host) if "--json" in argv else proc.stdout, end="")
     if proc.stderr:
         print(proc.stderr, end="", file=sys.stderr)
     return proc.returncode

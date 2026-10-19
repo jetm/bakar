@@ -81,7 +81,7 @@ One JSON object with exactly these twelve keys. A value that does not apply is
 |-----|------|-------------|
 | `run_id` | string or null | The run directory name; null until a detached run registers one |
 | `unit` | string or null | The detached unit name; null for a foreground run |
-| `host` | string or null | Always null in the object `status` emits; reserved |
+| `host` | string or null | The ssh target for a remote run. A local `status` emits null; `status --on HOST` and `wait --on HOST` fill `HOST` when the remote object carries null |
 | `state` | string | One of the five states above |
 | `exit_code` | integer or null | The recorded exit status; null while `starting`, `running` or `unknown` |
 | `run_dir` | string or null | Absolute path of the run directory |
@@ -90,7 +90,7 @@ One JSON object with exactly these twelve keys. A value that does not apply is
 | `tasks_total` | integer or null | Tasks planned |
 | `tasks_running` | integer or null | Tasks executing now; null without a bitbake event log |
 | `elapsed_seconds` | number or null | Seconds since the run started |
-| `failure` | object or null | `{"recipe": ..., "task": ...}` of the first failure; set only when `state` is `failed` |
+| `failure` | object or null | Set only when `state` is `failed`: `{"recipe", "task", "step", "error"}`. A task failure fills `recipe` and `task` (`step` and `error` null). A run that failed before any task ran has `recipe` and `task` null, `step` the first failing step (else the terminal error type) and `error` the recorded error text, null when none was recorded. Null when the run recorded neither |
 
 ```bash
 $ bakar status bakar-detach-20260701-090000-a1b2c3 --json
@@ -108,8 +108,14 @@ handle resolves to nothing. To turn the outcome into an exit status, use
 
 `--on HOST` runs `bakar status` on `HOST` over ssh and mirrors its stdout and
 exit status. Use it for a run started with `bakar build --on HOST --detach`.
-A failed ssh transport or host preflight exits 2. The remote call is
-bounded to 30 seconds.
+An unreachable host or failed ssh transport exits 2 and names the ssh exit
+status (255 for an unreachable host); [`bakar wait`](wait.md) exits 3 for the
+same failure. A host starting with `-`, `-w` with `--on`, a missing bakar on
+the host, and a bakar version that differs from the local one exit 2 for both
+commands, because the caller must fix the invocation or install bakar there.
+With `--json`, a remote object whose `host` is null gets `HOST` filled in and
+is re-emitted as one JSON line; output that is not one JSON object is mirrored
+unchanged. The remote call is bounded to 30 seconds.
 
 ## Examples
 

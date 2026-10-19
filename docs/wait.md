@@ -30,8 +30,8 @@ bakar wait [HANDLE] [OPTIONS]
 |--------|---------|
 | 0 | The run `succeeded` |
 | 1 | The run `failed` |
-| 2 | The handle does not resolve to a run (or, with `--on`, the host preflight failed) |
-| 3 | The run is `unknown`: no recorded exit status and no sign of life (with `--on`, an ssh transport failure also exits 3) |
+| 2 | The handle does not resolve to a run (or, with `--on`, the host is refused: it starts with `-`, `-w` is combined, bakar is missing there or its version differs) |
+| 3 | The run is `unknown`: no recorded exit status and no sign of life (with `--on`, an unreachable host or ssh transport failure also exits 3) |
 | 124 | The timeout elapsed while the run was still `starting` or `running` |
 
 Exit 124 means keep waiting, not failure. A caller whose tool calls have a
@@ -56,9 +56,10 @@ stays empty.
 
 `--on HOST` runs `bakar wait` on `HOST` over ssh and mirrors its stdout and
 exit status. The ssh call is bounded to the timeout plus 60 seconds; without
-`--timeout` it is unbounded. A failed transport exits 3 and names the ssh
-status, so an unreachable host reads as `unknown` rather than as a failed
-build.
+`--timeout` it is unbounded. An unreachable host or failed transport exits 3
+and names the ssh exit status (255 for an unreachable host), so it reads as
+`unknown` rather than as a failed build. With `--json`, a null `host` in the
+final object is filled with the `--on` host.
 
 ## Examples
 

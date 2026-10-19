@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from bakar.cli import app
+from bakar.commands import status as status_mod
 from bakar.steps import remote_dispatch as rd
 
 if TYPE_CHECKING:
@@ -24,7 +25,7 @@ def _proc(code: int = 0, out: str = "", err: str = "") -> subprocess.CompletedPr
 
 @pytest.fixture
 def capture(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    monkeypatch.setattr(rd, "preflight_or_report", lambda host, assume_yes: True)
+    monkeypatch.setattr(status_mod, "_preflight", lambda host, *, transport_exit: None)
     mock = MagicMock(return_value=_proc(0, '{"state": "succeeded"}\n'))
     monkeypatch.setattr(rd, "_ssh_bash_capture", mock)
     return mock
@@ -92,3 +93,71 @@ def test_workspace_with_on_is_refused_before_ssh(monkeypatch: pytest.MonkeyPatch
         assert "--workspace" in result.output
         assert "--on" in result.output
     mock.assert_not_called()
+
+
+def _probe_then(monkeypatch: pytest.MonkeyPatch, probe: subprocess.CompletedProcess[str]) -> MagicMock:
+    """Every ssh call is the preflight probe's answer; a status call would show in call_count."""
+    mock = MagicMock(return_value=probe)
+    monkeypatch.setattr(rd, "_ssh_bash_capture", mock)
+    monkeypatch.setattr(rd, "check_versions", lambda version, *, assume_yes: True)
+    return mock
+
+
+def test_unreachable_host_is_a_transport_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock = _probe_then(monkeypatch, _proc(255, "", "ssh: Could not resolve hostname"))
+    status = runner.invoke(app, ["status", "run1", "--on", "no-such-host.invalid"])
+    assert status.exit_code == 2
+    assert "ssh exit status 255" in status.output
+    wait = runner.invoke(app, ["wait", "run1", "--on", "no-such-host.invalid"])
+    assert wait.exit_code == 3
+    assert "ssh exit status 255" in wait.output
+    # One probe per command and no status or wait call after either failure.
+    assert mock.call_count == 2
+    assert all("--version" in call.args[1] for call in mock.call_args_list)
+
+
+@pytest.mark.parametrize("probe", [_proc(127), _proc(1, "", "boom")])
+def test_missing_bakar_is_a_refusal_for_both_commands(
+    monkeypatch: pytest.MonkeyPatch, probe: subprocess.CompletedProcess[str]
+) -> None:
+    mock = _probe_then(monkeypatch, probe)
+    for cmd in ("status", "wait"):
+        result = runner.invoke(app, [cmd, "run1", "--on", "pc2"])
+        assert result.exit_code == 2
+        assert "install a matching bakar" in result.output
+    assert mock.call_count == 2
+
+
+def test_version_mismatch_is_a_refusal_for_both_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock = _probe_then(monkeypatch, _proc(0, "bakar 9.9.9\n"))
+    monkeypatch.setattr(rd, "check_versions", lambda version, *, assume_yes: False)
+    for cmd in ("status", "wait"):
+        assert runner.invoke(app, [cmd, "run1", "--on", "pc2"]).exit_code == 2
+    assert mock.call_count == 2
+
+
+def test_null_host_is_filled_from_on(capture: MagicMock) -> None:
+    capture.return_value = _proc(0, '{"run_id": "r", "host": null, "state": "succeeded"}\n')
+    for cmd in ("status", "wait"):
+        result = runner.invoke(app, [cmd, "r", "--json", "--on", "pc2"])
+        assert result.stdout == '{"run_id": "r", "host": "pc2", "state": "succeeded"}\n'
+
+
+def test_remote_host_already_set_is_kept(capture: MagicMock) -> None:
+    out = '{"host": "other", "state": "running"}\n'
+    capture.return_value = _proc(0, out)
+    result = runner.invoke(app, ["status", "r", "--json", "--on", "pc2"])
+    assert result.stdout == out
+
+
+@pytest.mark.parametrize("out", ["not json\n", "[1, 2]\n", '{"state": "x"}\n'])
+def test_other_stdout_is_mirrored_unchanged(capture: MagicMock, out: str) -> None:
+    capture.return_value = _proc(0, out)
+    result = runner.invoke(app, ["status", "r", "--json", "--on", "pc2"])
+    assert result.stdout == out
+
+
+def test_host_not_filled_without_json(capture: MagicMock) -> None:
+    out = '{"host": null}\n'
+    capture.return_value = _proc(0, out)
+    assert runner.invoke(app, ["status", "r", "--on", "pc2"]).stdout == out

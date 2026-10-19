@@ -48,10 +48,11 @@ Progress lines go to stderr, one per poll (`--interval`, default 30 seconds, min
 - `state` is one of `starting`, `running`, `succeeded`, `failed`, `unknown`.
 - `succeeded` and `failed` come only from a recorded exit status, which is `exit_code`. Liveness only separates `running` from `unknown`.
 - `unit` is null for a run that was not detached. `run_id`, `run_dir` and the task counts are null until they exist.
-- `failure` is null unless `state` is `failed`; then it is `{"recipe": ..., "task": ...}` for the first recorded failure (either value can be null).
+- `failure` is null unless `state` is `failed`; then it is `{"recipe": ..., "task": ..., "step": ..., "error": ...}`. A task failure sets `recipe` and `task`. A run that failed before any task ran (a bad `--target`, a missing kas file) sets `step` to the failing step and `error` to the recorded error text (null when none was recorded), with `recipe` and `task` null. It is null when the run recorded neither.
+- `host` is the ssh target for a run queried with `--on`; a local query leaves it null.
 - `bakar status` exits 0 whenever it reports a state and 2 when the handle does not resolve. It never reflects the build outcome in its exit status; read `state`.
 
-Without `--json` the same record prints as one line: `<id> <state> [exit=N] tasks=<done>/<total> running=<n> [failed=<recipe>:<task>]`, with `?` for unknown values.
+Without `--json` the same record prints as one line: `<id> <state> [exit=N] tasks=<done>/<total> running=<n> [failed=<recipe>:<task> or failed=<step>]`, with `?` for unknown values.
 
 ## Where to build
 

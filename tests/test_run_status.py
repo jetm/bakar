@@ -222,7 +222,62 @@ def test_failed_run_names_recipe_and_task(env: Path) -> None:
     (run / "bitbake-events.json").write_text(json.dumps(artifact))
     rec = status_cmd.compute_status(run.name)
     assert rec is not None
-    assert rec.failure == {"recipe": "openssl", "task": "do_compile"}
+    assert rec.failure == {"recipe": "openssl", "task": "do_compile", "step": None, "error": None}
+
+
+def _events(run: Path, *events: dict[str, object]) -> None:
+    (run / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+
+
+def test_failure_before_any_task_comes_from_the_first_step_fail(env: Path) -> None:
+    run = _run_dir(env)
+    _events(
+        run,
+        {"event": "step_start", "step": "kas_shell_live"},
+        {"event": "step_fail", "step": "kas_shell_live", "reason": "exit_code=1", "exit_code": 1},
+        {"event": "step_fail", "step": "later", "reason": "second"},
+        {"event": "run_error", "error": "boom", "error_type": "Exit", "exit_code": 1},
+    )
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.state == "failed"
+    assert rec.failure == {"recipe": None, "task": None, "step": "kas_shell_live", "error": "exit_code=1"}
+
+
+def test_step_fail_error_text_beats_reason(env: Path) -> None:
+    run = _run_dir(env)
+    _events(
+        run,
+        {"event": "step_fail", "step": "gen_kas", "reason": "r", "error": "kas file missing"},
+        {"event": "run_error", "error": "", "error_type": "Exit", "exit_code": 2},
+    )
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.failure == {"recipe": None, "task": None, "step": "gen_kas", "error": "kas file missing"}
+
+
+def test_failure_from_a_bare_run_error(env: Path) -> None:
+    run = _run_dir(env)
+    _events(run, {"event": "run_error", "error": "no such target", "error_type": "BakarError", "exit_code": 2})
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.failure == {"recipe": None, "task": None, "step": "BakarError", "error": "no such target"}
+
+
+def test_run_error_with_empty_text_keeps_error_null(env: Path) -> None:
+    run = _run_dir(env)
+    _events(run, {"event": "run_error", "error": "", "error_type": "Exit", "exit_code": 1})
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.failure == {"recipe": None, "task": None, "step": "Exit", "error": None}
+
+
+def test_failed_run_with_no_failure_event_has_no_failure(env: Path) -> None:
+    run = _run_dir(env)
+    _terminal(run, 1)
+    rec = status_cmd.compute_status(run.name)
+    assert rec is not None
+    assert rec.failure is None
 
 
 def test_failure_is_absent_unless_failed(env: Path) -> None:
