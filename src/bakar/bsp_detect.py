@@ -407,6 +407,11 @@ def meta_avocado_checkout(kas_yaml: Path) -> Path | None:
     return None
 
 
+def _own_repo_pin_block(checkout: Path) -> str:
+    """Render the kas ``repos`` block pinning ``meta-avocado`` to an already resolved ``checkout``."""
+    return f"repos:\n  meta-avocado:\n    path: {json.dumps(str(checkout), ensure_ascii=False)}\n"
+
+
 def meta_avocado_wrapper_text(checkout: Path, kas_yaml: Path) -> str:
     """Render a kas wrapper YAML that pins ``meta-avocado`` to ``checkout`` by absolute path."""
     checkout = checkout.resolve()
@@ -417,10 +422,17 @@ def meta_avocado_wrapper_text(checkout: Path, kas_yaml: Path) -> str:
         "  includes:\n"
         "    - repo: meta-avocado\n"
         f"      file: {json.dumps(rel, ensure_ascii=False)}\n"
-        "repos:\n"
-        "  meta-avocado:\n"
-        f"    path: {json.dumps(str(checkout), ensure_ascii=False)}\n"
-    )
+    ) + _own_repo_pin_block(checkout)
+
+
+def meta_avocado_pin_text(checkout: Path) -> str:
+    """Render the kas file bakar merges after every overlay to keep ``meta-avocado`` on ``checkout``.
+
+    kas lets the last file win, so an overlay naming its own ``meta-avocado``
+    repo would otherwise move it away from the checkout the wrapper pins.
+    """
+    checkout = checkout.resolve()
+    return "header:\n  version: 16\n" + _own_repo_pin_block(checkout)
 
 
 def worktree_wrapper_text(worktree: LinkedWorktree, kas_yaml: Path) -> str:

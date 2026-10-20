@@ -25,6 +25,7 @@ from bakar.bsp_detect import (
     linked_worktree_of,
     machine_from_yaml,
     meta_avocado_checkout,
+    meta_avocado_pin_text,
     meta_avocado_worktree,
     meta_avocado_wrapper_text,
     worktree_wrapper_text,
@@ -577,6 +578,44 @@ def test_worktree_wrapper_text_unchanged_by_delegation(meta_avocado_worktree_lay
     )
     assert worktree_wrapper_text(found, lay.kas_yaml) == expected
     assert meta_avocado_wrapper_text(found.checkout, lay.kas_yaml) == expected
+
+
+def test_meta_avocado_pin_text_pins_only_the_checkout(meta_avocado_worktree_layout) -> None:
+    checkout = meta_avocado_worktree_layout.worktree
+    data = yaml.safe_load(meta_avocado_pin_text(checkout))
+    assert data == {"header": {"version": 16}, "repos": {"meta-avocado": {"path": str(checkout.resolve())}}}
+
+
+def test_meta_avocado_pin_text_quotes_a_path_that_is_not_plain_yaml(tmp_path: Path) -> None:
+    checkout = tmp_path / "a: b #c"
+    checkout.mkdir()
+    data = yaml.safe_load(meta_avocado_pin_text(checkout))
+    assert data["repos"]["meta-avocado"]["path"] == str(checkout.resolve())
+
+
+def test_meta_avocado_pin_text_keeps_characters_outside_the_bmp(tmp_path: Path) -> None:
+    checkout = tmp_path / "wt-\U0001f600"
+    checkout.mkdir()
+    data = yaml.safe_load(meta_avocado_pin_text(checkout))
+    assert data["repos"]["meta-avocado"]["path"] == str(checkout.resolve())
+
+
+def test_meta_avocado_pin_text_repos_match_the_wrapper(meta_avocado_worktree_layout) -> None:
+    lay = meta_avocado_worktree_layout
+    pin = yaml.safe_load(meta_avocado_pin_text(lay.worktree))
+    wrapper = yaml.safe_load(meta_avocado_wrapper_text(lay.worktree, lay.kas_yaml))
+    assert pin["repos"] == wrapper["repos"]
+
+
+def test_meta_avocado_pin_text_renders_a_relative_checkout_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "meta-avocado").mkdir()
+    monkeypatch.chdir(tmp_path)
+    data = yaml.safe_load(meta_avocado_pin_text(Path("meta-avocado")))
+    path = data["repos"]["meta-avocado"]["path"]
+    assert Path(path).is_absolute()
+    assert path == str((tmp_path / "meta-avocado").resolve())
 
 
 # --- worktree-aware workspace detection ------------------------------------
