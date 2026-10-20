@@ -35,7 +35,7 @@ def _cfg() -> BuildConfig:
         kas_container_image="img:latest",
         sstate_dir="/cache/sstate",
         dl_dir="/cache/downloads",
-    )  # type: ignore[arg-type]
+    )
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, *specs: tuple[str, Severity, Status, str]) -> None:

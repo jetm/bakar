@@ -980,7 +980,7 @@ def check_nproc(cfg: BuildConfig) -> CheckResult:
     return _ok("nproc", Severity.INFO, f"NPROC={nproc} ({source}) -> {threads}")
 
 
-_UNESCAPED_TAG_RE = re.compile(r"(?<!\\)(\[[a-z#/@][^\[]*?\])")
+_UNESCAPED_TAG_RE = re.compile(r"(?<!\\)((?:\\\\)*)(\[[a-z#/@][^\[]*?\])")
 
 
 def markup_safe(text: str) -> str:
@@ -989,10 +989,16 @@ def markup_safe(text: str) -> str:
     ``CheckResult.message`` and ``fix_hint`` hold plain text so JSON and
     ``diagnosis.txt`` carry no backslashes; every Rich sink calls this instead.
     Idempotent over text a caller already neutralized (``bakar.fmt.neutralize``
-    escapes untrusted names in place): a tag-like token already preceded by a
-    backslash is left alone rather than escaped twice into a visible backslash.
+    escapes untrusted names in place): a tag-like token preceded by an odd number
+    of backslashes is already escaped and is left alone rather than escaped twice
+    into a visible backslash. Rich reads backslashes before a tag in pairs, so a
+    token preceded by an even number (none included) is a live tag: each pair is
+    doubled and one more backslash is added, which prints that text as recorded.
+    Two limits: Rich drops the backslash of a lone ``\\[`` whether or not a tag
+    follows, and an odd run before a tag loses one backslash (the already-escaped
+    reading), so such text is not printed byte for byte.
     """
-    return _UNESCAPED_TAG_RE.sub(r"\\\1", text)
+    return _UNESCAPED_TAG_RE.sub(lambda m: m.group(1) * 2 + "\\" + m.group(2), text)
 
 
 def _with_manual_clear(hint: str, marker: Path | None) -> str:
@@ -4178,9 +4184,10 @@ def doctor_failure_text(results: list[CheckResult]) -> str | None:
     failed = blocking_failures(results)
     if not failed:
         return None
-    entries = [
-        one_line(r.name) if not r.message.strip() else f"{one_line(r.name)}: {one_line(r.message)}" for r in failed
-    ]
+    entries = []
+    for r in failed:
+        name, message = one_line(r.name), one_line(r.message)
+        entries.append(f"{name}: {message}" if message else name)
     return join_bounded(entries)
 
 

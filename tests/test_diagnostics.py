@@ -2907,6 +2907,16 @@ def test_markup_safe_does_not_double_escape_neutralized_text() -> None:
     assert diagnostics.markup_safe("see [build] x") == "see \\[build] x"
 
 
+def test_markup_safe_prints_an_even_backslash_run_before_a_tag_as_recorded() -> None:
+    from rich.console import Console
+
+    for text in (r"q \\[/] z", r"a\\[red]b", r"p \\\\[/x] q"):
+        buffer = io.StringIO()
+        Console(file=buffer, width=2000, force_terminal=False).print(diagnostics.markup_safe(text), highlight=False)
+        assert buffer.getvalue().rstrip("\n") == text
+    assert diagnostics.markup_safe(r"x\[red]y") == r"x\[red]y"
+
+
 def test_doctor_json_and_diagnosis_txt_carry_no_backslash(tmp_path: Path) -> None:
     from bakar.commands.doctor import _print_json
 

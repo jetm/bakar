@@ -49,6 +49,11 @@ def test_blank_message_gives_bare_name() -> None:
     assert doctor_failure_text([_r("a", "  \n "), _r("b", "m")]) == "a; b: m"
 
 
+def test_message_of_control_characters_only_gives_bare_name() -> None:
+    assert doctor_failure_text([_r("chk", "\x00"), _r("other", "m")]) == "chk; other: m"
+    assert doctor_failure_text([_r("chk", "\x1b[0m")]) == "chk"
+
+
 def test_crashed_check_text_carried() -> None:
     text = doctor_failure_text([_r("x", "check crashed: ValueError('boom')")])
     assert text == "x: check crashed: ValueError('boom')"

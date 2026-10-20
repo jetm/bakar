@@ -21,6 +21,7 @@ pytestmark = pytest.mark.unit
 BRACKET_REASON = "kas-yaml-syntax: unknown key [build] in the configuration"
 CLOSING_REASON = "bad closing [/build] tag in the reason"
 ESCAPED_REASON = r"pre-escaped \[done] tag"
+DOUBLE_BACKSLASH_REASON = r"sed: unknown command: q \\[/] z"
 
 
 @pytest.fixture(autouse=True)
@@ -73,7 +74,25 @@ def test_pre_escaped_reason_has_no_doubled_backslash(
     assert "\\" not in result.output
 
 
-@pytest.mark.parametrize("reason", [BRACKET_REASON, CLOSING_REASON, ESCAPED_REASON])
+def test_even_backslash_run_before_a_tag_is_printed_as_recorded(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_run(tmp_path, DOUBLE_BACKSLASH_REASON)
+    result = _text(runner, tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert DOUBLE_BACKSLASH_REASON in result.output
+
+
+def test_empty_reason_says_none_was_recorded(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_run(tmp_path, "")
+    result = _text(runner, tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert "failed: no reason recorded" in result.output
+
+
+@pytest.mark.parametrize("reason", [BRACKET_REASON, CLOSING_REASON, ESCAPED_REASON, DOUBLE_BACKSLASH_REASON])
 def test_json_reason_is_byte_for_byte(
     runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str
 ) -> None:
