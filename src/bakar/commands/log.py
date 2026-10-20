@@ -11,9 +11,11 @@ from typing import Annotated
 import typer
 
 import bakar.commands._app as _state
+from bakar import detach_records
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     WorkspaceOption,
+    _find_workspace_from_cwd,
     _normalize_dispatch,
     _resolve_workspace,
 )
@@ -107,10 +109,22 @@ def log_cmd(
     Pass a positional kas YAML for BYO builds (``bakar log my.yml``);
     runs live next to the YAML under ``<yaml-parent>/build/runs/`` and
     the workspace lookup is skipped.
+
+    Outside any workspace, ``--run`` (or, without it, the newest unit's latest
+    run) is looked up among the runs a detached or dispatched unit registered.
     """
     if which not in _LOG_FILES:
         console.print(f"[red]invalid --which value[/]: {which!r} (expected one of: kas, console, events)")
         raise typer.Exit(code=2)
+
+    if kas_yaml is None and workspace is None and _find_workspace_from_cwd() is None:
+        # Outside any workspace (e.g. a host's home directory) a run a detached
+        # or dispatched unit registered is the only source; workspace discovery
+        # would end with "Not inside a BSP workspace".
+        registered = detach_records.run_dir_for_run(run) if run is not None else detach_records.newest_run_dir()
+        if registered is not None and registered.is_dir():
+            _follow_run_dir(registered, which)
+            return
 
     family, _bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
     ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family, strict_routing=False)
@@ -128,8 +142,11 @@ def log_cmd(
         console.print("[red]no runs yet[/]; start one with `bakar build`")
         raise typer.Exit(code=1)
 
-    run_dir = _resolve_run_dir(runs_dir, run)
+    _follow_run_dir(_resolve_run_dir(runs_dir, run), which)
 
+
+def _follow_run_dir(run_dir: Path, which: str) -> None:
+    """Pick the ``--which`` log inside ``run_dir`` and follow it until interrupted."""
     log_name = _LOG_FILES[which]
     target = run_dir / log_name
     if not target.is_file():

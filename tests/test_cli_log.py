@@ -19,11 +19,13 @@ the shared ``SAMPLE_EVENTS_JSONL`` and ``SAMPLE_KAS_LOG`` constants in
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import pytest
 
 import bakar.commands.log as log_module
+from bakar import detach_records
 from bakar.commands import app
 from tests.conftest import SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG
 
@@ -223,3 +225,156 @@ def test_explicit_run_not_found_exits_nonzero(
 
     assert result.exit_code == 1
     assert "run directory not found" in result.stderr
+
+
+@pytest.fixture
+def registered_run_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Chdir outside any workspace and point ``XDG_RUNTIME_DIR`` at a private dir.
+
+    Returns the runtime directory; register runs into it with
+    ``detach_records.append_registration``.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime.chmod(0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.chdir(outside)
+    return runtime
+
+
+def _make_run_dir(base: Path, name: str, files: dict[str, str]) -> Path:
+    run_dir = base / name
+    run_dir.mkdir(parents=True)
+    for fname, text in files.items():
+        (run_dir / fname).write_text(text)
+    return run_dir
+
+
+def _record_tail(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Replace ``_tail_follow`` with a recorder of the paths it is handed."""
+    followed: list[Path] = []
+
+    def _fake(path: Path, history_lines: int = 40) -> None:
+        followed.append(path)
+
+    monkeypatch.setattr(log_module, "_tail_follow", _fake)
+    return followed
+
+
+def test_registered_run_followed_outside_workspace(
+    runner: CliRunner,
+    registered_run_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--run <id>`` outside a workspace follows the registered run's kas.log."""
+    followed = _record_tail(monkeypatch)
+    run_dir = _make_run_dir(tmp_path / "ws" / "build" / "runs", _RUN_ID, {"kas.log": "x\n"})
+    assert detach_records.append_registration(detach_records.new_unit_name(), _RUN_ID, run_dir, 1)
+
+    result = runner.invoke(app, ["log", "--run", _RUN_ID])
+
+    assert result.exit_code == 0, result.stderr
+    assert followed == [run_dir / "kas.log"]
+    assert "Not inside" not in result.stderr
+
+
+def test_registered_run_newest_unit_without_run(
+    runner: CliRunner,
+    registered_run_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without ``--run`` the newest unit's latest registered run is followed."""
+    followed = _record_tail(monkeypatch)
+    runs = tmp_path / "ws" / "build" / "runs"
+    old_dir = _make_run_dir(runs, "20260101-000000", {"kas.log": "old\n"})
+    first_dir = _make_run_dir(runs, "20260201-000000", {"kas.log": "first\n"})
+    latest_dir = _make_run_dir(runs, "20260301-000000", {"kas.log": "latest\n"})
+    old_unit, new_unit = detach_records.new_unit_name(), detach_records.new_unit_name()
+    assert detach_records.append_registration(old_unit, old_dir.name, old_dir, 1)
+    assert detach_records.append_registration(new_unit, first_dir.name, first_dir, 2)
+    assert detach_records.append_registration(new_unit, latest_dir.name, latest_dir, 2)
+    os.utime(registered_run_env / f"{old_unit}.runs", (2_000_000, 2_000_000))
+    os.utime(registered_run_env / f"{new_unit}.runs", (3_000_000, 3_000_000))
+
+    result = runner.invoke(app, ["log"])
+
+    assert result.exit_code == 0, result.stderr
+    assert followed == [latest_dir / "kas.log"]
+
+
+@pytest.mark.parametrize(("which", "fname"), [("console", "console.log"), ("events", "events.jsonl")])
+def test_registered_run_which_selects_file(
+    runner: CliRunner,
+    registered_run_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    which: str,
+    fname: str,
+) -> None:
+    """``--which console`` / ``--which events`` pick that file of the registered run."""
+    followed = _record_tail(monkeypatch)
+    run_dir = _make_run_dir(
+        registered_run_env.parent / "ws" / "build" / "runs",
+        _RUN_ID,
+        {"kas.log": "k\n", "console.log": "c\n", "events.jsonl": SAMPLE_EVENTS_JSONL},
+    )
+    assert detach_records.append_registration(detach_records.new_unit_name(), _RUN_ID, run_dir, 1)
+
+    result = runner.invoke(app, ["log", "--which", which, "--run", _RUN_ID])
+
+    assert result.exit_code == 0, result.stderr
+    assert followed == [run_dir / fname]
+
+
+def _forbid_registry(monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
+    def _boom(*_a: object) -> None:
+        raise AssertionError(reason)
+
+    monkeypatch.setattr(detach_records, "run_dir_for_run", _boom)
+    monkeypatch.setattr(detach_records, "newest_run_dir", _boom)
+
+
+def test_registered_run_not_consulted_inside_workspace(
+    runner: CliRunner,
+    nxp_workspace_with_run: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside a workspace (cwd or ``-w``) the registry is never read."""
+    _forbid_registry(monkeypatch, "registry consulted inside a workspace")
+    followed = _record_tail(monkeypatch)
+    expected = nxp_workspace_with_run / "nxp" / "build" / "runs" / _RUN_ID / "kas.log"
+
+    monkeypatch.chdir(nxp_workspace_with_run)
+    for args in (["log"], ["log", "--run", _RUN_ID], ["log", "--workspace", str(nxp_workspace_with_run)]):
+        result = runner.invoke(app, args)
+        assert result.exit_code == 0, result.stderr
+
+    assert [p.resolve() for p in followed] == [expected.resolve()] * 3
+
+
+def test_registered_run_unknown_id_and_bad_which(
+    runner: CliRunner,
+    registered_run_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unregistered ``--run`` outside a workspace fails as before; bad ``--which`` exits 2 first."""
+    followed = _record_tail(monkeypatch)
+    result = runner.invoke(app, ["log", "--run", "99991231-235959"])
+    # Unchanged pre-registry behaviour: the workspace error, exit 2, no traceback.
+    assert result.exit_code == 2
+    assert "Not inside a BSP workspace" in result.stderr
+    assert isinstance(result.exception, SystemExit)
+    assert followed == []
+
+    _forbid_registry(monkeypatch, "looked up before --which validation")
+
+    def _no_cwd_lookup() -> None:
+        raise AssertionError("workspace lookup before --which validation")
+
+    monkeypatch.setattr(log_module, "_find_workspace_from_cwd", _no_cwd_lookup)
+    result = runner.invoke(app, ["log", "--which", "bogus", "--run", _RUN_ID])
+    assert result.exit_code == 2
+    assert "invalid --which value" in result.stderr
