@@ -8,7 +8,9 @@ is touched.
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,10 +18,12 @@ import pytest
 from bakar.cli import app
 from bakar.observability import last_run_event
 from bakar.triage import (
+    FAILURE_LOG_TAIL_LINES,
     _match_suggestions,
     _scan_recipe_errors,
     analyse,
     is_build_failure_event,
+    read_failure_log,
     tail_lines,
 )
 from tests.conftest import SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG
@@ -571,3 +575,151 @@ def test_triage_release_selector_overrides_default(
     assert "20260101-000000" in result.output
     assert "release-66-recipe-1.0-r0" in result.output
     assert "release-612-recipe-2.0-r0" not in result.output
+
+
+def _write_lines(path: Path, count: int = 100) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(f"line {i}" for i in range(count)) + "\n")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [None, "", 123, ["a"]])
+def test_read_failure_log_non_string_is_none(tmp_path: Path, value: object) -> None:
+    result = read_failure_log(value, tmp_path / "ws")
+
+    assert result.state == "none"
+    assert result.path is None
+    assert result.tail == []
+    assert result.suggestions == []
+
+
+@pytest.mark.unit
+def test_read_failure_log_translates_container_path_and_tails(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    _write_lines(workspace / "build/tmp/x/log.do_compile.1")
+
+    result = read_failure_log("/work/build/tmp/x/log.do_compile.1", workspace)
+
+    assert FAILURE_LOG_TAIL_LINES == 60
+    assert result.state == "read"
+    assert result.path == workspace / "build/tmp/x/log.do_compile.1"
+    assert result.tail == [f"line {i}" for i in range(40, 100)]
+
+
+@pytest.mark.unit
+def test_read_failure_log_host_path_under_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    log = workspace / "build/log.txt"
+    _write_lines(log)
+
+    result = read_failure_log(str(log), workspace)
+
+    assert result.state == "read"
+    assert result.tail == [f"line {i}" for i in range(40, 100)]
+
+
+@pytest.mark.unit
+def test_read_failure_log_outside_workspace_is_not_opened(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = tmp_path / "other" / "x.log"
+    outside.parent.mkdir()
+    outside.write_text("No space left on device\n")
+
+    def _boom(*args: object, **kwargs: object) -> list[str]:
+        raise AssertionError("outside file must not be read")
+
+    monkeypatch.setattr("bakar.triage.tail_lines", _boom)
+
+    result = read_failure_log(str(outside), workspace)
+
+    assert result.state == "outside"
+    assert result.tail == []
+    assert result.suggestions == []
+
+
+@pytest.mark.unit
+def test_read_failure_log_symlink_out_of_workspace_is_outside(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = tmp_path / "other" / "x.log"
+    outside.parent.mkdir()
+    outside.write_text("No space left on device\n")
+    link = workspace / "link.log"
+    link.symlink_to(outside)
+
+    result = read_failure_log(str(link), workspace)
+
+    assert result.state == "outside"
+    assert result.tail == []
+
+
+@pytest.mark.unit
+def test_read_failure_log_extra_roots(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    other = tmp_path / "other"
+    third = tmp_path / "third"
+    other.mkdir()
+    third.mkdir()
+    in_other = other / "x.log"
+    in_other.write_text("hello\n")
+    in_third = third / "y.log"
+    in_third.write_text("hello\n")
+    (other / "escape.log").symlink_to(in_third)
+
+    assert read_failure_log(str(in_other), workspace, extra_roots=[other]).state == "read"
+    assert read_failure_log(str(in_third), workspace, extra_roots=[other]).state == "outside"
+    assert read_failure_log(str(other / "escape.log"), workspace, extra_roots=[other]).state == "outside"
+
+
+@pytest.mark.unit
+def test_read_failure_log_missing_directory_and_empty_are_unreadable(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    (workspace / "adir").mkdir(parents=True)
+    empty = workspace / "empty.log"
+    empty.write_text("")
+
+    for target in (workspace / "missing.log", workspace / "adir", empty):
+        result = read_failure_log(str(target), workspace)
+
+        assert result.state == "unreadable"
+        assert result.path == target
+        assert result.tail == []
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+def test_read_failure_log_mode_zero_file_is_unreadable(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    log = workspace / "locked.log"
+    _write_lines(log, 5)
+    log.chmod(0o000)
+    try:
+        result = read_failure_log(str(log), workspace)
+    finally:
+        log.chmod(0o644)
+
+    assert result.state == "unreadable"
+    assert result.tail == []
+
+
+@pytest.mark.unit
+def test_read_failure_log_suggestions_follow_tail(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    full = workspace / "full.log"
+    full.parent.mkdir(parents=True)
+    full.write_text("compiling\nNo space left on device\n")
+    plain = workspace / "plain.log"
+    plain.write_text("compiling\nall fine\n")
+
+    assert any("Disk full" in s for s in read_failure_log(str(full), workspace).suggestions)
+    assert read_failure_log(str(plain), workspace).suggestions == []
+
+
+@pytest.mark.unit
+def test_read_failure_log_result_is_frozen(tmp_path: Path) -> None:
+    result = read_failure_log(None, tmp_path)
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        result.state = "read"  # type: ignore[misc]
