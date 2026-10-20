@@ -782,6 +782,18 @@ class BuildConfig:
             return False
 
     @property
+    def kas_work_dir(self) -> Path:
+        """Host directory kas-container binds at ``/work``.
+
+        ``KAS_WORK_DIR`` is set from this. meta-avocado binds the workspace
+        (its ``bsp_root`` is a ``build-<stem>`` sibling inside it); every other
+        family binds ``bsp_root``.
+        """
+        if self.is_meta_avocado:
+            return self.workspace
+        return self.bsp_root
+
+    @property
     def bsp_root(self) -> Path:
         """Effective BSP root directory.
 

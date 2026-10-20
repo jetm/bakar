@@ -274,7 +274,7 @@ def _inject_literal_mold(cfg: BuildConfig, text: str) -> str:
     if cfg.mold_extra_excluded_pn and not re.search(r"^\s*MOLD_EXCLUDED_PN:append\b", text, re.MULTILINE):
         lines.append(f'MOLD_EXCLUDED_PN:append = " {cfg.mold_extra_excluded_pn}"')
     if not re.search(r"^\s*export\s+BAKAR_MOLD_LINKLOG\b", text, re.MULTILINE):
-        base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
+        base = cfg.kas_work_dir
         log_path = str(base / _MOLD_LINKLOG_NAME) if cfg.host_mode else f"/work/{_MOLD_LINKLOG_NAME}"
         lines.append(f'export BAKAR_MOLD_LINKLOG = "{log_path}"')
     return _append_local_conf_lines(text, lines)
@@ -427,7 +427,7 @@ def materialize_layer(cfg: BuildConfig, name: str) -> Path:
     references by the relative path ``.bakar/<name>``.
     """
     source = _overlay_dir() / name
-    base = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
+    base = cfg.kas_work_dir
     dest = base / ".bakar" / name
     if dest.exists():
         shutil.rmtree(dest)

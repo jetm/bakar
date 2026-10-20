@@ -1736,11 +1736,9 @@ def _build_env(
     # doubles as the side-effect guard, so dry-run/script-gen never spawn it.
     if cfg.use_sccache_dist and cfg.host_mode and ensure_hashserv:
         sccache_server.ensure_running(cfg.sccache_scheduler_url, uds_path=str(sccache_server.default_uds_path()))
+    passthrough["KAS_WORK_DIR"] = str(cfg.kas_work_dir)
     if cfg.is_meta_avocado:
-        passthrough["KAS_WORK_DIR"] = str(cfg.workspace)
         passthrough["KAS_BUILD_DIR"] = str(cfg.bsp_root / "build")
-    else:
-        passthrough["KAS_WORK_DIR"] = str(cfg.bsp_root)
 
     _apply_host_mode_env(cfg, python_executable, passthrough, provision_buildtools=ensure_hashserv)
     # When the caller supplies a container-visible event-log path, point
@@ -1941,7 +1939,7 @@ def _container_eventlog_path(cfg: BuildConfig, log: RunLogger) -> str:
     host_path = log.eventlog_path
     if cfg.host_mode:
         return str(host_path)
-    mount_root = cfg.workspace if cfg.is_meta_avocado else cfg.bsp_root
+    mount_root = cfg.kas_work_dir
     try:
         rel = host_path.relative_to(mount_root)
     except ValueError:
