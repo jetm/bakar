@@ -52,6 +52,7 @@ Progress lines go to stderr, one per poll (`--interval`, default 30 seconds, min
 - `unit` is null for a run that was not detached. `run_id`, `run_dir` and the task counts are null until they exist.
 - `failure` is null unless `state` is `failed`; then it is `{"recipe": ..., "task": ..., "step": ..., "error": ...}`. A task failure sets `recipe` and `task`. Otherwise `step` is the failing step and `error` is the first error line the build printed (or `exit_code=N` when it printed none), with `recipe` and `task` null. When `bakar stop` ended the run, `step` is `stopped`; when the pre-flight checks refused the build, `step` is `doctor` and `error` names each blocking check as `<check>: <message>` instead. It is null when the run recorded none of these.
 - `host` is the ssh target for a run queried with `--on`; a local query leaves it null.
+- `bakar status --on HOST` without a handle reports the newest detached unit on that host, because the remote command runs outside any workspace. A foreground `--on` build is registered as a unit too, so it is covered.
 - `bakar status` exits 0 whenever it reports a state and 2 when the handle does not resolve. It never reflects the build outcome in its exit status; read `state`.
 
 A failed run whose build printed an error line:
@@ -87,7 +88,7 @@ Without `--json` the same record prints as one line: `<id> <state> [exit=N] task
 
 When `failure.step` is `stopped`, the build was cancelled on purpose. Report it; do not diagnose, fix or relaunch unless asked.
 
-When `failure.step` is `doctor`, the pre-flight checks refused the build before it started, and `failure.error` names the blocking check and its message. Report that and clear the named condition before launching the build again; for a lock held by another build, find the build with `bakar ps --json` and ask the user before stopping it. Never relaunch it unchanged.
+When `failure.step` is `doctor`, the pre-flight checks refused the build before it started, and `failure.error` names the blocking check and its message. Report that and clear the named condition before launching the build again; for a lock held by another build, find the build with `bakar ps --json` (for a build dispatched to another host, `bakar ps --on HOST --json`) and ask the user before stopping it. Never relaunch it unchanged.
 
 For a task failure (`failure.recipe` and `failure.task` are set and `failure.error` is null), `bakar triage <run_id> --json` returns the last lines of the task log in `recipe_log_tail` and the hints matched against them in `suggestions`. Read those, not the `log.do_*` files on the build host. An empty `recipe_log_tail` comes with a `recipe_log_note` that says why.
 
@@ -106,7 +107,7 @@ Run from the meta-avocado checkout or worktree and pass the kas YAML as a path r
 | Instead of | Use |
 |------------|-----|
 | `nohup`, `setsid`, a trailing `&` or `timeout` around a build | `--detach` |
-| `pgrep` or `ps \| grep` for a build | `bakar ps --json`, `bakar status <handle> --json` |
+| `pgrep` or `ps \| grep` for a build | `bakar ps --json` (`bakar ps --on HOST --json` for a build dispatched to another host), `bakar status <handle> --json` |
 | `kill` or `pkill` on bitbake or kas | `bakar stop <kas.yml> --run <run_id>` |
 | reading `log.do_*` files | `bakar triage <run_id> --json` |
 | `tail` or `grep` on a build log | `bakar status <handle> --detail [--on HOST]` |
