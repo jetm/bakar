@@ -948,6 +948,23 @@ def _record_build_paths(cfg: BuildConfig, log: RunLogger) -> None:
         log.warn(f"could not record build paths: {neutralize(str(exc))}")
 
 
+def _record_build_config(cfg: BuildConfig, log: RunLogger) -> None:
+    """Record the build's family, machine, mode and work mount for ``bakar ps`` and ``bakar triage``.
+
+    Never stops the build: any failure becomes one warn line.
+    """
+    try:
+        family = cfg.bsp_family if cfg.bsp_family in ("nxp", "ti") else "generic"
+        log.build_config(
+            family,
+            cfg.machine,
+            "host" if cfg.host_mode else "container",
+            None if cfg.host_mode else cfg.kas_work_dir,
+        )
+    except Exception as exc:  # noqa: BLE001 - a diagnostic event must never stop the build
+        log.warn(f"could not record build config: {neutralize(str(exc))}")
+
+
 def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None, show_layers: bool = False) -> int:
     """Run `kas build <kas_yaml>:<overlay>` with the measurement harness.
 
@@ -1023,6 +1040,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
         extra_overlays=[str(p) for p in (extra_overlays or [])],
     )
     _record_build_paths(cfg, log)
+    _record_build_config(cfg, log)
     cfg.measurements_dir.mkdir(parents=True, exist_ok=True)
     kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, extra_overlays)
     if cfg.is_meta_avocado:
@@ -1289,6 +1307,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
         return 1
 
     _record_build_paths(cfg, log)
+    _record_build_config(cfg, log)
     kas_arg = _build_kas_arg(cfg, kas_yaml, overlay_source, ctx.extra_overlays)
     exe = "kas" if cfg.host_mode else "kas-container"
     cmd = [exe, *_ccache_args(cfg, eventlog_path=_container_eventlog_path(cfg, log)), "shell", kas_arg, "-c", command]
