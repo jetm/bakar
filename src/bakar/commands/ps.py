@@ -1,7 +1,7 @@
-"""bakar ps subcommand - host-wide listing of every live bakar build.
+"""bakar ps subcommand - host-wide listing of the live bakar builds.
 
 Unlike every other bakar command, ``ps`` performs no workspace resolution of
-any kind: it never calls ``_workspace_from_cwd`` or resolves a
+any kind: it never looks up a workspace or resolves a
 :class:`~bakar.config.BuildConfig` from the current directory, so it runs
 correctly from anywhere on the host, including outside any bakar workspace.
 
@@ -16,7 +16,10 @@ Aggregates group 13's deduplicated host-wide discovery from
   (``discover_running_containers_or_warn``), collapsed to one row per run id
   (``dedup_container_candidates``);
 - the two sources reconciled so a run id reported by both is rendered only as
-  its (more actionable) container row (``dedup_across_sources``).
+  its (more actionable) container row (``dedup_across_sources``);
+- detached or dispatched builds whose unit is active but has not started
+  bitbake yet (``detach_records.active_units``), as ``unit`` rows with unknown
+  family and machine, skipped when their run id is already a row.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from typing import Annotated
 import typer
 
 import bakar.commands._app as _state
-from bakar import build_stop, proc_tree, run_discovery, stop_container
+from bakar import build_stop, detach_records, proc_tree, run_discovery, stop_container
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _run_started_epoch
 from bakar.fmt import fmt_duration
@@ -196,6 +199,26 @@ def _collect_rows() -> list[_Row]:
                 elapsed_seconds=_elapsed_seconds(run_dir, now),
             )
         )
+    seen = {row.run_id for row in rows}
+    for unit in detach_records.active_units():
+        latest = next(
+            (rec for rec in reversed(detach_records.read_registrations(unit)) if isinstance(rec.get("run_id"), str)),
+            None,
+        )
+        run_id = latest["run_id"] if latest is not None else unit
+        if run_id in seen:
+            continue
+        seen.add(run_id)
+        run_dir = latest.get("run_dir") if latest is not None else None
+        rows.append(
+            _Row(
+                run_id=run_id,
+                mode="unit",
+                family=_UNKNOWN,
+                machine=_UNKNOWN,
+                elapsed_seconds=_elapsed_seconds(Path(run_dir) if isinstance(run_dir, str) else None, now),
+            )
+        )
     return rows
 
 
@@ -205,18 +228,38 @@ def ps(
         bool,
         typer.Option("--json", help="Emit a JSON array to stdout instead of plain text."),
     ] = False,
+    on: Annotated[
+        str | None,
+        typer.Option("--on", help="List the builds on this host over ssh instead of locally."),
+    ] = None,
 ) -> None:
-    """List every live bakar build on this host.
+    """List the live bakar builds on this host.
 
     Directory-independent: performs no workspace resolution and runs
     correctly from anywhere, including outside any bakar workspace. Combines
-    host-mode builds (discovered by scanning ``/proc`` for bitbake cookers)
-    and container-mode builds (discovered by querying the container runtime),
-    one row per live build - run id, mode, family, and machine. With
+    host-mode builds (``host``, discovered by scanning ``/proc`` for bitbake
+    cookers), container-mode builds (``container``, discovered by querying the
+    container runtime) and ``unit`` rows: a detached or dispatched build whose
+    unit is active but has not started bitbake yet, with unknown family and
+    machine. One row per live build - run id, mode, family, and machine. With
     ``--json`` each row is emitted as an object with exactly five fields
     (``run_id``, ``mode``, ``family``, ``machine``, ``elapsed_seconds`` as a
-    JSON integer); an empty result emits ``[]``.
+    JSON integer); an empty result emits ``[]``. ``--on HOST`` runs ``bakar
+    ps`` on that host over ssh and mirrors its output and exit status.
     """
+    if on is not None:
+        from bakar.commands.status import REMOTE_STATUS_TIMEOUT, run_on_host
+
+        raise typer.Exit(
+            code=run_on_host(
+                on,
+                "ps",
+                ["--json"] if json_out else [],
+                None,
+                capture_timeout=REMOTE_STATUS_TIMEOUT,
+                transport_exit=2,
+            )
+        )
     rows = _collect_rows()
     if json_out:
         print(

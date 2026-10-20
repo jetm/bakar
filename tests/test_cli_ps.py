@@ -10,6 +10,7 @@ CLI-command test suite does.
 from __future__ import annotations
 
 import json
+import subprocess
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
@@ -17,7 +18,9 @@ import pytest
 
 import bakar.commands.ps as ps_cmd
 from bakar.cli import app
+from bakar.commands import status as status_mod
 from bakar.run_discovery import RunCandidate, RunRoot
+from bakar.steps import remote_dispatch as rd
 from bakar.stop_container import ContainerCandidate
 from tests.conftest import make_build_config
 
@@ -28,6 +31,12 @@ if TYPE_CHECKING:
     from typer.testing import CliRunner as _CliRunner
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _no_active_units(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep this machine's real detached units (and ``systemctl``) out of every test."""
+    monkeypatch.setattr(ps_cmd.detach_records, "active_units", list)
 
 
 def _no_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -639,3 +648,131 @@ def test_ps_never_modifies_discovered_build_state(
     assert enumerate_runs_mock.call_count == 2
     assert discover_containers_mock.call_args_list[0] == discover_containers_mock.call_args_list[1]
     assert mount_source_mock.call_args_list[0] == mount_source_mock.call_args_list[1]
+
+
+_FIVE_FIELDS = {"run_id", "mode", "family", "machine", "elapsed_seconds"}
+
+
+def _with_units(monkeypatch: pytest.MonkeyPatch, registrations: dict[str, list[dict]]) -> None:
+    """Report ``registrations``' units as active, each with its registration records."""
+    monkeypatch.setattr(ps_cmd.detach_records, "active_units", lambda: sorted(registrations))
+    monkeypatch.setattr(ps_cmd.detach_records, "read_registrations", lambda unit: registrations[unit])
+
+
+def test_ps_lists_active_unit_without_cooker_as_unit_row(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A registered unit with no cooker yet is one ``unit`` row with the latest registered run id."""
+    _no_discovery(monkeypatch)
+    run_dir = tmp_path / "runs" / "20260701-160000-unit"
+    _with_units(
+        monkeypatch,
+        {
+            "bakar-build-abc": [
+                {"run_id": "20260701-150000-old", "run_dir": str(tmp_path / "old"), "pid": 1},
+                {"run_id": "20260701-160000-unit", "run_dir": str(run_dir), "pid": 2},
+            ]
+        },
+    )
+
+    result = runner.invoke(app, ["ps", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload) == 1
+    row = payload[0]
+    assert set(row) == _FIVE_FIELDS
+    assert row["run_id"] == "20260701-160000-unit"
+    assert row["mode"] == "unit"
+    assert row["family"] == "unknown"
+    assert row["machine"] == "unknown"
+    assert isinstance(row["elapsed_seconds"], int)
+
+    text = runner.invoke(app, ["ps"])
+    assert "mode=unit" in text.output
+    assert "family=unknown" in text.output
+
+
+def test_ps_unit_without_registration_uses_unit_name(runner: _CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An active unit that has not registered a run yet is listed under its unit name."""
+    _no_discovery(monkeypatch)
+    _with_units(monkeypatch, {"bakar-build-xyz": []})
+
+    result = runner.invoke(app, ["ps", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == [
+        {"run_id": "bakar-build-xyz", "mode": "unit", "family": "unknown", "machine": "unknown", "elapsed_seconds": 0}
+    ]
+
+
+def test_ps_unit_whose_run_is_already_a_host_row_is_not_listed_twice(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once bitbake runs, the unit's run shows only as its host row."""
+    run_id = "20260701-170000-dup"
+    run_dir = tmp_path / "nxp" / "build" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    root = RunRoot(bsp_root=tmp_path / "nxp", family="nxp", resolve_workspace=tmp_path, resolve_family="nxp")
+    cfg = make_build_config(workspace=tmp_path / "nxp", machine="imx8mp-var-dart")
+    candidate = RunCandidate(run_dir=run_dir, root=root, cfg=cfg)
+
+    _no_discovery(monkeypatch)
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", lambda _discovered, **_kw: [candidate])
+    _with_units(monkeypatch, {"bakar-build-dup": [{"run_id": run_id, "run_dir": str(run_dir), "pid": 3}]})
+
+    result = runner.invoke(app, ["ps", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload) == 1
+    assert payload[0]["run_id"] == run_id
+    assert payload[0]["mode"] == "host"
+
+
+@pytest.fixture
+def remote(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Stub the ssh capture `run_on_host` uses; any local discovery raises."""
+
+    def _local_discovery() -> list[object]:
+        raise AssertionError("bakar ps --on must not run local discovery")
+
+    monkeypatch.setattr(ps_cmd, "_collect_rows", _local_discovery)
+    monkeypatch.setattr(status_mod, "_preflight", lambda _host, *, transport_exit: None)
+    mock = MagicMock(
+        return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout='[{"run_id": "r"}]\n', stderr="")
+    )
+    monkeypatch.setattr(rd, "_ssh_bash_capture", mock)
+    return mock
+
+
+def test_ps_on_host_forwards_json_and_mirrors_stdout(runner: _CliRunner, remote: MagicMock) -> None:
+    result = runner.invoke(app, ["ps", "--json", "--on", "pc3"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == '[{"run_id": "r"}]\n'
+    host, script = remote.call_args.args
+    assert host == "pc3"
+    assert script == "bakar ps --json\n"
+
+
+def test_ps_on_host_without_json_and_mirrors_exit(runner: _CliRunner, remote: MagicMock) -> None:
+
+    remote.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="boom\n", stderr="")
+
+    result = runner.invoke(app, ["ps", "--on", "pc3"])
+
+    assert result.exit_code == 1
+    assert result.stdout == "boom\n"
+    assert remote.call_args.args[1] == "bakar ps\n"
+
+
+def test_ps_on_host_transport_failure_exits_2(runner: _CliRunner, remote: MagicMock) -> None:
+
+    remote.return_value = subprocess.CompletedProcess(args=[], returncode=255, stdout="", stderr="unreachable")
+
+    result = runner.invoke(app, ["ps", "--on", "pc3"])
+
+    assert result.exit_code == 2
+    assert "255" in result.output
