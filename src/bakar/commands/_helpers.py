@@ -54,6 +54,8 @@ from bakar.diagnostics import (
     Severity,
     Status,
     any_blocking_failure,
+    blocking_failures,
+    doctor_failure_text,
     group_results,
     markup_safe,
     run_all,
@@ -626,13 +628,13 @@ def _run_doctor_gate(cfg: BuildConfig, log, bsp: BspModel | None) -> None:
         _state._USER_CONFIG is not None and not _state._USER_CONFIG.show_doctor_report
     )
     if hide:
-        blocking = [r for r in results if r.severity is Severity.BLOCK and r.status is Status.FAIL]
+        blocking = blocking_failures(results)
         if blocking:
             _print_diagnosis(blocking)
     else:
         _print_diagnosis(results)
     if any_blocking_failure(results):
-        log.step_fail("doctor", reason="blocking failure")
+        log.step_fail("doctor", reason="blocking failure", error=doctor_failure_text(results))
         raise typer.Exit(code=2)
     log.step_ok("doctor", checks=len(results))
 
