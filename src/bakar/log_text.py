@@ -39,3 +39,41 @@ def error_line(line: str) -> str | None:
     if match is None:
         return None
     return ("ERROR: " + match.group(1))[:MAX_LINE_CHARS]
+
+
+def one_line(text: str) -> str:
+    """Collapse ``text`` to one clean line, every whitespace run one space, unbounded."""
+    # The second split collapses a space pair left behind by a removed control character.
+    return " ".join(clean_text(" ".join(text.split())).split())
+
+
+def join_bounded(entries: list[str], *, limit: int = MAX_LINE_CHARS, sep: str = "; ", marker: str = "...") -> str:
+    """Join ``entries`` with ``sep`` in at most ``limit`` characters, shortening the longest fairly.
+
+    Entries are served shortest first, each taking at most an equal share of what
+    is left, so a short entry stays whole and passes its unused room on. A
+    shortened entry ends with ``marker``.
+    """
+    if not entries:
+        return ""
+    joined = sep.join(entries)
+    if len(joined) <= limit:
+        return joined
+    budget = limit - len(sep) * (len(entries) - 1)
+    if budget < len(entries):
+        return joined[:limit]
+    takes = [0] * len(entries)
+    remaining = budget
+    order = sorted(range(len(entries)), key=lambda i: (len(entries[i]), i))
+    for served, index in enumerate(order):
+        takes[index] = min(len(entries[index]), remaining // (len(entries) - served))
+        remaining -= takes[index]
+    rendered = []
+    for entry, take in zip(entries, takes, strict=True):
+        if take >= len(entry):
+            rendered.append(entry)
+        elif take > len(marker):
+            rendered.append(entry[: take - len(marker)].rstrip() + marker)
+        else:
+            rendered.append(entry[:take])
+    return sep.join(rendered)
