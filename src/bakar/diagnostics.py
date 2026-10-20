@@ -75,6 +75,7 @@ from bakar.elfscan import (
 )
 from bakar.fmt import neutralize
 from bakar.kas import parse_bblayers
+from bakar.log_text import join_bounded, one_line
 from bakar.mounts import (
     _FS_NFS,
     _NFS_DELEG_WARN_THRESHOLD,
@@ -4164,8 +4165,23 @@ def run_all(
     return results
 
 
+def blocking_failures(results: list[CheckResult]) -> list[CheckResult]:
+    return [r for r in results if r.severity is Severity.BLOCK and r.status is Status.FAIL]
+
+
 def any_blocking_failure(results: list[CheckResult]) -> bool:
-    return any(r.severity is Severity.BLOCK and r.status is Status.FAIL for r in results)
+    return bool(blocking_failures(results))
+
+
+def doctor_failure_text(results: list[CheckResult]) -> str | None:
+    """One bounded line naming every blocking failure, or None when none failed."""
+    failed = blocking_failures(results)
+    if not failed:
+        return None
+    entries = [
+        one_line(r.name) if not r.message.strip() else f"{one_line(r.name)}: {one_line(r.message)}" for r in failed
+    ]
+    return join_bounded(entries)
 
 
 # ---------------------------------------------------------------------------
