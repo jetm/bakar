@@ -50,7 +50,7 @@ Progress lines go to stderr, one per poll (`--interval`, default 30 seconds, min
 - `state` is one of `starting`, `running`, `succeeded`, `failed`, `unknown`.
 - `succeeded` and `failed` come only from a recorded exit status, which is `exit_code`. Liveness only separates `running` from `unknown`.
 - `unit` is null for a run that was not detached. `run_id`, `run_dir` and the task counts are null until they exist.
-- `failure` is null unless `state` is `failed`; then it is `{"recipe": ..., "task": ..., "step": ..., "error": ...}`. A task failure sets `recipe` and `task`. Otherwise `step` is the failing step and `error` is the first error line the build printed (or `exit_code=N` when it printed none), with `recipe` and `task` null. When `bakar stop` ended the run, `step` is `stopped`; when the pre-flight checks refused the build, `step` is `doctor`. It is null when the run recorded none of these.
+- `failure` is null unless `state` is `failed`; then it is `{"recipe": ..., "task": ..., "step": ..., "error": ...}`. A task failure sets `recipe` and `task`. Otherwise `step` is the failing step and `error` is the first error line the build printed (or `exit_code=N` when it printed none), with `recipe` and `task` null. When `bakar stop` ended the run, `step` is `stopped`; when the pre-flight checks refused the build, `step` is `doctor` and `error` names each blocking check as `<check>: <message>` instead. It is null when the run recorded none of these.
 - `host` is the ssh target for a run queried with `--on`; a local query leaves it null.
 - `bakar status` exits 0 whenever it reports a state and 2 when the handle does not resolve. It never reflects the build outcome in its exit status; read `state`.
 
@@ -91,7 +91,7 @@ When `failure.step` is `doctor`, the pre-flight checks refused the build before 
 
 For any other failure, `failure.error` carries the cause, and `bakar triage <run_id> --json` gives a `fail_reason` equal to it.
 
-A run recorded before this version, or one ended by `kill` or `systemctl stop`, cannot be told from an ordinary failure: its `failure.error` is `exit_code=N` and `failure.step` is never `stopped`. A refused build from such a run reads `blocking failure`.
+A refused build recorded before this version, or dispatched to a build host that runs an older bakar, reads `blocking failure` with no check named. A run ended by `kill` or `systemctl stop` cannot be told from an ordinary failure: its `failure.error` is `exit_code=N` and `failure.step` is never `stopped`.
 
 ## Where to build
 

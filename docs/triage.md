@@ -97,7 +97,7 @@ For a structured task failure it is null, because the failing recipe and task
 already name the cause. A run that carries a stop request but recorded neither
 a failing step nor a non-zero terminal event reports no failure here, although
 `bakar status` can still derive `failed` for it from the unit's exit sentinel.
-The text form prints the reason as recorded, square brackets included.
+The text form prints the reason as recorded, square brackets included, and prints `no reason recorded` when the failing step recorded none.
 
 ## How triage sources failure data
 

@@ -52,7 +52,9 @@ def join_bounded(entries: list[str], *, limit: int = MAX_LINE_CHARS, sep: str = 
 
     Entries are served shortest first, each taking at most an equal share of what
     is left, so a short entry stays whole and passes its unused room on. A
-    shortened entry ends with ``marker``.
+    shortened entry ends with ``marker`` whenever its share is longer than the
+    marker. A share no longer than the marker, or a budget smaller than the
+    number of entries, cuts without one, because no room is left for it.
     """
     if not entries:
         return ""

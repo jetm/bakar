@@ -129,6 +129,12 @@ def test_join_bounded_budget_below_entry_count() -> None:
     assert join_bounded(entries, limit=10) == "; ".join(entries)[:10]
 
 
+def test_join_bounded_share_no_longer_than_marker_has_no_marker() -> None:
+    result = join_bounded(["a" * 10, "b" * 10], limit=8)
+    assert result == "aaa; bbb"
+    assert "..." not in result
+
+
 def test_join_bounded_keeps_order() -> None:
     entries = ["z" * 80, "a", "m" * 150]
     parts = join_bounded(entries).split("; ")
