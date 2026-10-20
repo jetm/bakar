@@ -66,7 +66,7 @@ from bakar import (
     stop_container,
     task_timings,
 )
-from bakar.bsp_detect import meta_avocado_checkout, meta_avocado_wrapper_text
+from bakar.bsp_detect import meta_avocado_checkout, meta_avocado_pin_text, meta_avocado_wrapper_text
 from bakar.buildtools import BUILDTOOLS_DIR_ENV, detect_buildtools, resolve_oe_core_release_key
 from bakar.config import GENERATED_BUILD_YAML, BuildConfig
 from bakar.fmt import neutralize
@@ -166,6 +166,19 @@ def _setup_meta_avocado_build_dir(cfg: BuildConfig) -> None:
     cfg.bsp_root.mkdir(parents=True, exist_ok=True)
 
 
+def _pinned_checkout(cfg: BuildConfig, kas_yaml: Path) -> Path | None:
+    """Return the meta-avocado checkout to pin by absolute path, or None.
+
+    Set for a linked worktree or a checkout outside ``cfg.workspace``; None for
+    the workspace's own clone (also through a symlinked workspace) and for an
+    entry that is not inside a meta-avocado checkout.
+    """
+    checkout = meta_avocado_checkout(kas_yaml)
+    if checkout is not None and checkout.resolve() != (cfg.workspace / "meta-avocado").resolve():
+        return checkout
+    return None
+
+
 def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
     """Write a wrapper YAML that includes the machine YAML via repo reference.
 
@@ -185,8 +198,8 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
 
     Returns the wrapper path (``bsp_root/avocado-wrapper.yml``).
     """
-    checkout = meta_avocado_checkout(kas_yaml)
-    if checkout is not None and checkout.resolve() != (cfg.workspace / "meta-avocado").resolve():
+    checkout = _pinned_checkout(cfg, kas_yaml)
+    if checkout is not None:
         # A linked worktree, or a checkout outside the workspace the build
         # runs in (a routed release workspace): the relative ``path:
         # meta-avocado`` would resolve against KAS_WORK_DIR and name a
@@ -244,6 +257,24 @@ def _write_meta_avocado_wrapper(cfg: BuildConfig, kas_yaml: Path) -> Path:
 
 
 _REUSE_OVERLAY_YAML = "avocado-reuse.yml"
+_PIN_YAML = "avocado-pin.yml"
+
+
+def _write_meta_avocado_pin(cfg: BuildConfig, kas_yaml: Path) -> Path | None:
+    """Write the file that re-pins meta-avocado to its checkout after every overlay.
+
+    kas lets the last file win, so an overlay naming its own ``meta-avocado``
+    repo would otherwise move the build off the checkout the wrapper pins.
+    Only a checkout the wrapper pins by absolute path gets one; the workspace's
+    own clone returns None and nothing is written.
+
+    Returns its path relative to ``cfg.bsp_root``.
+    """
+    checkout = _pinned_checkout(cfg, kas_yaml)
+    if checkout is None:
+        return None
+    (cfg.bsp_root / _PIN_YAML).write_text(meta_avocado_pin_text(checkout), encoding="utf-8")
+    return Path(_PIN_YAML)
 
 
 def _repo_policy(kas_yaml: Path) -> str:
@@ -398,6 +429,10 @@ def _run_kas_dump(
     The dump output is a self-contained YAML: no ``header.includes``, all
     repos pinned by commit, overlay content merged in. The container never
     needs to do include resolution or access overlay files directly.
+
+    For a meta-avocado checkout outside the workspace, the caller passes the
+    pin file (``avocado-pin.yml``) as the last extra, after the reuse overlay,
+    so no overlay can move meta-avocado off that checkout.
 
     Returns the dump file path (``bsp_root/avocado-bakar.yml``).
     """
@@ -691,15 +726,18 @@ def _build_kas_arg(
         entry = _entry_without_bakar_sections(kas_yaml)
         try:
             wrapper = _write_meta_avocado_wrapper(cfg, entry)
+            pin = _write_meta_avocado_pin(cfg, entry)
+            pin_rels = [pin] if pin is not None else []
             if _repo_policy(entry) == REPO_POLICY_REUSE:
                 # Held through the dump, because the dump is where kas clones
                 # whatever classify found missing.
                 with repo_reuse.workspace_lock(cfg.workspace):
+                    # The probe merges its own pin, so the stack goes in without ours.
                     stack = [overlay_rel, *extra_overlay_rels]
                     extra_overlay_rels.append(_write_reuse_overlay(cfg, entry, stack))
-                    dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
+                    dump = _run_kas_dump(cfg, wrapper, overlay_rel, [*extra_overlay_rels, *pin_rels])
             else:
-                dump = _run_kas_dump(cfg, wrapper, overlay_rel, extra_overlay_rels)
+                dump = _run_kas_dump(cfg, wrapper, overlay_rel, [*extra_overlay_rels, *pin_rels])
         finally:
             if entry != kas_yaml:
                 entry.unlink(missing_ok=True)

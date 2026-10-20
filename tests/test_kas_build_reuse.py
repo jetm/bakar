@@ -296,3 +296,129 @@ def test_kas_policy_still_retries_with_skip(tmp_path: Path) -> None:
 
     assert run.call_count == 2
     assert run.call_args_list[1].args[0][:4] == ["kas", "dump", "--skip", "repos_checkout"]
+
+
+# ---------------------------------------------------------------------------
+# meta-avocado pin merged after every overlay
+# ---------------------------------------------------------------------------
+
+
+def _outside_setup(tmp_path: Path) -> tuple[BuildConfig, Path, Path, Path]:
+    checkout = tmp_path / "release" / "meta-avocado"
+    kas_yaml = _kas_file(checkout)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    cfg = _cfg(ws, kas_yaml)
+    overlay = tmp_path / "overlay.yml"
+    overlay.write_text("header:\n  version: 16\n", encoding="utf-8")
+    return cfg, kas_yaml, overlay, checkout
+
+
+def test_avocado_pin_checkout_outside_workspace_is_pinned(tmp_path: Path) -> None:
+    cfg, kas_yaml, _overlay, checkout = _outside_setup(tmp_path)
+
+    pinned = kas_build._pinned_checkout(cfg, kas_yaml)
+
+    assert pinned is not None
+    assert pinned.resolve() == checkout.resolve()
+
+
+def test_avocado_pin_not_needed_for_workspace_clone(tmp_path: Path) -> None:
+    kas_yaml = _kas_file(tmp_path / "meta-avocado")
+    cfg = _cfg(tmp_path, kas_yaml)
+
+    assert kas_build._pinned_checkout(cfg, kas_yaml) is None
+
+
+def test_avocado_pin_not_needed_when_workspace_is_a_symlink(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    kas_yaml = _kas_file(real / "meta-avocado")
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    cfg = _cfg(link, link / "meta-avocado" / "kas" / "machine" / "m.yml")
+
+    assert kas_build._pinned_checkout(cfg, kas_yaml) is None
+
+
+def test_avocado_pin_written_for_checkout_outside_workspace(tmp_path: Path) -> None:
+    cfg, kas_yaml, _overlay, checkout = _outside_setup(tmp_path)
+
+    rel = kas_build._write_meta_avocado_pin(cfg, kas_yaml)
+
+    assert rel == Path("avocado-pin.yml")
+    data = yaml.safe_load((cfg.bsp_root / "avocado-pin.yml").read_text(encoding="utf-8"))
+    assert data == {"header": {"version": 16}, "repos": {"meta-avocado": {"path": str(checkout.resolve())}}}
+
+
+def test_avocado_pin_not_written_for_workspace_clone(tmp_path: Path) -> None:
+    kas_yaml = _kas_file(tmp_path / "meta-avocado")
+    cfg = _cfg(tmp_path, kas_yaml)
+
+    assert kas_build._write_meta_avocado_pin(cfg, kas_yaml) is None
+    assert not (cfg.bsp_root / "avocado-pin.yml").exists()
+
+
+def test_avocado_pin_merged_last_under_kas_policy(tmp_path: Path, no_policy: None) -> None:
+    cfg, kas_yaml, overlay, _checkout = _outside_setup(tmp_path)
+
+    with patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)) as run:
+        _build_kas_arg(cfg, kas_yaml, overlay)
+
+    argv = run.call_args.args[0]
+    assert argv[:2] == ["kas", "dump"]
+    assert argv[-1].split(":")[-1] == "avocado-pin.yml"
+    assert run.call_args.kwargs["cwd"] == str(cfg.bsp_root)
+    assert (cfg.bsp_root / "avocado-wrapper.yml").is_file()
+    assert (cfg.bsp_root / "avocado-pin.yml").is_file()
+
+
+def test_avocado_pin_follows_reuse_overlay_under_reuse_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, kas_yaml, overlay, _checkout = _outside_setup(tmp_path)
+    states = [RepoState("poky", cfg.workspace / "poky", PIN, "frozen")]
+
+    with (
+        patch.object(kas_build.kas_pins, "read_merged_config", return_value={"repos": {}}) as read,
+        patch.object(kas_build.repo_reuse, "classify", return_value=states),
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)) as run,
+    ):
+        _build_kas_arg(cfg, kas_yaml, overlay)
+
+    files = run.call_args.args[0][-1].split(":")
+    assert files[-2:] == ["avocado-reuse.yml", "avocado-pin.yml"]
+    assert all(p.name != "avocado-pin.yml" for p in read.call_args.kwargs["extra_files"])
+
+
+def test_avocado_pin_absent_for_workspace_clone_under_either_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
+    states = [RepoState("poky", tmp_path / "poky", PIN, "frozen")]
+
+    monkeypatch.delenv("BAKAR_REPO_POLICY", raising=False)
+    with patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)) as run:
+        _build_kas_arg(cfg, kas_yaml, overlay)
+    assert run.call_args.args[0][-1] == f"avocado-wrapper.yml:.bakar/overlays/{overlay.name}"
+
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    with (
+        patch.object(kas_build.kas_pins, "read_merged_config", return_value={"repos": {}}),
+        patch.object(kas_build.repo_reuse, "classify", return_value=states),
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)) as run,
+    ):
+        _build_kas_arg(cfg, kas_yaml, overlay)
+    assert run.call_args.args[0][-1].split(":")[-1] == "avocado-reuse.yml"
+    assert not (cfg.bsp_root / "avocado-pin.yml").exists()
+
+
+def test_avocado_pin_does_not_unlock_skip_retry_under_reuse(tmp_path: Path) -> None:
+    cfg, wrapper = _dump_inputs(tmp_path)
+
+    with (
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(1, stderr=_REBASED)) as run,
+        pytest.raises(RuntimeError, match="does not contain commit"),
+    ):
+        _run_kas_dump(cfg, wrapper, Path("o.yml"), [Path("avocado-reuse.yml"), Path("avocado-pin.yml")])
+
+    assert run.call_count == 1
+    assert "--skip" not in run.call_args.args[0]

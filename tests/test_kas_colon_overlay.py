@@ -215,6 +215,8 @@ def test_build_kas_arg_meta_avocado_threads_extras_to_kas_dump(tmp_path: Path) -
     silently dropped for every meta-avocado shell-function path (run_shell_live
     powers bakar bitbake / dump).
     """
+    from pathlib import Path
+
     from bakar.config import BuildConfig
     from bakar.steps.kas_build import _build_kas_arg
 
@@ -254,8 +256,10 @@ def test_build_kas_arg_meta_avocado_threads_extras_to_kas_dump(tmp_path: Path) -
     with patch("bakar.steps.kas_build._run_kas_dump", fake_run_kas_dump):
         _build_kas_arg(cfg, kas_yaml, overlay_src, [extra_src])
 
-    assert len(captured["extra_overlay_rels"]) == 1, f"meta-avocado branch dropped extras: {captured}"
+    # The checkout sits outside cfg.workspace/meta-avocado, so the pin follows the user's overlay.
+    assert len(captured["extra_overlay_rels"]) == 2, f"meta-avocado branch dropped extras: {captured}"
     assert "bringup.yml" in captured["extra_overlay_rels"][0].name
+    assert captured["extra_overlay_rels"][-1] == Path("avocado-pin.yml")
 
 
 def test_friendly_overlay_lines_is_markup_safe_and_shortened(tmp_path: Path) -> None:
