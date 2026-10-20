@@ -58,6 +58,7 @@ from bakar.commands.log import _resolve_run_dir
 from bakar.config import BSPSpec, BuildConfig, ResolveRequest
 from bakar.diagnostics import split_host_port
 from bakar.eventlog import IncrementalEventLog, running_from_rows
+from bakar.observability import frontend_alive, last_record_at, run_ended_at
 from bakar.output_mode import OutputMode, resolve_output_mode
 from bakar.probes import probe_build_daemon, probe_ccache, probe_cluster
 from bakar.steps.build_ui import SEVERITY_PASSTHROUGH, _fmt_stall
@@ -213,11 +214,15 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
     build = artifact["build"]
     completed = build.get("completed")
 
+    live, _pgid, cmdline_ok = is_build_running(run_dir)
+    run_live = (live and cmdline_ok) or frontend_alive(run_dir)
+
     start_epoch = _run_started_epoch(run_dir)
     if start_epoch is not None:
-        try:
-            end = float(completed) if completed is not None else time.time()
-        except TypeError, ValueError:
+        end = run_ended_at(run_dir)
+        if end is None:
+            end = time.time() if run_live else last_record_at(run_dir)
+        if end is None:
             end = time.time()
         elapsed = max(0.0, end - start_epoch)
     else:
@@ -230,8 +235,6 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
     rq_done = build.get("tasks_completed")
     done = rq_done if rq_done is not None else succeeded
     remaining = (planned - done) if (planned is not None and done is not None) else None
-
-    live, _pgid, _cmdline_ok = is_build_running(run_dir)
 
     return {
         "outcome": build.get("outcome"),
