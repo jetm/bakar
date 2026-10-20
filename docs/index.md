@@ -14,7 +14,7 @@
 | `rebuild` | [bitbake.md](bitbake.md) | Rebuild one recipe from scratch (`cleansstate` then build) |
 | `shell` | [shell.md](shell.md) | Interactive kas shell or one-shot command |
 | `run` | [run.md](run.md) | Boot avocado-os image in QEMU (meta-avocado only) |
-| `ps` | [ps.md](ps.md) | List every live `bakar` build on this host (host + container mode), plain text or `--json` |
+| `ps` | [ps.md](ps.md) | List the `bakar` builds on this host whose bitbake has started (host or container mode) plus detached or dispatched units not yet at bitbake; a foreground local build still in doctor or sync is not listed. Plain text or `--json` |
 | `status` | [status.md](status.md) | Report a run's lifecycle state (starting, running, succeeded, failed, unknown) from a recorded exit status; `--json` for scripting |
 | `wait` | [wait.md](wait.md) | Block until a run finishes and exit with its outcome (0, 1, 2, 3, 124 on timeout) |
 | `stop` | [stop.md](stop.md) | Gracefully halt a running build (SIGINT, then escalate) |
@@ -68,7 +68,7 @@
 - Only want to regenerate the kas YAML: [gen-kas.md](gen-kas.md)
 
 **Build failed:**
-- List every live build on this host to find the one to stop: [ps.md](ps.md)
+- List the builds on this host whose bitbake has started (host or container mode) and the detached or dispatched units not yet at bitbake, to find the one to stop; a foreground local build still in doctor or sync is not listed: [ps.md](ps.md)
 - Stop a running build cleanly so it stays resumable: [stop.md](stop.md)
 - Find what went wrong: [triage.md](triage.md)
 - Watch a running build (tail one log): [log.md](log.md)
@@ -255,7 +255,7 @@ command page, the gloss links it.
 | Feed mirror | [capabilities/feed-mirror.md](capabilities/feed-mirror.md) | Populating the local feed from a remote published feed, with integrity checks, write confinement, resume and a disk-space preflight - see [feed.md](feed.md) |
 | Build failure visibility | [capabilities/build-failure-visibility.md](capabilities/build-failure-visibility.md) | Indented detail lines of a multi-line error reach the live console - see [build.md](build.md) |
 | Build graph capture bounds | [capabilities/build-graph-capture-bounds.md](capabilities/build-graph-capture-bounds.md) | Post-build dependency-graph capture with a bounded wait, an opt-out, provenance that rejects stale captures, and parse failures kept distinct from empty graphs - see [graph.md](graph.md) |
-| Build listing | [capabilities/build-listing.md](capabilities/build-listing.md) | The read-only `bakar ps` command that lists every live build on the host - see [ps.md](ps.md) |
+| Build listing | [capabilities/build-listing.md](capabilities/build-listing.md) | The read-only `bakar ps` command that lists the builds whose bitbake has started (host or container mode) and the detached or dispatched units not yet at bitbake, not a foreground local build still in doctor or sync - see [ps.md](ps.md) |
 | Buildstats discovery | [capabilities/buildstats-discovery.md](capabilities/buildstats-discovery.md) | Locating the buildstats tree for a run and reporting when it is absent, partial or from a different build - see [insights.md](insights.md) |
 | Cache mount readiness | [capabilities/cache-mount-readiness.md](capabilities/cache-mount-readiness.md) | Bounded readiness probe for cache directories, the cache-mounts doctor check and the pre-launch gate before bitbake - see [doctor.md](doctor.md) |
 | Cluster preflight | [capabilities/cluster-preflight.md](capabilities/cluster-preflight.md) | Shared-cache mount check that accepts softerr, warns on plain soft, and classifies automounts by the top of the mount stack - see [doctor.md](doctor.md) |

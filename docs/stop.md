@@ -344,7 +344,7 @@ recipe fails to rebuild with non-self-healing errors, run
 
 ## See also
 
-- [ps.md](ps.md) - list every live build on this host (run id, mode, family, machine) to find the id for `--run`
+- [ps.md](ps.md) - list the builds whose bitbake has started (host or container mode) and the detached or dispatched units not yet at bitbake (run id, mode, family, machine) to find the id for `--run`; a foreground local build still in doctor or sync is not listed
 - [build.md](build.md) - the build pipeline whose run writes `build.pid`
 - [hashserv.md](hashserv.md) - the persistent daemon `bakar stop` deliberately leaves running
 - [triage.md](triage.md) - post-mortem a build that failed or was interrupted
