@@ -217,16 +217,24 @@ class FailureLog:
     suggestions: list[str]
 
 
-def read_failure_log(logfile: object, workspace: Path, extra_roots: Sequence[Path] = ()) -> FailureLog:
+def read_failure_log(
+    logfile: object,
+    workspace: Path,
+    extra_roots: Sequence[Path] = (),
+    *,
+    translate_root: Path | None = None,
+) -> FailureLog:
     """Read the tail of a recorded failure logfile, refusing paths outside the build tree.
 
     ``bitbake-events.json`` is untrusted and may name any file, so the resolved
     path must sit under ``workspace`` or one of ``extra_roots`` (directories the
     caller trusts; a run record never supplies one) before it is opened.
+    ``translate_root`` only changes where a ``/work/`` path maps to; it is never
+    a containment root.
     """
     if not isinstance(logfile, str) or not logfile:
         return FailureLog(None, [], "none", [])
-    host_path = Path(translate_container_path(logfile, workspace))
+    host_path = Path(translate_container_path(logfile, translate_root or workspace))
     contained = False
     try:
         resolved = host_path.resolve()
@@ -254,7 +262,9 @@ def read_failure_log(logfile: object, workspace: Path, extra_roots: Sequence[Pat
     return FailureLog(host_path, tail, "read", _match_suggestions("\n".join(tail)))
 
 
-def _find_recipe_log(kas_log: Path, workspace: Path, *, text: str | None = None) -> Path | None:
+def _find_recipe_log(
+    kas_log: Path, workspace: Path, *, text: str | None = None, translate_root: Path | None = None
+) -> Path | None:
     """Scan kas.log for bitbake's Logfile hint and rewrite the container
     path (/work/...) to a host path under ``workspace``."""
     if text is None:
@@ -266,7 +276,7 @@ def _find_recipe_log(kas_log: Path, workspace: Path, *, text: str | None = None)
         if not m:
             continue
         container_path = m.group("path")
-        host_path = Path(translate_container_path(container_path, workspace))
+        host_path = Path(translate_container_path(container_path, translate_root or workspace))
         if host_path.is_file():
             return host_path
     return None
@@ -416,7 +426,7 @@ def _apply_stop_rule(
     return failing_step, fail_reason
 
 
-def analyse(run_dir: Path, workspace: Path) -> TriageReport:
+def analyse(run_dir: Path, workspace: Path, *, translate_root: Path | None = None) -> TriageReport:
     events_path = run_dir / "events.jsonl"
 
     # Fast path: read the pre-structured failure artifact written by run_build.
@@ -443,7 +453,7 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
             fail = last_run_event(events_path, is_build_failure_event)
             fail_reason: str | None = step_fail_text(fail) if fail else None
             failing_step, fail_reason = _apply_stop_rule(run_dir, fail, failing_step, fail_reason)
-            recipe_log = _find_recipe_log(kas_log, workspace)
+            recipe_log = _find_recipe_log(kas_log, workspace, translate_root=translate_root)
             recipe_log_tail = tail_lines(recipe_log, 60) if recipe_log else []
             # Recompute suggestions over combined text (table order) so the fast
             # path produces the same ordering as the live-parse path.
@@ -479,7 +489,7 @@ def analyse(run_dir: Path, workspace: Path) -> TriageReport:
     failing_step, fail_reason = _apply_stop_rule(run_dir, fail, failing_step, fail_reason)
 
     kas_log_tail = tail_lines(kas_log, 60, text=kas_text)
-    recipe_log = _find_recipe_log(kas_log, workspace, text=kas_text)
+    recipe_log = _find_recipe_log(kas_log, workspace, text=kas_text, translate_root=translate_root)
     recipe_log_tail = tail_lines(recipe_log, 60) if recipe_log else []
     recipe_errors = _scan_recipe_errors(kas_log, text=kas_text)
 

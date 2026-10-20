@@ -26,7 +26,7 @@ from bakar.commands._helpers import (
 from bakar.config import meta_avocado_build_dir_name, worktree_build_template
 from bakar.diagnostics import markup_safe
 from bakar.log_text import clean_line
-from bakar.observability import STOPPED_STEP, last_run_event
+from bakar.observability import STOPPED_STEP, last_build_config, last_run_event
 from bakar.release_workspace import ReleaseRoutingError
 from bakar.triage import analyse, is_build_failure_event, read_failure_log
 from bakar.user_config import load_user_config
@@ -84,7 +84,9 @@ def _extra_log_roots() -> list[Path]:
     return [Path(os.path.abspath(os.path.expanduser(base)))] if base else []
 
 
-def _print_structured_failures(failures: list[dict], workspace: Path, extra_roots: list[Path]) -> None:
+def _print_structured_failures(
+    failures: list[dict], workspace: Path, extra_roots: list[Path], translate_root: Path | None = None
+) -> None:
     """Render the structured failure records, reading each task log through
     ``read_failure_log`` (container-path translation, containment, tail and
     hints).
@@ -94,7 +96,7 @@ def _print_structured_failures(failures: list[dict], workspace: Path, extra_root
         task = failure.get("task") or "?"
         console.print(f"[red]✗[/] recipe [bold]{recipe}[/] task [bold]{task}[/] failed")
 
-        log = read_failure_log(failure.get("logfile"), workspace, extra_roots)
+        log = read_failure_log(failure.get("logfile"), workspace, extra_roots, translate_root=translate_root)
         if log.state == "outside":
             console.print(f"[dim]logfile outside workspace, not read: {log.path}[/]")
         elif log.state == "unreadable":
@@ -234,6 +236,21 @@ def _registered_root(run_dir: Path) -> Path:
     """The build root of a run dir laid out ``<root>/build/runs/<id>``; its parent otherwise."""
     parts = run_dir.parents
     return parts[2] if len(parts) > 2 else run_dir.parent
+
+
+def _translation_root_for(run_dir: Path, fallback: Path) -> Path:
+    """The root ``/work/`` maps to for ``run_dir``: its recorded ``work_mount``
+    when the run dir lies under it, else ``fallback``. Translation only; the
+    recorded value is never a containment root."""
+    cfg = last_build_config(run_dir)
+    mount = cfg.get("work_mount") if cfg else None
+    if mount is None:
+        return fallback
+    try:
+        run_dir.resolve().relative_to(Path(mount).resolve())
+    except ValueError, OSError:
+        return fallback
+    return Path(mount)
 
 
 def _emit_triage_json(
@@ -378,9 +395,12 @@ def triage(
     # of scraping kas.log. Absent artifact (or no recorded failures) falls
     # through to the kas.log analysis below.
     structured = _read_structured_failures(run_dir)
+    translate_root = _translation_root_for(run_dir, translation_workspace)
     if output_json and structured:
         f0 = structured[0]
-        log = read_failure_log(f0.get("logfile"), translation_workspace, _extra_log_roots())
+        log = read_failure_log(
+            f0.get("logfile"), translation_workspace, _extra_log_roots(), translate_root=translate_root
+        )
         _emit_triage_json(
             run_dir.name,
             f"{f0.get('recipe')}:{f0.get('task')}",
@@ -392,10 +412,12 @@ def triage(
         )
         return
     if structured:
-        _print_structured_failures(structured, translation_workspace, _extra_log_roots())
+        _print_structured_failures(structured, translation_workspace, _extra_log_roots(), translate_root)
         return
 
-    report = analyse(run_dir, report_root)
+    # analyse translates against report_root, so that is the fallback a run
+    # without a record keeps; a recorded mount root replaces it.
+    report = analyse(run_dir, report_root, translate_root=_translation_root_for(run_dir, report_root))
     if output_json:
         _emit_triage_json(
             run_dir.name,
