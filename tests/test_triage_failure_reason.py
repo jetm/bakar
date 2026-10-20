@@ -125,7 +125,18 @@ def test_cli_json_error_line_run(runner: _CliRunner, tmp_path: Path, monkeypatch
     doc = _triage_json(runner, tmp_path, monkeypatch)
     assert doc["failing_step"] == "kas_build"
     assert doc["fail_reason"] == ERROR_LINE
-    assert set(doc) == {"version", "run_id", "failing_step", "fail_reason", "recipe_log", "suggestions"}
+    assert set(doc) == {
+        "version",
+        "run_id",
+        "failing_step",
+        "fail_reason",
+        "recipe_log",
+        "recipe_log_tail",
+        "recipe_log_note",
+        "suggestions",
+    }
+    assert doc["recipe_log_tail"] == []
+    assert doc["recipe_log_note"] is None
 
 
 def test_cli_text_stopped_run(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

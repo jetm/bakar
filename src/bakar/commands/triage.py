@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -24,18 +25,18 @@ from bakar.commands._helpers import (
 )
 from bakar.config import meta_avocado_build_dir_name, worktree_build_template
 from bakar.diagnostics import markup_safe
+from bakar.log_text import clean_line
 from bakar.observability import STOPPED_STEP, last_run_event
 from bakar.release_workspace import ReleaseRoutingError
-from bakar.triage import analyse, is_build_failure_event, tail_lines, translate_container_path
+from bakar.triage import analyse, is_build_failure_event, read_failure_log
 from bakar.user_config import load_user_config
 
 _BITBAKE_EVENTS_FILENAME = "bitbake-events.json"
 
-# Tail length for the structured logfile excerpt. Reuses the same count
-# analyse()/tail_lines() applies to the kas.log / recipe-log excerpts today
-# (bakar.triage.tail_lines default and the n=60 call sites) so the structured
-# path renders the same amount of context as the legacy fallback.
-_LOGFILE_EXCERPT_LINES = 60
+_LOG_NOTES = {
+    "outside": "logfile outside workspace, not read",
+    "unreadable": "logfile unreadable on host",
+}
 
 
 def _run_has_failure(run_dir: Path) -> bool:
@@ -77,37 +78,38 @@ def _read_structured_failures(run_dir: Path) -> list[dict] | None:
     return [f for f in failures if isinstance(f, dict)]
 
 
-def _print_structured_failures(failures: list[dict], workspace: Path) -> None:
-    """Render the structured failure records, resolving each container
-    ``logfile`` to a host path via the shared ``translate_container_path``
-    helper before reading its tail.
+def _extra_log_roots() -> list[Path]:
+    """Roots besides the workspace that hold task logs on this host."""
+    base = load_user_config().local_tmpdir_base
+    return [Path(os.path.abspath(os.path.expanduser(base)))] if base else []
+
+
+def _print_structured_failures(failures: list[dict], workspace: Path, extra_roots: list[Path]) -> None:
+    """Render the structured failure records, reading each task log through
+    ``read_failure_log`` (container-path translation, containment, tail and
+    hints).
     """
     for failure in failures:
         recipe = failure.get("recipe") or "?"
         task = failure.get("task") or "?"
         console.print(f"[red]✗[/] recipe [bold]{recipe}[/] task [bold]{task}[/] failed")
 
-        logfile = failure.get("logfile")
-        if not logfile:
-            continue
-        host_path = Path(translate_container_path(str(logfile), workspace))
-        # Containment guard: logfile comes from bitbake-events.json, which a
-        # crafted artifact could point at a host file outside the build tree
-        # (e.g. a secret). Only read paths that resolve under the workspace.
-        try:
-            host_path.resolve().relative_to(workspace.resolve())
-        except ValueError, OSError:
-            console.print(f"[dim]logfile outside workspace, not read: {host_path}[/]")
-            continue
-        tail = tail_lines(host_path, _LOGFILE_EXCERPT_LINES)
-        if not tail:
-            console.print(f"[dim]logfile (unreadable on host): {host_path}[/]")
-            continue
-        console.print(f"[bold]task log:[/] {host_path}")
-        console.print(f"[dim]{host_path.name} (tail):[/]")
-        for line in tail:
-            sys.stderr.write(f"  {line.rstrip()}\n")
-        sys.stderr.flush()
+        log = read_failure_log(failure.get("logfile"), workspace, extra_roots)
+        if log.state == "outside":
+            console.print(f"[dim]logfile outside workspace, not read: {log.path}[/]")
+        elif log.state == "unreadable":
+            console.print(f"[dim]logfile (unreadable on host): {log.path}[/]")
+        elif log.state == "read":
+            assert log.path is not None
+            console.print(f"[bold]task log:[/] {log.path}")
+            console.print(f"[dim]{log.path.name} (tail):[/]")
+            for line in log.tail:
+                sys.stderr.write(f"  {line.rstrip()}\n")
+            sys.stderr.flush()
+            if log.suggestions:
+                console.print("[cyan]suggestions:[/]")
+                for s in log.suggestions:
+                    console.print(f"  - {s}")
 
 
 def _resolve_triage_dirs(
@@ -247,6 +249,9 @@ def _emit_triage_json(
     fail_reason: str | None,
     recipe_log: str | None,
     suggestions: list[str],
+    *,
+    recipe_log_tail: list[str],
+    recipe_log_note: str | None,
 ) -> None:
     doc = {
         "version": 1,
@@ -254,6 +259,8 @@ def _emit_triage_json(
         "failing_step": failing_step,
         "fail_reason": fail_reason,
         "recipe_log": recipe_log,
+        "recipe_log_tail": [text for raw in recipe_log_tail if (text := clean_line(raw))],
+        "recipe_log_note": recipe_log_note,
         "suggestions": suggestions,
     }
     typer.echo(json.dumps(doc, indent=2))
@@ -380,13 +387,19 @@ def triage(
     structured = _read_structured_failures(run_dir)
     if output_json and structured:
         f0 = structured[0]
-        logfile = f0.get("logfile")
+        log = read_failure_log(f0.get("logfile"), translation_workspace, _extra_log_roots())
         _emit_triage_json(
-            run_dir.name, f"{f0.get('recipe')}:{f0.get('task')}", None, str(logfile) if logfile else None, []
+            run_dir.name,
+            f"{f0.get('recipe')}:{f0.get('task')}",
+            None,
+            str(log.path) if log.path else None,
+            list(log.suggestions),
+            recipe_log_tail=log.tail,
+            recipe_log_note=_LOG_NOTES.get(log.state),
         )
         return
     if structured:
-        _print_structured_failures(structured, translation_workspace)
+        _print_structured_failures(structured, translation_workspace, _extra_log_roots())
         return
 
     report = analyse(run_dir, report_root)
@@ -397,6 +410,8 @@ def triage(
             report.fail_reason,
             str(report.recipe_log) if report.recipe_log else None,
             list(report.suggestions),
+            recipe_log_tail=report.recipe_log_tail,
+            recipe_log_note=None,
         )
         return
 

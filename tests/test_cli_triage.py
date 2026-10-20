@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from bakar.cli import app
+from bakar.user_config import load_user_config
 from tests.conftest import SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG
 
 if TYPE_CHECKING:
@@ -260,7 +261,9 @@ def test_triage_json_structured_failing_run(
     assert doc["run_id"] == "20260529-120000"
     assert doc["failing_step"] == "linux-imx:do_compile"
     assert doc["fail_reason"] is None
-    assert doc["recipe_log"] == "/work/build/tmp/log/linux-imx.log"
+    assert doc["recipe_log"] == str(workspace) + "/build/tmp/log/linux-imx.log"
+    assert doc["recipe_log_tail"] == []
+    assert doc["recipe_log_note"] == "logfile unreadable on host"
     assert doc["suggestions"] == []
 
 
@@ -391,3 +394,192 @@ def test_triage_kas_yaml_reads_the_runs_next_to_that_yaml(
     assert "triage 20260301-000000" in result.output
     assert "20260901-000000" not in result.output
     assert "kas-build" in result.output
+
+
+EIGHT_KEYS = {
+    "version",
+    "run_id",
+    "failing_step",
+    "fail_reason",
+    "recipe_log",
+    "recipe_log_tail",
+    "recipe_log_note",
+    "suggestions",
+}
+DISK_FULL_LINE = "ERROR: No space left on device"
+TASK_LOG_REL = "build/tmp/work/x/temp/log.do_compile.1"
+
+
+def _write_structured(workspace: Path, logfile: str | None) -> Path:
+    import json
+
+    run = workspace / "nxp" / "build" / "runs" / "20260529-120000"
+    if not run.exists():
+        _make_run(workspace, "20260529-120000", SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG)
+    failure = {"recipe": "x", "task": "do_compile", "logfile": logfile, "errprinted": True}
+    (run / "bitbake-events.json").write_text(json.dumps({"failures": [failure]}))
+    return run
+
+
+def _write_task_log(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"line {i}" for i in range(1, 70)]
+    lines[9] = "before \x1b[31mred\x1b[0m after"
+    lines[19] = "x" * 500
+    lines.append(DISK_FULL_LINE)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _write_user_config(base: Path) -> None:
+    import os
+    from pathlib import Path as _Path
+
+    cfg = _Path(os.environ["HOME"]) / ".config" / "bakar" / "config.toml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(f'[build]\nlocal_tmpdir_base = "{base}"\n')
+
+
+def _json(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
+    monkeypatch.chdir(workspace)
+    result = runner.invoke(app, ["triage", "--json"])
+    assert result.exit_code == 0, result.output
+    return _parse_json_output(result.output)
+
+
+def test_triage_json_structured_task_log_tail(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    _write_structured(workspace, "/work/" + TASK_LOG_REL)
+    _write_task_log(workspace / TASK_LOG_REL)
+
+    doc = _json(runner, workspace, monkeypatch)
+
+    assert doc["recipe_log"] == str(workspace / TASK_LOG_REL)
+    tail = doc["recipe_log_tail"]
+    assert len(tail) <= 60
+    assert tail[-1] == DISK_FULL_LINE
+    assert not any("\x1b" in line for line in tail)
+    assert all(len(line) <= 200 for line in tail)
+    assert doc["recipe_log_note"] is None
+    assert any("Disk full" in s for s in doc["suggestions"])
+    assert doc["fail_reason"] is None
+    assert set(doc) == EIGHT_KEYS
+
+
+def test_triage_json_structured_outside_log_not_read(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "ws").mkdir()
+    workspace = _make_workspace(tmp_path / "ws")
+    outside = tmp_path / "outside.log"
+    outside.write_text("secret-token-123\n")
+    _write_structured(workspace, str(outside))
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage", "--json"])
+
+    assert result.exit_code == 0, result.output
+    doc = _parse_json_output(result.output)
+    assert doc["recipe_log_tail"] == []
+    assert doc["recipe_log_note"] == "logfile outside workspace, not read"
+    assert "secret-token-123" not in result.output
+
+
+def test_triage_json_structured_no_logfile(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = _make_workspace(tmp_path)
+    _write_structured(workspace, None)
+
+    doc = _json(runner, workspace, monkeypatch)
+
+    assert doc["recipe_log"] is None
+    assert doc["recipe_log_tail"] == []
+    assert doc["recipe_log_note"] is None
+
+
+def test_triage_local_tmpdir_base_log_is_read(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "ws").mkdir()
+    workspace = _make_workspace(tmp_path / "ws")
+    node_tmp = tmp_path / "node-tmp"
+    node_log = node_tmp / "work" / "log.do_compile.1"
+    node_log.parent.mkdir(parents=True)
+    node_log.write_text(f"noise\n{DISK_FULL_LINE}\n")
+    outside = tmp_path / "outside.log"
+    outside.write_text("secret-token-123\n")
+    _write_user_config(node_tmp)
+    monkeypatch.setattr("bakar.commands.triage.load_user_config", load_user_config)
+
+    _write_structured(workspace, str(node_log))
+    doc = _json(runner, workspace, monkeypatch)
+    assert doc["recipe_log_tail"][-1:] == [DISK_FULL_LINE]
+    assert doc["recipe_log_note"] is None
+
+    result = runner.invoke(app, ["triage"])
+    assert result.exit_code == 0, result.output
+    assert "task log:" in result.output
+    assert DISK_FULL_LINE in result.output
+
+    _write_structured(workspace, str(outside))
+    doc = _json(runner, workspace, monkeypatch)
+    assert doc["recipe_log_tail"] == []
+    assert doc["recipe_log_note"] == "logfile outside workspace, not read"
+
+
+def test_triage_text_structured_task_log(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bakar.commands._app import console
+
+    monkeypatch.setattr(console, "_width", 400)
+    workspace = _make_workspace(tmp_path)
+    _write_structured(workspace, "/work/" + TASK_LOG_REL)
+    _write_task_log(workspace / TASK_LOG_REL)
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage"])
+
+    assert result.exit_code == 0, result.output
+    assert "task log:" in result.output
+    assert DISK_FULL_LINE in result.output
+    assert "suggestions:" in result.output
+    assert "Disk full" in result.output
+
+
+def test_triage_text_structured_outside_log_not_read(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar.commands._app import console
+
+    monkeypatch.setattr(console, "_width", 400)
+    (tmp_path / "ws").mkdir()
+    workspace = _make_workspace(tmp_path / "ws")
+    outside = tmp_path / "outside.log"
+    outside.write_text("secret-token-123\n")
+    _write_structured(workspace, str(outside))
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(app, ["triage"])
+
+    assert result.exit_code == 0, result.output
+    assert "logfile outside workspace, not read" in result.output
+    assert "secret-token-123" not in result.output
+
+
+def test_triage_json_fallback_carries_recipe_log_tail(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    _make_run(
+        workspace,
+        "20260529-120000",
+        SAMPLE_EVENTS_JSONL,
+        SAMPLE_KAS_LOG + f"\nERROR: Logfile of failure stored in: /work/{TASK_LOG_REL}\n",
+    )
+    _write_task_log(workspace / TASK_LOG_REL)
+
+    doc = _json(runner, workspace, monkeypatch)
+
+    assert doc["recipe_log"] == str(workspace / TASK_LOG_REL)
+    assert doc["recipe_log_tail"][-1] == DISK_FULL_LINE
+    assert not any("\x1b" in line for line in doc["recipe_log_tail"])
+    assert doc["recipe_log_note"] is None
