@@ -346,3 +346,66 @@ def test_failed_classification_leaves_no_probe_behind(tmp_path: Path, reuse: Non
         _build(tmp_path, ws, entry, [user])
 
     assert _probe_leftovers(_cfg(ws, entry)) == []
+
+
+# ---------------------------------------------------------------------------
+# An overlay naming meta-avocado itself keeps the build on the checkout
+# ---------------------------------------------------------------------------
+
+
+def _own_repo_checkout(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Return the entry, an overlay naming ``meta-avocado`` with one more layer, and the checkout."""
+    entry, feature = _checkout(tmp_path, {}, {"meta-avocado": {"path": "meta-avocado", "layers": {"meta-extra": None}}})
+    assert feature is not None
+    return entry, feature, entry.parents[2]
+
+
+def test_overlay_naming_the_own_repo_keeps_the_checkout_under_reuse(tmp_path: Path, reuse: None) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    entry, feature, checkout = _own_repo_checkout(tmp_path)
+
+    dumped = _build(tmp_path, ws, entry, [feature])
+
+    own = dumped["repos"]["meta-avocado"]
+    assert own["path"] == str(checkout.resolve())
+    assert {"meta-x", "meta-extra"} <= set(own["layers"])
+    assert _probe_leftovers(_cfg(ws, entry)) == []
+
+
+def test_overlay_naming_the_own_repo_cannot_swap_in_the_workspace_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "kas")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    entry, feature, checkout = _own_repo_checkout(tmp_path)
+    clone = ws / "meta-avocado"
+    _git(ws, "clone", "-q", str(checkout), str(clone))
+    # A clone whose entry file differs exposes a dump that reads it instead of the checkout.
+    _write(
+        clone / "kas" / "machine" / "m.yml",
+        {"repos": {"meta-avocado": {"path": "meta-avocado", "layers": {"meta-shared": None}}}},
+    )
+
+    dumped = _build(tmp_path, ws, entry, [feature])
+
+    own = dumped["repos"]["meta-avocado"]
+    assert own["path"] == str(checkout.resolve())
+    assert {"meta-x", "meta-extra"} <= set(own["layers"])
+    assert "meta-shared" not in own["layers"]
+
+
+def test_overlay_naming_the_own_repo_in_the_workspace_clone_adds_no_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BAKAR_REPO_POLICY", raising=False)
+    ws = tmp_path / "src"
+    entry, feature, _ = _own_repo_checkout(tmp_path)
+
+    dumped = _build(tmp_path, ws, entry, [feature])
+
+    own = dumped["repos"]["meta-avocado"]
+    assert own["path"] == "meta-avocado"
+    assert {"meta-x", "meta-extra"} <= set(own["layers"])
+    assert not (_cfg(ws, entry).bsp_root / "avocado-pin.yml").exists()
