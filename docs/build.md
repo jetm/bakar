@@ -541,11 +541,13 @@ generated wrapper declares `meta-avocado` at the checkout's absolute path, so
 kas reads your checkout and not the workspace's own `meta-avocado`. An overlay
 that names `meta-avocado` itself, as `kas/feature/tpm.yml` does to add a layer,
 cannot move it: when the checkout is not the workspace's own clone, bakar
-merges a one-line pin of the checkout after the last overlay, in the build's
-dump and in the dump that reads the release, and the layers the overlay adds
-still apply. The build host runs its own bakar, so a host needs this version
-before a dispatch of such an overlay benefits. A routed
-path that does not exist stops the build with exit 2 before any kas command
+merges a small pin file, which declares only the checkout's path, after the last
+overlay in the build's dump, and the layers the overlay adds still apply. The
+reuse policy's classification dump merges the same pin whenever it merges
+overlays; the dump that reads the release merges none and needs none. The build
+host runs its own bakar, so a host needs this version before a dispatch of such
+an overlay benefits. A routed path that does not exist stops the build with exit 2
+before any kas command
 runs. With no mapping for the release, a local build resolves its workspace as
 before: the parent of the `meta-avocado` main checkout. `-w` always wins.
 
