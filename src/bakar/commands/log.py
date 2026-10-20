@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, BinaryIO
 
 import typer
 
@@ -20,12 +20,55 @@ from bakar.commands._helpers import (
     _resolve_workspace,
 )
 from bakar.config import BSPSpec, ResolveRequest, resolve
+from bakar.output_mode import stdout_reader_gone
 
 _LOG_FILES: dict[str, str] = {
     "kas": "kas.log",
     "console": "console.log",
     "events": "events.jsonl",
 }
+
+
+_FIRST_WINDOW = 65536
+
+
+def _last_lines(fh: BinaryIO, n: int, max_bytes: int = 8 * 1024 * 1024) -> tuple[list[bytes], bool]:
+    """Return the last ``n`` lines of ``fh`` and whether ``max_bytes`` cut them short.
+
+    Reads backwards from the end in a window that starts at 64 KiB and doubles
+    until it holds ``n + 1`` newlines, reaches the start of the file, or reaches
+    ``max_bytes``, so the cost tracks the lines asked for, not the log size (a
+    mid-build kas.log can be hundreds of MiB). A window that starts past offset 0
+    begins mid-line, and that partial first line is dropped. The flag is True
+    only when the window stopped at ``max_bytes`` holding fewer than ``n``
+    complete lines. ``fh`` is left at the end-of-file offset measured on entry,
+    so a follower resumes exactly where the read ended.
+    """
+    fh.seek(0, os.SEEK_END)
+    size = fh.tell()
+    start = max(0, size - min(_FIRST_WINDOW, max_bytes))
+    fh.seek(start)
+    data = fh.read(size - start)
+    while start > 0 and data.count(b"\n") < n + 1 and len(data) < max_bytes:
+        new_start = max(0, size - min(len(data) * 2, max_bytes))
+        fh.seek(new_start)
+        data = fh.read(start - new_start) + data
+        start = new_start
+    fh.seek(size)
+    lines = data.splitlines(keepends=True)
+    if start > 0 and lines:
+        lines = lines[1:]
+    truncated = start > 0 and len(data) >= max_bytes and len(lines) < n
+    return (lines[-n:] if n > 0 else []), truncated
+
+
+def _silence_stdout() -> None:
+    """Point fd 1 at /dev/null so interpreter shutdown cannot flush into a dead reader."""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 1)
+    finally:
+        os.close(devnull)
 
 
 def _tail_follow(path: Path, history_lines: int = 40) -> None:
@@ -35,29 +78,29 @@ def _tail_follow(path: Path, history_lines: int = 40) -> None:
     so if the build is between writes when the user opens the tail, the
     screen stays blank. Emit a chunk of recent history first (matches
     `tail -f` default behavior) so `bakar log` is useful mid-run.
+
+    Returns once nothing reads stdout any more - a consumer that quit, or an
+    ssh client that died - rather than idling on a quiet log forever.
     """
     with path.open("rb") as fh:
-        # Read only the last block instead of the whole file: a mid-build
-        # kas.log can be hundreds of MiB, and we only need the last N lines
-        # before following.
-        block = 65536
-        fh.seek(0, os.SEEK_END)
-        size = fh.tell()
-        fh.seek(max(0, size - block))
-        lines = fh.read().splitlines(keepends=True)
-        if size > block and lines:
-            # Drop the leading partial line left by the block boundary.
-            lines = lines[1:]
-        for line in lines[-history_lines:]:
-            sys.stdout.write(line.decode("utf-8", errors="replace"))
-        sys.stdout.flush()
-        while True:
-            line = fh.readline()
-            if line:
+        lines, _truncated = _last_lines(fh, history_lines)
+        try:
+            for line in lines:
                 sys.stdout.write(line.decode("utf-8", errors="replace"))
-                sys.stdout.flush()
-            else:
-                time.sleep(0.2)
+            sys.stdout.flush()
+            while True:
+                line = fh.readline()
+                if line:
+                    sys.stdout.write(line.decode("utf-8", errors="replace"))
+                    sys.stdout.flush()
+                elif stdout_reader_gone():
+                    _silence_stdout()
+                    return
+                else:
+                    time.sleep(0.2)
+        except BrokenPipeError:
+            _silence_stdout()
+            return
 
 
 def _resolve_run_dir(runs_dir: Path, run: str | None) -> Path:

@@ -9,6 +9,7 @@ violation (``steps/`` cannot import ``commands/``).
 
 from __future__ import annotations
 
+import select
 from enum import StrEnum
 
 
@@ -49,3 +50,26 @@ def resolve_output_mode(
     if not isatty or _ci_env_is_truthy(ci_env):
         return OutputMode.PLAIN
     return OutputMode.RICH
+
+
+def stdout_reader_gone(fd: int = 1) -> bool:
+    """Return True when nothing is left to read what ``fd`` writes.
+
+    The write end of a pipe or socket reports ``POLLERR``/``POLLHUP`` once its
+    reader closes, so a follower idling on a quiet log can notice a consumer
+    that quit (``| head``) or an ssh client that died without writing a probe
+    byte into the stream. Terminals, regular files and ``/dev/null`` keep
+    reporting writable and are never "gone". Returns False where the platform
+    has no ``poll`` or the descriptor cannot be polled.
+    """
+    poll_factory = getattr(select, "poll", None)
+    if poll_factory is None:
+        return False
+    try:
+        poller = poll_factory()
+        poller.register(fd, select.POLLOUT)
+        events = poller.poll(0)
+    except OSError, ValueError:
+        return False
+    gone = select.POLLERR | select.POLLHUP | select.POLLNVAL
+    return any(mask & gone for _fd, mask in events)
