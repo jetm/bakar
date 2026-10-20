@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from bakar import bsp_detect
+from bakar.gitutil import git_stdout
 from bakar.release_workspace import ReleaseRoutingError, release_key_from_merged
 
 if TYPE_CHECKING:
@@ -41,6 +42,12 @@ _DUMP_TIMEOUT_S = 120
 _OWN_REPO = "meta-avocado"
 # Name prefix of the throwaway wrapper written into a build's bsp_root.
 PROBE_PREFIX = ".reuse-probe-"
+# Appended when kas's error names a path under the throwaway KAS_WORK_DIR: only a
+# repository declared by a relative path resolves there, since the dump clones nothing.
+_WORK_DIR_HINT = (
+    " - kas resolved a repository path against bakar's empty work directory, "
+    "so a kas file in the merged stack declares a repository by a relative path"
+)
 
 
 def _dump_argv(wrapper: Path, extras: Sequence[Path] = ()) -> list[str]:
@@ -113,6 +120,17 @@ def _first_error_line(stderr: str) -> str:
     return lines[0] if lines else "(no stderr)"
 
 
+def _failure_context(checkout: Path, extra_files: Sequence[Path]) -> str:
+    """Return `` (overlays: ...; checkout at ...)`` for a failed dump, or "" when neither is known."""
+    parts: list[str] = []
+    if extra_files:
+        parts.append("overlays: " + ", ".join(extra.name for extra in extra_files))
+    head = git_stdout(checkout, "rev-parse", "HEAD")
+    if head:
+        parts.append(f"checkout at {head.strip()[:12]}")
+    return f" ({'; '.join(parts)})" if parts else ""
+
+
 def _run_dump(
     kas_yaml: Path, wrapper: Path, extras: Sequence[Path], *, cwd: Path, work_dir: str
 ) -> subprocess.CompletedProcess[str]:
@@ -173,6 +191,7 @@ def read_merged_config(
     text = bsp_detect.meta_avocado_wrapper_text(checkout, kas_yaml)
     pin_text = bsp_detect.meta_avocado_pin_text(checkout) if extra_files else None
     with tempfile.TemporaryDirectory(prefix="bakar-kas-pins-work-") as work_dir:
+        work_dir_names = {work_dir, os.path.realpath(work_dir)}
         if wrap_parent is None:
             with tempfile.TemporaryDirectory(prefix="bakar-kas-pins-") as wrap_dir:
                 wrapper = Path(wrap_dir) / "avocado-wrapper.yml"
@@ -217,7 +236,9 @@ def read_merged_config(
                 "the release cannot be read without fetching them"
             )
         line = _first_error_line(out.stderr).replace(str(wrapper), str(kas_yaml))
-        raise ReleaseRoutingError(f"kas dump of {kas_yaml} failed: {line}")
+        context = _failure_context(checkout, extra_files)
+        hint = _WORK_DIR_HINT if any(w in line for w in work_dir_names) else ""
+        raise ReleaseRoutingError(f"kas dump of {kas_yaml}{context} failed: {line}{hint}")
 
     try:
         config = yaml.safe_load(out.stdout)

@@ -11,9 +11,15 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from bakar import bsp_detect
+from bakar import bsp_detect, gitutil
 from bakar.release_workspace import ReleaseRoutingError
 from bakar.steps import kas_pins
+
+
+@pytest.fixture(autouse=True)
+def _no_git_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A patched subprocess.run would otherwise also answer the failure path's git lookup.
+    monkeypatch.setattr(kas_pins, "git_stdout", lambda *_args, **_kwargs: None)
 
 
 def _layout(tmp_path: Path) -> tuple[Path, Path]:
@@ -525,3 +531,141 @@ def test_real_kas_pinfile_leaves_an_unrelated_overlay_unchanged(tmp_path: Path) 
     assert proc.returncode == 0, err_path.read_text()
     assert merged == yaml.safe_load(out_path.read_text())
     assert merged["local_conf_header"]["pinfile-test"] == 'FOO = "1"\n'
+
+
+# ---------------------------------------------------------------------------
+# Failure context: overlays, checkout revision and the work-dir hint
+# ---------------------------------------------------------------------------
+
+_LINE = "2026-10-15 - ERROR    - Unknown config key: frobnicate"
+
+
+def _extras(tmp_path: Path, *names: str) -> list[Path]:
+    out = []
+    for name in names:
+        path = tmp_path / "overlays" / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("header:\n  version: 16\n")
+        out.append(path)
+    return out
+
+
+def _fails(stderr: str):
+    """Stand-in for a failed dump; ``_Recorder`` cannot read a stack of files from one argument."""
+
+    def run(argv, **_kwargs):
+        return subprocess.CompletedProcess(argv, 1, "", stderr)
+
+    return run
+
+
+def _failure(kas_yaml: Path, checkout: Path, rec, **kwargs) -> str:
+    with patch.object(kas_pins.subprocess, "run", rec), pytest.raises(ReleaseRoutingError) as exc:
+        kas_pins.read_merged_config(kas_yaml, checkout=checkout, **kwargs)
+    return str(exc.value)
+
+
+def test_failure_context_names_overlays_and_checkout_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    extras = _extras(tmp_path, "bakar-tuning.yml", "feature-a.yml")
+    h = "0123456789abcdef0123456789abcdef01234567"
+    seen: list[tuple] = []
+
+    def fake_git(*args, **_kwargs):
+        seen.append(args)
+        return h + "\n"
+
+    monkeypatch.setattr(kas_pins, "git_stdout", fake_git)
+    rec = _fails(f"2026-10-15 - INFO     - kas 5.5 started\n{_LINE}\n")
+
+    message = _failure(kas_yaml, checkout, rec, extra_files=extras)
+
+    assert message == (
+        f"kas dump of {kas_yaml} (overlays: bakar-tuning.yml, feature-a.yml; checkout at {h[:12]}) failed: {_LINE}"
+    )
+    assert seen == [(checkout, "rev-parse", "HEAD")]
+
+
+def test_failure_context_is_empty_without_extras_or_revision(tmp_path: Path) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    rec = _fails(f"{_LINE}\n")
+
+    assert _failure(kas_yaml, checkout, rec) == f"kas dump of {kas_yaml} failed: {_LINE}"
+
+
+def test_failure_context_names_overlays_without_revision(tmp_path: Path) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    extras = _extras(tmp_path, "bakar-tuning.yml", "feature-a.yml")
+    rec = _fails(f"{_LINE}\n")
+
+    message = _failure(kas_yaml, checkout, rec, extra_files=extras)
+
+    assert message == f"kas dump of {kas_yaml} (overlays: bakar-tuning.yml, feature-a.yml) failed: {_LINE}"
+    assert "checkout at" not in message
+
+
+@pytest.mark.parametrize("in_build_dir", [True, False])
+def test_failure_context_hints_at_a_relative_repo_path(tmp_path: Path, in_build_dir: bool) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    bsp = tmp_path / "ws" / "build-m"
+    bsp.mkdir()
+    lines: list[str] = []
+
+    def run(argv, **kwargs):
+        work = kwargs["env"]["KAS_WORK_DIR"]
+        line = f"2026-10-15 - ERROR    - Configuration file not found: {work}/meta-avocado/kas/machine/m.yml"
+        lines.append(line)
+        return subprocess.CompletedProcess(argv, 1, "", f"{line}\n")
+
+    message = _failure(kas_yaml, checkout, run, wrap_parent=bsp if in_build_dir else None)
+
+    (line,) = lines
+    assert f"failed: {line}" in message
+    assert message.endswith(
+        " - kas resolved a repository path against bakar's empty work directory, "
+        "so a kas file in the merged stack declares a repository by a relative path"
+    )
+
+
+def test_failure_context_gives_no_hint_when_the_line_names_no_work_dir(tmp_path: Path) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    rec = _fails("2026-10-15 - ERROR    - Configuration file not found: /elsewhere/m.yml\n")
+
+    message = _failure(kas_yaml, checkout, rec)
+
+    assert "empty work directory" not in message
+    assert message.endswith("Configuration file not found: /elsewhere/m.yml")
+
+
+@pytest.mark.parametrize("in_build_dir", [True, False])
+def test_failure_context_replaces_the_wrapper_path_with_kas_yaml(tmp_path: Path, in_build_dir: bool) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    bsp = tmp_path / "ws" / "build-m"
+    bsp.mkdir()
+
+    def run(argv, **_kwargs):
+        wrapper = argv[-1].split(":")[0]
+        return subprocess.CompletedProcess(argv, 1, "", f"2026-10-15 - ERROR    - Bad file: {wrapper}\n")
+
+    message = _failure(kas_yaml, checkout, run, wrap_parent=bsp if in_build_dir else None)
+
+    assert message == f"kas dump of {kas_yaml} failed: 2026-10-15 - ERROR    - Bad file: {kas_yaml}"
+
+
+@pytest.mark.skipif(shutil.which("kas") is None, reason="kas is not on PATH")
+def test_failure_context_real_kas_names_overlay_and_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kas_pins, "git_stdout", gitutil.git_stdout)
+    checkout, entry = _real_checkout(tmp_path)
+    overlay = tmp_path / "overlay-missing.yml"
+    overlay.write_text("header:\n  version: 16\n  includes:\n    - kas/feature/missing.yml\n")
+    head = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    with pytest.raises(ReleaseRoutingError) as exc:
+        kas_pins.read_merged_config(entry, checkout=checkout, extra_files=[overlay])
+
+    message = str(exc.value)
+    assert overlay.name in message
+    assert f"checkout at {head[:12]}" in message
+    assert "Configuration file not found" in message
