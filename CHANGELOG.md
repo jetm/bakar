@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `build_paths` run event records the build TMPDIR and sstate path, so `--detail` can measure the right filesystems. Runs from before this version have no sstate path and report it as null.
 - `bakar stop` records a stop request before it signals a live build, so a stopped run reads `failed` with failure step `stopped` instead of looking like an ordinary failure.
 - The failing step event records the first error line the build printed, so `bakar status` and `bakar triage` can report why a run failed when no task is named.
+- The doctor step records the blocking checks, as `<check>: <message>` joined by a semicolon and a space, on its failing step event, so `bakar status` and `bakar triage` name the check that refused a build instead of `blocking failure`.
 
 ### Changed
 
@@ -34,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bakar status`, `wait` and `triage` with `--on HOST` continue with a warning when the remote is the same bakar version with a different content hash, and no longer suggest a `--yes` flag they do not have. A different version still refuses.
 - `bakar triage` accepts a detached unit name and resolves it to the unit's latest registered run, naming the pick on stderr.
 - Builds launched inside a `systemd-run --scope` no longer have `${VAR}` and `$$` in their command rewritten by systemd.
+- `bakar triage` prints a recorded failure reason with its square-bracketed text, and no longer aborts on a reason that holds a closing tag with no opening tag.
 
 ### Changed
 

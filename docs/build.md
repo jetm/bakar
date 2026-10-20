@@ -91,6 +91,7 @@ code 2. Like the other globals they go before the subcommand:
 output only for build-blocking issues. Set `[build] show_doctor_report = false`
 for the same effect on every invocation. Doctor checks always run - a blocking
 failure aborts the build whether or not the report is shown.
+The run records which checks blocked it, so `bakar status --json` shows them in `failure.error`.
 
 A workspace on an NFS mount is one such blocking failure, whatever the
 `TMPDIR` is: building through NFS is not supported, so move the workspace to a

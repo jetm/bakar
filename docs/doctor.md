@@ -62,6 +62,10 @@ confirmed. A peer-held result ends its message with `(marker <path>)`, and a pee
 unattributable result names the lock marker file in its fix hint. When no build runs on any node, delete that marker and the
 `bitbake.lock` beside it by hand, then re-run `bakar doctor`.
 
+## When a check blocks a build
+
+A build the doctor step refuses records the failed blocking checks, as `<check>: <message>` joined by a semicolon and a space, in `failure.error` of `bakar status --json` and `fail_reason` of `bakar triage --json`, within 200 characters. Several failing checks share that bound, and a shortened entry ends with `...`. The event's reason stays `blocking failure`; the cause is in its `error`, which is what `failure.error` and `fail_reason` show. The complete report is `diagnosis.txt` in the run directory, and `bakar doctor` prints every check in full.
+
 ## NFS cache-mount readiness
 
 `cache-mounts` is the first check in every doctor run, in every mode - it is
