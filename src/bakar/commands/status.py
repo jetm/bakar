@@ -22,7 +22,7 @@ from click.exceptions import Exit as ClickExit
 from bakar import detach_records, observability
 from bakar.build_stop import is_build_running
 from bakar.commands._app import app, console
-from bakar.commands._helpers import WorkspaceOption, _find_run
+from bakar.commands._helpers import WorkspaceOption, _find_run, _find_workspace_from_cwd
 from bakar.commands._status_detail import build_detail, detail_lines
 from bakar.commands.monitor import _build_progress
 from bakar.commands.triage import _read_structured_failures, _resolve_triage_dirs
@@ -272,6 +272,11 @@ def _resolve(handle: str | None, workspace: Path | None) -> _Resolved | None:
     run_id: str | None = None
     run_dir: Path | None = None
     by_unit = False
+
+    # Outside any workspace, which is where `--on HOST` runs, the newest
+    # detached unit stands in for the missing handle; a workspace run always wins.
+    if handle is None and workspace is None and _find_workspace_from_cwd() is None:
+        handle = detach_records.newest_unit()
 
     if handle is not None and detach_records.is_unit_name(handle):
         unit = handle

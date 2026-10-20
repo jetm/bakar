@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -42,6 +43,10 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
     runs = tmp_path / "ws" / "build" / "runs"
     runs.mkdir(parents=True)
+    # cwd inside a workspace, so no-handle tests read the workspace run unless
+    # a test moves outside it.
+    (tmp_path / "ws" / ".bakar.toml").write_text("")
+    monkeypatch.chdir(tmp_path / "ws")
     monkeypatch.setattr(
         status_cmd, "_resolve_triage_dirs", lambda _kas, _ws: ([(runs, "generic")], tmp_path, "label", tmp_path)
     )
@@ -474,3 +479,69 @@ def test_unusable_runtime_dir_reports_unresolved_with_a_reason(env: Path, monkey
     result = CliRunner().invoke(app, ["status", UNIT])
     assert result.exit_code == 2
     assert "XDG_RUNTIME_DIR" in result.stderr
+
+
+OLDER_UNIT = "bakar-dispatch-20261019-110000-aaaaaa"
+NEWER_UNIT = "bakar-dispatch-20261019-100000-bbbbbb"
+
+
+def _outside(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    outside = env / "outside"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+
+def _finished_unit(env: Path, unit: str, mtime: float) -> None:
+    _sentinel(env, 0, unit=unit)
+    os.utime(env / "runtime" / f"{unit}.log.rc", (mtime, mtime))
+
+
+def test_no_handle_outside_a_workspace_reports_the_newest_unit(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _outside(env, monkeypatch)
+    _finished_unit(env, OLDER_UNIT, 1_000_000)
+    _finished_unit(env, NEWER_UNIT, 2_000_000)
+    rec = status_cmd.compute_status(None)
+    assert rec is not None
+    assert (rec.unit, rec.state) == (NEWER_UNIT, "succeeded")
+
+
+def test_no_handle_inside_a_workspace_keeps_the_workspace_run(env: Path) -> None:
+    run = _run_dir(env)
+    _terminal(run, 0)
+    _finished_unit(env, NEWER_UNIT, 4_000_000_000)
+    rec = status_cmd.compute_status(None)
+    assert rec is not None
+    assert (rec.run_id, rec.unit) == (run.name, None)
+
+
+def test_no_handle_with_a_workspace_option_does_not_fall_back(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _run_dir(env)
+    _terminal(run, 0)
+    _outside(env, monkeypatch)
+    _finished_unit(env, NEWER_UNIT, 4_000_000_000)
+    rec = status_cmd.compute_status(None, workspace=env / "ws")
+    assert rec is not None
+    assert (rec.run_id, rec.unit) == (run.name, None)
+
+
+def test_no_handle_outside_a_workspace_without_units_resolves_to_nothing(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _outside(env, monkeypatch)
+    assert status_cmd.compute_status(None) is None
+
+
+def test_cli_no_handle_outside_a_workspace_reads_the_newest_unit(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _outside(env, monkeypatch)
+    missing = CliRunner().invoke(app, ["status", "--json"])
+    assert missing.exit_code == 2
+    assert "No run found for the current workspace" in missing.output
+
+    _finished_unit(env, OLDER_UNIT, 1_000_000)
+    _finished_unit(env, NEWER_UNIT, 2_000_000)
+    result = CliRunner().invoke(app, ["status", "--json"])
+    assert result.exit_code == 0
+    assert "Not inside a BSP workspace" not in result.output
+    payload = json.loads(result.stdout)
+    assert set(payload) == JSON_KEYS
+    assert (payload["unit"], payload["state"]) == (NEWER_UNIT, "succeeded")
