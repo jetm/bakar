@@ -30,6 +30,7 @@ _LOG_FILES: dict[str, str] = {
 
 
 _FIRST_WINDOW = 65536
+_DEFAULT_LINES = 40
 
 
 def _last_lines(fh: BinaryIO, n: int, max_bytes: int = 8 * 1024 * 1024) -> tuple[list[bytes], bool]:
@@ -157,6 +158,20 @@ def log_cmd(
             ),
         ),
     ] = None,
+    lines: Annotated[
+        int,
+        typer.Option(
+            "--lines",
+            help="Lines of history to print: before a follow starts, or the whole output with --no-follow.",
+        ),
+    ] = _DEFAULT_LINES,
+    follow: Annotated[
+        bool,
+        typer.Option(
+            "--follow/--no-follow",
+            help="Keep streaming new lines (default), or print the last --lines lines and exit.",
+        ),
+    ] = True,
 ) -> None:
     """Tail the latest bakar run's kas.log live. Use --run for a specific run, --which to pick a different log file.
 
@@ -171,6 +186,10 @@ def log_cmd(
     [--run R]`` runs on the host from its home directory, so it finds the run
     the host registered, and its stdout streams here until Ctrl-C.
     """
+    if lines < 1:
+        print("bakar log: --lines must be a positive integer", file=sys.stderr)
+        raise typer.Exit(code=2)
+
     if which not in _LOG_FILES:
         console.print(f"[red]invalid --which value[/]: {which!r} (expected one of: kas, console, events)")
         raise typer.Exit(code=2)
@@ -189,6 +208,10 @@ def log_cmd(
         options = ["--which", which]
         if run is not None:
             options += ["--run", run]
+        if lines != _DEFAULT_LINES:
+            options += ["--lines", str(lines)]
+        if not follow:
+            options.append("--no-follow")
         try:
             code = stream_on_host(on, "log", options, transport_exit=2)
         except KeyboardInterrupt:
@@ -201,7 +224,7 @@ def log_cmd(
         # would end with "Not inside a BSP workspace".
         registered = detach_records.run_dir_for_run(run) if run is not None else detach_records.newest_run_dir()
         if registered is not None and registered.is_dir():
-            _follow_run_dir(registered, which)
+            _follow_run_dir(registered, which, lines, follow)
             return
 
     family, _bsp, kas_yaml, manifest = _normalize_dispatch(kas_yaml, manifest)
@@ -220,11 +243,11 @@ def log_cmd(
         console.print("[red]no runs yet[/]; start one with `bakar build`")
         raise typer.Exit(code=1)
 
-    _follow_run_dir(_resolve_run_dir(runs_dir, run), which)
+    _follow_run_dir(_resolve_run_dir(runs_dir, run), which, lines, follow)
 
 
-def _follow_run_dir(run_dir: Path, which: str) -> None:
-    """Pick the ``--which`` log inside ``run_dir`` and follow it until interrupted."""
+def _follow_run_dir(run_dir: Path, which: str, lines: int = _DEFAULT_LINES, follow: bool = True) -> None:
+    """Pick the ``--which`` log inside ``run_dir``; print its tail, then follow it unless ``follow`` is False."""
     log_name = _LOG_FILES[which]
     target = run_dir / log_name
     if not target.is_file():
@@ -243,8 +266,22 @@ def _follow_run_dir(run_dir: Path, which: str) -> None:
             console.print(f"[red]log file not found[/]: {target}")
             raise typer.Exit(code=1)
 
+    if not follow:
+        print(f"showing {target}", file=sys.stderr)
+        with target.open("rb") as fh:
+            tail, limit_reached = _last_lines(fh, lines)
+        try:
+            sys.stdout.write(b"".join(tail).decode("utf-8", errors="replace"))
+            sys.stdout.flush()
+        except BrokenPipeError:
+            _silence_stdout()
+            return
+        if limit_reached:
+            print(f"bakar log: read limit reached, showing the last {len(tail)} lines", file=sys.stderr)
+        return
+
     console.print(f"[dim]following[/] {target}")
     try:
-        _tail_follow(target)
+        _tail_follow(target, history_lines=lines)
     except KeyboardInterrupt:
         raise typer.Exit(code=0) from None

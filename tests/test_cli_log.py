@@ -481,3 +481,144 @@ def test_on_host_invalid_which_exits_2_first(runner: CliRunner, monkeypatch: pyt
     assert result.exit_code == 2
     assert "invalid --which value" in result.stderr
     assert calls == []
+
+
+def _numbered_log(run_dir: Path, count: int, name: str = "kas.log", pad: int = 0) -> None:
+    (run_dir / name).write_text("".join(f"line {i:07d}{'x' * pad}\n" for i in range(1, count + 1)))
+
+
+def test_no_follow_prints_exactly_last_n_lines(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = _make_run_dir(tmp_path, "r1", {})
+    _numbered_log(run_dir, 100)
+    followed = _record_tail(monkeypatch)
+    monkeypatch.setattr(detach_records, "run_dir_for_run", lambda _r: run_dir)
+    monkeypatch.setattr(log_module, "_find_workspace_from_cwd", lambda: None)
+
+    result = runner.invoke(app, ["log", "--run", "r1", "--lines", "5", "--no-follow"])
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.splitlines() == [f"line {i:07d}" for i in range(96, 101)]
+    assert f"showing {run_dir / 'kas.log'}" in result.stderr
+    assert followed == []
+
+
+def test_no_follow_more_lines_than_first_window(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = _make_run_dir(tmp_path, "r1", {})
+    _numbered_log(run_dir, 5000, pad=40)  # ~58 bytes/line, so 2000 lines > 64 KiB
+    monkeypatch.setattr(detach_records, "run_dir_for_run", lambda _r: run_dir)
+    monkeypatch.setattr(log_module, "_find_workspace_from_cwd", lambda: None)
+
+    result = runner.invoke(app, ["log", "--run", "r1", "--lines", "2000", "--no-follow"])
+
+    assert result.exit_code == 0, result.stderr
+    out = result.stdout.splitlines()
+    assert len(out) == 2000
+    assert out[0].startswith("line 0003001") and out[-1].startswith("line 0005000")
+
+
+def test_no_follow_read_limit_note(runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = _make_run_dir(tmp_path, "r1", {})
+    _numbered_log(run_dir, 200, pad=40)
+    monkeypatch.setattr(detach_records, "run_dir_for_run", lambda _r: run_dir)
+    monkeypatch.setattr(log_module, "_find_workspace_from_cwd", lambda: None)
+    real = log_module._last_lines
+    monkeypatch.setattr(log_module, "_last_lines", lambda fh, n: real(fh, n, max_bytes=1000))
+
+    result = runner.invoke(app, ["log", "--run", "r1", "--lines", "500", "--no-follow"])
+
+    assert result.exit_code == 0, result.stderr
+    out = result.stdout.splitlines()
+    assert 0 < len(out) < 200
+    assert all(line.startswith("line ") and line.endswith("x" * 40) for line in out)
+    assert f"bakar log: read limit reached, showing the last {len(out)} lines" in result.stderr
+
+
+def test_lines_below_one_exits_2_without_reading(
+    runner: CliRunner, nxp_workspace_with_run: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*_a, **_k):
+        raise AssertionError("log read despite invalid --lines")
+
+    monkeypatch.setattr(log_module, "_last_lines", _boom)
+    monkeypatch.setattr(log_module, "_tail_follow", _boom)
+    calls = _record_stream(monkeypatch)
+
+    for argv in (
+        ["log", "--lines", "0", "--workspace", str(nxp_workspace_with_run)],
+        ["log", "--lines", "-3", "--on", "pc3"],
+    ):
+        result = runner.invoke(app, argv)
+        assert result.exit_code == 2
+        assert "--lines" in result.stderr
+    assert calls == []
+
+
+def test_lines_passed_to_follower(
+    runner: CliRunner, nxp_workspace_with_run: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[int] = []
+
+    def _fake(path: Path, history_lines: int = 40) -> None:
+        seen.append(history_lines)
+
+    monkeypatch.setattr(log_module, "_tail_follow", _fake)
+
+    result = runner.invoke(app, ["log", "--lines", "100", "--workspace", str(nxp_workspace_with_run)])
+
+    assert result.exit_code == 0, result.stderr
+    assert seen == [100]
+
+
+def test_on_host_forwards_lines_and_no_follow(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _record_stream(monkeypatch)
+
+    result = runner.invoke(app, ["log", "--on", "pc3", "--run", "R", "--lines", "50", "--no-follow"])
+
+    assert result.exit_code == 0, result.stderr
+    assert calls == [("pc3", "log", ["--which", "kas", "--run", "R", "--lines", "50", "--no-follow"], 2)]
+
+    calls.clear()
+    runner.invoke(app, ["log", "--on", "pc3", "--run", "R", "--lines", "40", "--follow"])
+    assert calls == [("pc3", "log", ["--which", "kas", "--run", "R"], 2)]
+
+
+def test_registered_run_no_follow_outside_workspace(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = _make_run_dir(tmp_path, "r1", {"console.log": "a\nb\nc\n"})  # no kas.log: fallback
+    followed = _record_tail(monkeypatch)
+    monkeypatch.setattr(detach_records, "newest_run_dir", lambda: run_dir)
+    monkeypatch.setattr(log_module, "_find_workspace_from_cwd", lambda: None)
+
+    result = runner.invoke(app, ["log", "--lines", "2", "--no-follow"])
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == "b\nc\n"
+    assert "console.log" in result.stderr
+    assert followed == []
+
+
+def test_no_follow_broken_pipe_silences_stdout_and_returns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reader that closed the pipe (``bakar log | head``) must not traceback."""
+    run_dir = _make_run_dir(tmp_path, "r1", {})
+    _numbered_log(run_dir, 10)
+    silenced: list[bool] = []
+    # The real helper dup2()s fd 1 onto /dev/null, which would break pytest's capture.
+    monkeypatch.setattr(log_module, "_silence_stdout", lambda: silenced.append(True))
+
+    class _ClosedPipe:
+        def write(self, _text: str) -> int:
+            raise BrokenPipeError
+
+        def flush(self) -> None:
+            raise BrokenPipeError
+
+    monkeypatch.setattr(log_module.sys, "stdout", _ClosedPipe())
+
+    log_module._follow_run_dir(run_dir, "kas", 5, False)
+
+    assert silenced == [True]
