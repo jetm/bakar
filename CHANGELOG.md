@@ -24,14 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The doctor step records the blocking checks, as `<check>: <message>` joined by a semicolon and a space, on its failing step event, so `bakar status` and `bakar triage` name the check that refused a build instead of `blocking failure`.
 - `bakar ps --on HOST` lists the builds on a host, and `bakar ps` lists a detached or dispatched build that has not started bitbake yet as a `unit` row.
 - `bakar log --on HOST` follows a run's log on a build host, and `bakar log --run ID` outside a workspace finds a run a detached or dispatched unit registered.
+- `bakar log --lines N` and `--no-follow` print the last N lines of a log and exit, also with `--on HOST`. The read window grows up to 8 MiB and a stderr note says when that limit cut the output short. A host on an older bakar rejects both flags.
 
 ### Changed
 
+- The detached-launch wait hint says to run `bakar wait` in the background and to re-run it on exit 124.
 - `bakar triage` reports the same failure reason as `bakar status`, including `stopped by bakar stop` for a stopped run.
 - The error for a failed release or pins dump names the overlays merged and the checkout's HEAD revision.
 
 ### Fixed
 
+- `bakar log` stops following within about 3 s once its reader is gone, locally or on the host, instead of lingering until its next output.
+- The local side of a forwarded `--on` stream ends its ssh child on every exit, including a closed local stdout.
+- A finished run reports a fixed `elapsed_seconds`, ending at its terminal record, instead of one that keeps growing.
+- `bakar ps` names the machine the build recorded and never `generic`.
+- Container path translation works for meta-avocado builds and for nxp and ti runs found through a workspace, in the build UI and in `bakar triage`.
+- Workspace detection applies the origin rule: a `meta-avocado` directory whose origin names another repository is no longer taken for the meta-avocado workspace.
 - `bakar triage --on HOST` now forwards `--preset` and `--release`, and refuses `--kas-yaml` (a local path) with exit 2.
 - `bakar status`, `wait` and `triage` with `--on HOST` send the handle after `--`, so a handle beginning with `-` cannot become a flag on the remote.
 - `bakar wait --on HOST` no longer reports a crashed or non-JSON remote (a traceback exits 1) as a failed build. Without a parseable status record it exits 3 (unknown) with the reason on stderr.
