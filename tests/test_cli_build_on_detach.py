@@ -132,8 +132,11 @@ def test_meta_avocado_dispatch_carries_detach_and_hints(
     assert result.exit_code == 0, result.output
     flags = avocado[0][0][2]
     assert flags.detach is True
-    assert list(flags.hint_lines("bakar-dispatch-x", "20260101-000000-abcdef", ON)) == [
-        "hint: wait: `bakar wait bakar-dispatch-x --timeout 540 --on pc2`",
+    hints = list(flags.hint_lines("bakar-dispatch-x", "20260101-000000-abcdef", ON))
+    assert hints[0].startswith("hint: wait: `bakar wait bakar-dispatch-x --timeout 540 --on pc2`")
+    assert "background" in hints[0]
+    assert "124" in hints[0]
+    assert hints[1:] == [
         "hint: status: `bakar status bakar-dispatch-x --json --on pc2`",
         "hint: stop: `bakar stop --on pc2`",
     ]
@@ -177,7 +180,10 @@ def test_generic_dispatch_flags_carry_detach(  # noqa: PLR0913
     assert result.exit_code == 0, result.output
     flags = mirror[0][0][2]
     assert flags.detach is expected
-    assert next(iter(flags.hint_lines("u", None, ON))) == "hint: wait: `bakar wait u --timeout 540 --on pc2`"
+    wait_line = next(iter(flags.hint_lines("u", None, ON)))
+    assert wait_line.startswith("hint: wait: `bakar wait u --timeout 540 --on pc2`")
+    assert "background" in wait_line
+    assert "124" in wait_line
     assert no_local_unit == []
 
 
