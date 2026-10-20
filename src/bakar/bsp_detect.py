@@ -36,11 +36,14 @@ markers; if either set of markers changes, update the other.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+
+from bakar.gitutil import git_stdout
 
 # Repo-name substrings that identify each BSP. Order matters within a
 # family: the first matching substring wins. The lists are kept short
@@ -255,19 +258,64 @@ def is_bbsetup_workspace(path: Path) -> bool:
     return isinstance(data, dict) and "data" in data and "bitbake-config" in data
 
 
+_META_AVOCADO = "meta-avocado"
+
+
+def _origin_repo_name(path: Path) -> str | None:
+    """Return the repository name the ``origin`` remote of the repo enclosing ``path`` points at.
+
+    The enclosing repository is the nearest ancestor (or ``path`` itself when it
+    is a directory) holding a ``.git`` entry of any kind. The URL is read through
+    git, so includes and worktree config resolve as git defines them, and reduced
+    to its last ``/``- or ``:``-separated component without a trailing ``/`` or
+    ``.git``: scp, https and local-path forms of meta-avocado all give
+    ``meta-avocado``. None when there is no enclosing repository, no origin, or
+    git cannot answer.
+    """
+    try:
+        resolved = path.resolve()
+        start = resolved if resolved.is_dir() else resolved.parent
+        root = next((c for c in (start, *start.parents) if (c / ".git").exists()), None)
+    except OSError:
+        return None
+    if root is None:
+        return None
+    url = git_stdout(root, "config", "--get", "remote.origin.url")
+    if url is None:
+        return None
+    name = re.split(r"[/:]", url.strip().rstrip("/"))[-1].removesuffix(".git")
+    return name or None
+
+
+def _origin_vetoes(path: Path) -> bool:
+    """Return True when ``path``'s repository has an origin naming a repository other than meta-avocado.
+
+    A repository with no origin is not vetoed, so a clone without a remote keeps
+    the directory-name answer.
+    """
+    name = _origin_repo_name(path)
+    return name is not None and name != _META_AVOCADO
+
+
 def is_meta_avocado_yaml(yaml_path: Path) -> bool:
     """Return True if the YAML lives inside a meta-avocado repository.
 
     Walks the resolved path and checks whether any ancestor directory is
-    named ``meta-avocado``. This is how bakar detects that a generic kas
-    YAML belongs to the Avocado OS build system and needs the
-    ``init-build``-style build-directory setup before kas can run.
+    named ``meta-avocado``, or whether the YAML sits in a linked worktree of
+    one. This is how bakar detects that a generic kas YAML belongs to the
+    Avocado OS build system and needs the ``init-build``-style
+    build-directory setup before kas can run.
+
+    When the enclosing repository has an ``origin`` remote naming another
+    repository (``meta-avocado-nonpublic`` under a directory called
+    ``meta-avocado``), the answer is False whatever the directories are named.
     """
     try:
-        if "meta-avocado" in yaml_path.resolve().parts:
-            return True
+        named = _META_AVOCADO in yaml_path.resolve().parts
     except OSError:
         return False
+    if named:
+        return not _origin_vetoes(yaml_path)
     return meta_avocado_worktree(yaml_path) is not None
 
 
@@ -313,6 +361,10 @@ class LinkedWorktree:
     main_checkout: Path
 
 
+# Bare common-directory name -> the main checkout name a worktree of it stands for.
+_BARE_MAIN_CHECKOUT_NAMES: dict[str, str] = {"meta-avocado.git": _META_AVOCADO}
+
+
 def linked_worktree_common_dir(directory: Path) -> Path | None:
     """Return the resolved common git directory when ``directory`` is a linked worktree.
 
@@ -350,14 +402,24 @@ def linked_worktree_at(directory: Path) -> LinkedWorktree | None:
     """Return the linked worktree rooted at ``directory`` whose main checkout is known, else None.
 
     Built on :func:`linked_worktree_common_dir`. The main checkout is the parent of
-    a common directory named ``.git``; a bare repository's worktree (common
-    directory not named ``.git``) has no main checkout and yields None here.
+    a common directory named ``.git``. A worktree of a bare repository named in
+    :data:`_BARE_MAIN_CHECKOUT_NAMES` (``meta-avocado.git``) gets a main checkout
+    beside the bare directory under the mapped name (``meta-avocado``): that
+    location does not exist on disk, and consumers read only its name and its
+    parent. A worktree of any other bare repository has no main checkout and
+    yields None here.
     """
     common = linked_worktree_common_dir(directory)
-    if common is None or common.name != ".git":
+    if common is None:
+        return None
+    if common.name == ".git":
+        main_checkout = common.parent
+    elif common.name in _BARE_MAIN_CHECKOUT_NAMES:
+        main_checkout = common.with_name(_BARE_MAIN_CHECKOUT_NAMES[common.name])
+    else:
         return None
     try:
-        return LinkedWorktree(checkout=directory.resolve(), main_checkout=common.parent)
+        return LinkedWorktree(checkout=directory.resolve(), main_checkout=main_checkout)
     except OSError:
         return None
 
@@ -380,9 +442,13 @@ def linked_worktree_of(path: Path) -> LinkedWorktree | None:
 
 
 def meta_avocado_worktree(kas_yaml: Path) -> LinkedWorktree | None:
-    """Return the linked worktree of a meta-avocado checkout holding ``kas_yaml``."""
+    """Return the linked worktree of a meta-avocado checkout holding ``kas_yaml``.
+
+    None when the repository's ``origin`` names a repository other than
+    meta-avocado, even if its main checkout directory is named ``meta-avocado``.
+    """
     wt = linked_worktree_of(kas_yaml)
-    if wt is not None and wt.main_checkout.name == "meta-avocado":
+    if wt is not None and wt.main_checkout.name == _META_AVOCADO and not _origin_vetoes(kas_yaml):
         return wt
     return None
 
@@ -392,7 +458,8 @@ def meta_avocado_checkout(kas_yaml: Path) -> Path | None:
 
     A linked worktree is checked first: its container under
     ``.worktrees/meta-avocado`` is itself named ``meta-avocado`` and would
-    otherwise win the ancestor-name walk.
+    otherwise win the ancestor-name walk. None when the enclosing repository's
+    ``origin`` names a repository other than meta-avocado.
     """
     wt = meta_avocado_worktree(kas_yaml)
     if wt is not None:
@@ -402,8 +469,8 @@ def meta_avocado_checkout(kas_yaml: Path) -> Path | None:
     except OSError:
         return None
     for parent in resolved.parents:
-        if parent.name == "meta-avocado":
-            return parent
+        if parent.name == _META_AVOCADO:
+            return None if _origin_vetoes(kas_yaml) else parent
     return None
 
 

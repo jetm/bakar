@@ -15,8 +15,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+import bakar.bsp_detect
 from bakar.bsp_detect import (
     LinkedWorktree,
+    _origin_repo_name,
     detect_bsp_from_yaml,
     detect_kas_workspace,
     is_bbsetup_workspace,
@@ -684,3 +686,154 @@ def test_worktree_include_follows_worktree_copy_not_main(meta_avocado_worktree_l
         "repos:\n  meta-avocado:\n    path: meta-avocado\n"
     )
     assert machine_from_yaml(entry) == "wt-machine"
+
+
+# --- repository identity from the origin remote ------------------------------
+
+_PUBLIC_URL = "https://example.invalid/peridio/meta-avocado.git"
+_NONPUBLIC_URL = "https://example.invalid/peridio/meta-avocado-nonpublic.git"
+
+
+def _clone(directory: Path, origin: str | None) -> Path:
+    """Init a repo at ``directory`` with one empty commit and an optional origin; return its kas file."""
+    directory.mkdir(parents=True, exist_ok=True)
+    _git("init", "-q", "-b", "main", str(directory))
+    if origin is not None:
+        _git("-C", str(directory), "remote", "add", "origin", origin)
+    _git("-C", str(directory), "commit", "-q", "--allow-empty", "-m", "init")
+    return _kas_in(directory)
+
+
+def _kas_in(checkout: Path) -> Path:
+    kas = checkout / "kas" / "machine" / "m.yml"
+    kas.parent.mkdir(parents=True, exist_ok=True)
+    kas.write_text("machine: qemux86-64\n")
+    return kas
+
+
+def _bare_with_worktree(tmp_path: Path, bare_name: str, origin: str) -> tuple[Path, Path]:
+    """A bare repo ``srv/<bare_name>`` holding one pushed commit, with a worktree at ``wts/zedx``."""
+    bare = tmp_path / "srv" / bare_name
+    bare.parent.mkdir(parents=True)
+    _git("init", "-q", "--bare", "-b", "main", str(bare))
+    _git("-C", str(bare), "remote", "add", "origin", origin)
+    seed = tmp_path / "seed"
+    _clone(seed, None)
+    _git("-C", str(seed), "push", "-q", str(bare), "main")
+    wt = tmp_path / "wts" / "zedx"
+    wt.parent.mkdir(parents=True)
+    _git("-C", str(bare), "worktree", "add", "-q", str(wt), "main")
+    return bare, _kas_in(wt)
+
+
+def test_origin_identity_public_clone_is_accepted(tmp_path: Path) -> None:
+    checkout = tmp_path / "ws" / "meta-avocado"
+    kas = _clone(checkout, _PUBLIC_URL)
+    assert is_meta_avocado_yaml(kas) is True
+    assert meta_avocado_checkout(kas) == checkout.resolve()
+
+
+def test_origin_identity_worktree_of_public_clone_is_accepted(tmp_path: Path) -> None:
+    main = tmp_path / "ws" / "meta-avocado"
+    _clone(main, _PUBLIC_URL)
+    wt = tmp_path / ".worktrees" / "meta-avocado" / "zedx"
+    wt.parent.mkdir(parents=True)
+    _git("-C", str(main), "worktree", "add", "-q", str(wt), "-b", "zedx")
+    kas = _kas_in(wt)
+    assert is_meta_avocado_yaml(kas) is True
+    found = meta_avocado_worktree(kas)
+    assert found is not None
+    assert found.checkout == wt.resolve()
+    assert meta_avocado_checkout(kas) == wt.resolve()
+
+
+def test_origin_identity_renamed_public_clone_stays_rejected(tmp_path: Path) -> None:
+    """Documented limit: the origin only vetoes, so a differently named meta-avocado clone is not found."""
+    kas = _clone(tmp_path / "ws" / "avocado-renamed", _PUBLIC_URL)
+    assert is_meta_avocado_yaml(kas) is False
+    assert meta_avocado_checkout(kas) is None
+
+
+def test_origin_identity_nonpublic_clone_under_its_own_name_is_rejected(tmp_path: Path) -> None:
+    kas = _clone(tmp_path / "ws" / "meta-avocado-nonpublic", _NONPUBLIC_URL)
+    assert is_meta_avocado_yaml(kas) is False
+    assert meta_avocado_checkout(kas) is None
+
+
+def test_origin_identity_without_repository_or_origin(tmp_path: Path) -> None:
+    plain = _kas_in(tmp_path / "ws" / "plain")
+    assert is_meta_avocado_yaml(plain) is False
+    assert meta_avocado_checkout(plain) is None
+    checkout = tmp_path / "other" / "meta-avocado"
+    kas = _clone(checkout, None)
+    assert _origin_repo_name(kas) is None
+    assert is_meta_avocado_yaml(kas) is True
+    assert meta_avocado_checkout(kas) == checkout.resolve()
+
+
+def test_origin_identity_nonpublic_clone_named_meta_avocado_is_rejected(tmp_path: Path) -> None:
+    kas = _clone(tmp_path / "ws" / "meta-avocado", _NONPUBLIC_URL)
+    assert is_meta_avocado_yaml(kas) is False
+    assert meta_avocado_checkout(kas) is None
+    assert meta_avocado_worktree(kas) is None
+
+
+def test_origin_identity_nonpublic_clone_nested_under_meta_avocado_is_rejected(tmp_path: Path) -> None:
+    kas = _clone(tmp_path / "meta-avocado" / "nonpublic", _NONPUBLIC_URL)
+    assert "meta-avocado" in kas.resolve().parts
+    assert is_meta_avocado_yaml(kas) is False
+    assert meta_avocado_checkout(kas) is None
+    assert meta_avocado_worktree(kas) is None
+
+
+def test_origin_identity_worktree_of_bare_meta_avocado_is_accepted(tmp_path: Path) -> None:
+    bare, kas = _bare_with_worktree(tmp_path, "meta-avocado.git", _PUBLIC_URL)
+    assert "meta-avocado" not in kas.resolve().parts
+    assert is_meta_avocado_yaml(kas) is True
+    found = meta_avocado_worktree(kas)
+    assert found is not None
+    assert found.main_checkout == bare.resolve().with_name("meta-avocado")
+    assert found.checkout == (tmp_path / "wts" / "zedx").resolve()
+    assert meta_avocado_checkout(kas) == found.checkout
+    assert detect_kas_workspace(kas) == bare.resolve().parent
+
+
+def test_origin_identity_worktree_of_other_bare_repository_is_rejected(tmp_path: Path) -> None:
+    _bare, kas = _bare_with_worktree(tmp_path, "other.git", "https://example.invalid/peridio/other.git")
+    assert linked_worktree_of(kas) is None
+    assert meta_avocado_worktree(kas) is None
+    assert is_meta_avocado_yaml(kas) is False
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("git@github.com:peridio/meta-avocado.git", "meta-avocado"),
+        ("https://example.invalid/peridio/meta-avocado/", "meta-avocado"),
+        ("/srv/git/meta-avocado.git", "meta-avocado"),
+        (_NONPUBLIC_URL, "meta-avocado-nonpublic"),
+        ("", None),
+    ],
+)
+def test_origin_identity_url_forms(tmp_path: Path, url: str, expected: str | None) -> None:
+    checkout = tmp_path / "repo"
+    kas = _clone(checkout, None)
+    _git("-C", str(checkout), "config", "remote.origin.url", url)
+    assert _origin_repo_name(kas) == expected
+    assert _origin_repo_name(checkout) == expected
+
+
+def test_origin_identity_absent_origin_gives_none(tmp_path: Path) -> None:
+    checkout = tmp_path / "repo"
+    kas = _clone(checkout, None)
+    assert _origin_repo_name(kas) is None
+    assert _origin_repo_name(tmp_path / "nowhere" / "m.yml") is None
+
+
+def test_origin_identity_git_unavailable_falls_back_to_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    public = _clone(tmp_path / "a" / "meta-avocado", _PUBLIC_URL)
+    nonpublic = _clone(tmp_path / "b" / "meta-avocado", _NONPUBLIC_URL)
+    monkeypatch.setattr(bakar.bsp_detect, "git_stdout", lambda *_a, **_k: None)
+    assert is_meta_avocado_yaml(public) is True
+    assert is_meta_avocado_yaml(nonpublic) is True
+    assert meta_avocado_checkout(nonpublic) == (tmp_path / "b" / "meta-avocado").resolve()
