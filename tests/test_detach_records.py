@@ -286,3 +286,72 @@ def test_unit_listing_active_units_defaults_to_systemctl(rt: Path, monkeypatch: 
     (rt / f"{unit}.log").write_text("x")
     monkeypatch.setattr(dr, "systemctl_unit_active", lambda u: u == unit)
     assert dr.active_units() == [unit]
+
+
+def _write_runs(rt: Path, unit: str, lines: list[str], mtime: float | None = None) -> None:
+    p = rt / f"{unit}.runs"
+    p.write_text("".join(line + "\n" for line in lines))
+    if mtime is not None:
+        os.utime(p, (mtime, mtime))
+
+
+def _reg(run_id: str, run_dir: str) -> str:
+    return f'{{"run_id": "{run_id}", "run_dir": "{run_dir}", "pid": 1}}'
+
+
+def test_run_dir_lookup_known_run_id(rt: Path) -> None:
+    unit = _unit("a1a1a1")
+    _write_runs(rt, unit, [_reg("r1", "/w/build/runs/r1"), _reg("r2", "/w/build/runs/r2")])
+    assert str(dr.run_dir_for_run("r1")) == "/w/build/runs/r1"
+    assert str(dr.run_dir_for_run("r2")) == "/w/build/runs/r2"
+
+
+def test_run_dir_lookup_last_of_reused_run_id(rt: Path) -> None:
+    unit = _unit("a2a2a2")
+    _write_runs(rt, unit, [_reg("r1", "/first"), _reg("r9", "/other"), _reg("r1", "/second")])
+    assert str(dr.run_dir_for_run("r1")) == "/second"
+
+
+def test_run_dir_lookup_unknown_run_id(rt: Path) -> None:
+    _write_runs(rt, _unit("a3a3a3"), [_reg("r1", "/x")])
+    assert dr.run_dir_for_run("nope") is None
+
+
+def test_run_dir_lookup_record_without_run_dir(rt: Path) -> None:
+    _write_runs(rt, _unit("a4a4a4"), ['{"run_id": "r1", "pid": 1}', '{"run_id": "r1", "run_dir": 5, "pid": 1}'])
+    assert dr.run_dir_for_run("r1") is None
+
+
+def test_run_dir_lookup_none_without_runtime_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    assert dr.run_dir_for_run("r1") is None
+    assert dr.newest_run_dir() is None
+
+
+def test_run_dir_lookup_newest_unit_latest_registration(rt: Path) -> None:
+    old = _unit("b1b1b1")
+    new = _unit("b2b2b2", kind="dispatch")
+    _write_runs(rt, old, [_reg("o1", "/old1"), _reg("o2", "/old2")], mtime=5_000)
+    _write_runs(rt, new, [_reg("n1", "/new1"), _reg("n2", "/new2")], mtime=1_000)
+    assert str(dr.newest_run_dir()) == "/old2"
+    os.utime(rt / f"{new}.runs", (9_000, 9_000))
+    assert str(dr.newest_run_dir()) == "/new2"
+
+
+def test_run_dir_lookup_newest_skips_trailing_record_without_run_dir(rt: Path) -> None:
+    unit = _unit("b3b3b3")
+    _write_runs(
+        rt,
+        unit,
+        [_reg("n1", "/new1"), '{"run_id": "n2", "pid": 1}', '{"run_id": 7, "run_dir": "/bad", "pid": 1}'],
+    )
+    assert str(dr.newest_run_dir()) == "/new1"
+
+
+def test_run_dir_lookup_newest_none_for_empty_dir(rt: Path) -> None:
+    assert dr.newest_run_dir() is None
+
+
+def test_run_dir_lookup_newest_none_for_unit_without_registrations(rt: Path) -> None:
+    _touch(rt, f"{_unit('b4b4b4')}.log", 1_000)
+    assert dr.newest_run_dir() is None

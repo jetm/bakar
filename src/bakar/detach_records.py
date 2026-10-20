@@ -197,6 +197,33 @@ def newest_unit() -> str | None:
     return None if best is None else best[1]
 
 
+def _last_run_dir(records: list[dict], run_id: str | None = None) -> Path | None:
+    for rec in reversed(records):
+        raw_dir = rec.get("run_dir")
+        rec_id = rec.get("run_id")
+        if not isinstance(rec_id, str) or (run_id is not None and rec_id != run_id):
+            continue
+        if isinstance(raw_dir, str) and raw_dir:
+            return Path(raw_dir)
+    return None
+
+
+def run_dir_for_run(run_id: str) -> Path | None:
+    """Return the run directory of the last registration of ``run_id``, or None."""
+    unit = find_unit_for_run(run_id)
+    if unit is None:
+        return None
+    return _last_run_dir(read_registrations(unit), run_id)
+
+
+def newest_run_dir() -> Path | None:
+    """Return the run directory of the newest unit's last registration, or None."""
+    unit = newest_unit()
+    if unit is None:
+        return None
+    return _last_run_dir(read_registrations(unit))
+
+
 def active_units(is_active: Callable[[str], bool] | None = None) -> list[str]:
     """Return, by name, the known units with no sentinel that ``is_active`` reports active."""
     try:

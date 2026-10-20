@@ -227,14 +227,7 @@ def _registered_run_dir(run_id: str | None) -> Path | None:
     """The recorded run directory of a detached run registered under ``run_id``."""
     if run_id is None:
         return None
-    unit = detach_records.find_unit_for_run(run_id)
-    if unit is None:
-        return None
-    for rec in reversed(detach_records.read_registrations(unit)):
-        raw_dir = rec.get("run_dir")
-        if rec.get("run_id") == run_id and isinstance(raw_dir, str) and raw_dir:
-            return Path(raw_dir)
-    return None
+    return detach_records.run_dir_for_run(run_id)
 
 
 def _registered_root(run_dir: Path) -> Path:
