@@ -2,43 +2,44 @@
 
 from __future__ import annotations
 
-import io
+import os
 import shlex
 import subprocess
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import pytest
 
 from bakar.commands import status as status_mod
 from bakar.steps import remote_dispatch as rd
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
-class _Stdin(io.StringIO):
+
+class _Stdin:
     def __init__(self, *, broken: bool = False) -> None:
-        super().__init__()
         self.broken = broken
         self.written = ""
         self.was_closed = False
 
-    def write(self, s: str) -> int:
+    def write(self, data: bytes) -> int:
         if self.broken:
             raise BrokenPipeError
-        self.written += s
-        return len(s)
+        self.written += data.decode("utf-8")
+        return len(data)
 
     def close(self) -> None:
         self.was_closed = True
 
 
-class _Interrupting:
-    """A stdout that yields some lines, then raises KeyboardInterrupt."""
+class _Stdout:
+    """The read end of a real pipe, as ``Popen.stdout`` exposes it."""
 
-    def __init__(self, lines: list[str]) -> None:
-        self.lines = lines
+    def __init__(self, fd: int) -> None:
+        self.fd = fd
 
-    def __iter__(self) -> Any:
-        yield from self.lines
-        raise KeyboardInterrupt
+    def fileno(self) -> int:
+        return self.fd
 
 
 class FakePopen:
@@ -46,23 +47,38 @@ class FakePopen:
     lines: ClassVar[list[str]] = []
     returncode = 0
     broken = False
-    interrupt = False
     hang_on_terminate = False
+    quiet = False
+    silenced: ClassVar[list[bool]] = []
 
     def __init__(self, argv: list[str], **kwargs: Any) -> None:
         self.argv = argv
         self.kwargs = kwargs
         self.stdin = _Stdin(broken=type(self).broken)
-        self.stdout: Any = _Interrupting(type(self).lines) if type(self).interrupt else iter(type(self).lines)
+        read_fd, self._write_fd = os.pipe()
+        self.stdout = _Stdout(read_fd)
+        os.write(self._write_fd, "".join(type(self).lines).encode())
+        if not type(self).quiet:
+            self._close_write()
         self.terminated = False
         self.killed = False
+        self.waited = False
         self.wait_timeouts: list[float | None] = []
         type(self).instances.append(self)
+
+    def _close_write(self) -> None:
+        if self._write_fd >= 0:
+            os.close(self._write_fd)
+            self._write_fd = -1
+
+    def poll(self) -> int | None:
+        return type(self).returncode if (self.waited or self.killed) else None
 
     def wait(self, timeout: float | None = None) -> int:
         self.wait_timeouts.append(timeout)
         if timeout is not None and type(self).hang_on_terminate and not self.killed:
             raise subprocess.TimeoutExpired(self.argv, timeout)
+        self.waited = True
         return type(self).returncode
 
     def terminate(self) -> None:
@@ -71,12 +87,23 @@ class FakePopen:
     def kill(self) -> None:
         self.killed = True
 
+    def release(self) -> None:
+        self._close_write()
+        os.close(self.stdout.fd)
+
 
 @pytest.fixture
-def popen(monkeypatch: pytest.MonkeyPatch) -> type[FakePopen]:
+def popen(monkeypatch: pytest.MonkeyPatch) -> Iterator[type[FakePopen]]:
     cls = type("P", (FakePopen,), {"instances": [], "lines": []})
     monkeypatch.setattr(rd.subprocess, "Popen", cls)
-    return cls
+    monkeypatch.setattr(rd, "_STREAM_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(rd, "stdout_reader_gone", lambda fd=1: False)
+    silenced: list[bool] = []
+    monkeypatch.setattr(rd, "_silence_stdout", lambda: silenced.append(True))
+    cls.silenced = silenced
+    yield cls
+    for proc in cls.instances:
+        proc.release()
 
 
 @pytest.fixture
@@ -143,20 +170,22 @@ def test_broken_pipe_returns_255_without_reading(popen: type[FakePopen], capsys:
     assert "connection to pc3 lost before the script was delivered" in err
 
 
-def test_ctrl_c_terminates_child_and_reraises(popen: type[FakePopen], capsys: pytest.CaptureFixture[str]) -> None:
-    popen.interrupt = True
-    popen.lines = ["first\n"]
+def _interrupting_select(*_a: Any, **_k: Any) -> Any:
+    raise KeyboardInterrupt
+
+
+def test_ctrl_c_terminates_child_and_reraises(popen: type[FakePopen], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rd.select, "select", _interrupting_select)
     with pytest.raises(KeyboardInterrupt):
         rd.stream_bash_script("pc3", "bakar log\n")
     (proc,) = popen.instances
     assert proc.terminated
     assert not proc.killed
     assert 5 in proc.wait_timeouts
-    assert capsys.readouterr().out == "first\n"
 
 
-def test_ctrl_c_kills_child_that_ignores_terminate(popen: type[FakePopen]) -> None:
-    popen.interrupt = True
+def test_ctrl_c_kills_child_that_ignores_terminate(popen: type[FakePopen], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rd.select, "select", _interrupting_select)
     popen.hang_on_terminate = True
     with pytest.raises(KeyboardInterrupt):
         rd.stream_bash_script("pc3", "bakar log\n")
@@ -165,8 +194,67 @@ def test_ctrl_c_kills_child_that_ignores_terminate(popen: type[FakePopen]) -> No
     assert proc.killed
 
 
-def test_ctrl_c_propagates_through_stream_on_host(popen: type[FakePopen], no_preflight: None) -> None:
-    popen.interrupt = True
+class _ClosedBuffer:
+    def write(self, _data: bytes) -> int:
+        raise BrokenPipeError
+
+    def flush(self) -> None:
+        raise BrokenPipeError
+
+
+class _ClosedStdout:
+    buffer = _ClosedBuffer()
+
+
+def test_closed_local_stdout_returns_zero_and_terminates_child(
+    popen: type[FakePopen], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    popen.lines = ["one\n"]
+    popen.quiet = True
+    popen.returncode = 7
+    monkeypatch.setattr(rd.sys, "stdout", _ClosedStdout())
+    assert rd.stream_bash_script("pc3", "bakar log\n") == 0
+    (proc,) = popen.instances
+    assert proc.terminated
+    assert popen.silenced == [True]
+
+
+def test_reader_gone_on_quiet_remote_returns_zero_and_terminates_child(
+    popen: type[FakePopen], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    popen.quiet = True
+    popen.returncode = 7
+    monkeypatch.setattr(rd, "stdout_reader_gone", lambda fd=1: True)
+    assert rd.stream_bash_script("pc3", "bakar log\n") == 0
+    (proc,) = popen.instances
+    assert proc.terminated
+    assert popen.silenced == [True]
+
+
+def test_stream_that_ends_normally_does_not_terminate_child(popen: type[FakePopen]) -> None:
+    popen.lines = ["x\n"]
+    assert rd.stream_bash_script("pc3", "true\n") == 0
+    (proc,) = popen.instances
+    assert not proc.terminated
+    assert popen.silenced == []
+
+
+def test_reader_gone_kills_child_that_ignores_terminate(
+    popen: type[FakePopen], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    popen.quiet = True
+    popen.hang_on_terminate = True
+    monkeypatch.setattr(rd, "stdout_reader_gone", lambda fd=1: True)
+    assert rd.stream_bash_script("pc3", "bakar log\n") == 0
+    (proc,) = popen.instances
+    assert proc.terminated
+    assert proc.killed
+
+
+def test_ctrl_c_propagates_through_stream_on_host(
+    popen: type[FakePopen], no_preflight: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rd.select, "select", _interrupting_select)
     with pytest.raises(KeyboardInterrupt):
         status_mod.stream_on_host("pc3", "log", [], transport_exit=2)
     assert popen.instances[0].terminated

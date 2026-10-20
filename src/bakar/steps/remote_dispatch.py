@@ -29,6 +29,7 @@ import json
 import os
 import re
 import secrets
+import select
 import shlex
 import subprocess
 import sys
@@ -46,6 +47,7 @@ from bakar.buildtools import parse_layerseries_corenames
 from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
 from bakar.detach import escape_for_systemd_run
 from bakar.observability import RUN_ID_TS_FORMAT
+from bakar.output_mode import stdout_reader_gone
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -53,6 +55,9 @@ if TYPE_CHECKING:
 # stderr so `bakar build --on <host> > log` keeps chrome (plan, run-id) out of
 # the piped build log, matching the project convention in commands/_app.py.
 console = Console(stderr=True)
+
+_STREAM_POLL_SECONDS = 0.5
+_STREAM_CHUNK_BYTES = 65536
 
 
 def _echo(text: str) -> None:
@@ -701,44 +706,74 @@ def stream_bash_script(host: str, script: str) -> int:
     """Run ``script`` on ``host`` through ``bash -s`` and stream its stdout.
 
     The streaming twin of :func:`_ssh_bash_capture`, for a remote command that
-    runs until interrupted (``bakar log --on``). Remote stdout is copied line by
-    line to the local stdout; remote stderr is inherited, so diagnostics never
+    runs until interrupted (``bakar log --on``). Remote stdout is copied chunk by
+    chunk to the local stdout; remote stderr is inherited, so diagnostics never
     mix into a piped log. Returns the ssh exit status, or 255 (ssh's own
     connection-failure code) when the link dies before the script is delivered.
-    A Ctrl-C terminates the ssh child, killing it when it does not exit within
-    5 seconds, and re-raises so the caller picks the exit status.
+    When local stdout closes or its reader goes away the copy stops and 0 is
+    returned. On every exit a still-running ssh child is terminated, then killed
+    when it does not exit within 5 seconds; a Ctrl-C re-raises after that.
     """
     proc = subprocess.Popen(
         _ssh_argv(host, "bash", "-s", batch_mode=True),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=None,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     assert proc.stdin is not None
     assert proc.stdout is not None
+    local_gone = False
     try:
         try:
-            proc.stdin.write(script)
+            proc.stdin.write(script.encode("utf-8"))
             proc.stdin.close()
         except BrokenPipeError:
             print(f"connection to {host} lost before the script was delivered", file=sys.stderr)
             proc.wait()
             return 255
-        for line in proc.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-        return proc.wait()
-    except KeyboardInterrupt:
-        proc.terminate()
+        fd = proc.stdout.fileno()
+        out = sys.stdout.buffer
+        while True:
+            # select sees the pipe, not a text wrapper's buffer, so a quiet
+            # remote cannot park the copy where a gone local reader goes unseen.
+            ready, _, _ = select.select([fd], [], [], _STREAM_POLL_SECONDS)
+            if not ready:
+                if stdout_reader_gone():
+                    local_gone = True
+                    break
+                continue
+            chunk = os.read(fd, _STREAM_CHUNK_BYTES)
+            if not chunk:
+                break
+            try:
+                out.write(chunk)
+                out.flush()
+            except BrokenPipeError:
+                local_gone = True
+                break
+        return 0 if local_gone else proc.wait()
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        if local_gone:
+            _silence_stdout()
+
+
+def _silence_stdout() -> None:
+    """Point fd 1 at ``/dev/null`` so interpreter shutdown cannot flush into a dead pipe."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
         try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-        raise
+            os.dup2(devnull, 1)
+        finally:
+            os.close(devnull)
+    except OSError:
+        pass
 
 
 @dataclass
