@@ -172,7 +172,7 @@ Related: [bitbake.md](bitbake.md), [graph.md](graph.md)
 ### Observability
 
 ```text
-bakar ps        - list every live build on this host, host + container mode (--json for scripting)
+bakar ps        - list the live builds on this host: host, container and not-yet-started detached builds (--on HOST, --json for scripting)
 bakar status    - one lifecycle state for a run: starting, running, succeeded, failed, unknown (--json)
 bakar wait      - block until a run finishes and exit with its outcome (0, 1, 2, 3, 124 on --timeout)
 bakar log       - tail a live build log

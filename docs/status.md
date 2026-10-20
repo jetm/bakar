@@ -12,7 +12,9 @@ bakar status [HANDLE] [OPTIONS]
 ```
 
 `HANDLE` is a run id or a detached unit name. With no handle, `status`
-reports the newest run of the current workspace.
+reports the newest run of the current workspace. Outside any workspace, which
+is where `--on HOST` runs it, a missing handle reads the record of the newest
+detached unit instead. [`bakar wait`](wait.md) shares the rule.
 
 ## Options
 
@@ -30,7 +32,7 @@ reports the newest run of the current workspace.
 | A unit name (`bakar-detach-YYYYMMDD-HHMMSS-xxxxxx` or `bakar-dispatch-...`) | The detached run behind that unit. A unit with no registered run yet is still real while systemd knows it or a sentinel exists |
 | A run id registered by a detached run | The same detached run, found by its run id |
 | Any other run id | A foreground run, found through the workspace the same way [`bakar triage`](triage.md) finds it |
-| (omitted) | The newest run directory of the current workspace |
+| (omitted) | The newest run directory of the current workspace, or of the `-w` workspace. Outside any workspace and without `-w`, the newest detached unit, picked by the newest modification time of its record files |
 
 Detached runs resolve from any directory, because their records live in the
 runtime directory rather than in a workspace. Foreground runs need a workspace,
@@ -190,7 +192,9 @@ handle resolves to nothing. To turn the outcome into an exit status, use
 ## Remote runs
 
 `--on HOST` runs `bakar status` on `HOST` over ssh and mirrors its stdout and
-exit status. Use it for a run started with `bakar build --on HOST --detach`.
+exit status. Use it for a run started with `bakar build --on HOST`, with or
+without `--detach`: a foreground `--on` run is registered as a unit on the
+host too. Without a handle it reports the newest detached unit on `HOST`.
 An unreachable host or failed ssh transport exits 2 and names the ssh exit
 status (255 for an unreachable host); [`bakar wait`](wait.md) exits 3 for the
 same failure. A host starting with `-`, `-w` with `--on`, a missing bakar on
@@ -229,6 +233,6 @@ bakar status bakar-detach-20260701-090000-a1b2c3 --on pc3 --json
 
 - [wait.md](wait.md) - block until the run finishes and exit with its outcome
 - [build.md](build.md) - `--detach` starts a run that outlives your terminal
-- [ps.md](ps.md) - list every live build on this host
+- [ps.md](ps.md) - list the live builds on this host, or on another host with `--on`
 - [triage.md](triage.md) - post-mortem a failed run
 - [agents.md](agents.md) - driving bakar from an agent or a script

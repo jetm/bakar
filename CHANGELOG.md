@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bakar stop` records a stop request before it signals a live build, so a stopped run reads `failed` with failure step `stopped` instead of looking like an ordinary failure.
 - The failing step event records the first error line the build printed, so `bakar status` and `bakar triage` can report why a run failed when no task is named.
 - The doctor step records the blocking checks, as `<check>: <message>` joined by a semicolon and a space, on its failing step event, so `bakar status` and `bakar triage` name the check that refused a build instead of `blocking failure`.
+- `bakar ps --on HOST` lists the builds on a host, and `bakar ps` lists a detached or dispatched build that has not started bitbake yet as a `unit` row.
 
 ### Changed
 
@@ -39,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bakar triage` prints a recorded failure reason with its square-bracketed text, and no longer aborts on a reason that holds a closing tag with no opening tag.
 - A build whose checkout is not the workspace's own `meta-avocado` clone keeps that checkout when an overlay declares `meta-avocado` itself, as `kas/feature/tpm.yml` and `kas/feature/cve-check.yml` do. A routed or dispatched build used to fail with a missing machine file under a temporary directory, and a pinned worktree build could build the workspace's clone instead.
 - `bakar triage --json` for a failed bitbake task now returns the last lines of the task log as `recipe_log_tail`, the host path of that log as `recipe_log`, and the suggestions matched against it, so an agent no longer reads `log.do_*` on the build host. `fail_reason` stays null for a task failure, as `error` does in `bakar status`.
+- `bakar status` and `bakar wait` without a handle read the newest detached unit when run outside a workspace, so `--on HOST` without a handle no longer prints nothing.
 
 ### Changed
 
