@@ -198,3 +198,91 @@ def test_prune_removes_old_inactive_units_without_a_sentinel(rt: Path) -> None:
     for u in (active, young, disp):
         assert (rt / f"{u}.log").exists()
         assert (rt / f"{u}.runs").exists()
+
+
+def _touch(rt: Path, name: str, mtime: float) -> None:
+    p = rt / name
+    p.write_text("x")
+    os.utime(p, (mtime, mtime))
+
+
+def test_unit_listing_newest_unit_picks_newest_mtime(rt: Path) -> None:
+    old = _unit("aaaaaa")
+    new = _unit("bbbbbb", kind="dispatch")
+    _touch(rt, f"{old}.log", 2_000)
+    _touch(rt, f"{old}.runs", 3_000)
+    _touch(rt, f"{new}.log", 4_000)
+    _touch(rt, "bakar-detach-bogus.log", 9_000)
+    _touch(rt, "other.runs", 9_000)
+
+    assert dr.newest_unit() == new
+
+    _touch(rt, f"{old}.runs", 5_000)
+    assert dr.newest_unit() == old
+
+
+def test_unit_listing_newest_unit_breaks_ties_by_name(rt: Path) -> None:
+    a = _unit("aaaaaa")
+    b = _unit("bbbbbb")
+    _touch(rt, f"{a}.log", 1_000)
+    _touch(rt, f"{b}.log", 1_000)
+    assert dr.newest_unit() == b
+
+
+def test_unit_listing_newest_unit_counts_a_sentinel_only_unit(rt: Path) -> None:
+    unit = _unit("cccccc")
+    _touch(rt, f"{unit}.log.rc", 1_000)
+    assert dr.newest_unit() == unit
+
+
+def test_unit_listing_newest_unit_ignores_non_unit_files(rt: Path) -> None:
+    _touch(rt, "bakar-detach-nope.log", 1_000)
+    _touch(rt, "random.log.rc", 1_000)
+    assert dr.newest_unit() is None
+
+
+def test_unit_listing_newest_unit_none_for_empty_dir(rt: Path) -> None:
+    assert dr.newest_unit() is None
+
+
+def test_unit_listing_none_without_runtime_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    calls: list[str] = []
+
+    def probe(unit: str) -> bool:
+        calls.append(unit)
+        return True
+
+    assert dr.newest_unit() is None
+    assert dr.active_units(is_active=probe) == []
+    assert calls == []
+
+
+def test_unit_listing_active_units_filters_sentinel_and_probe(rt: Path) -> None:
+    done = _unit("aaaaaa")
+    live_b = _unit("bbbbbb", kind="dispatch")
+    live_a = _unit("cccccc")
+    idle = _unit("dddddd")
+    (rt / f"{done}.log").write_text("x")
+    (rt / f"{done}.log.rc").write_text("0\n")
+    (rt / f"{live_b}.runs").write_text("{}\n")
+    (rt / f"{live_a}.log").write_text("x")
+    (rt / f"{idle}.log").write_text("x")
+    (rt / "bakar-detach-bogus.log").write_text("x")
+
+    calls: list[str] = []
+
+    def probe(unit: str) -> bool:
+        calls.append(unit)
+        return unit != idle
+
+    assert dr.active_units(is_active=probe) == sorted([live_a, live_b])
+    assert done not in calls
+    assert sorted(calls) == sorted([live_a, live_b, idle])
+
+
+def test_unit_listing_active_units_defaults_to_systemctl(rt: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    unit = _unit("eeeeee")
+    (rt / f"{unit}.log").write_text("x")
+    monkeypatch.setattr(dr, "systemctl_unit_active", lambda u: u == unit)
+    assert dr.active_units() == [unit]

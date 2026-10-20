@@ -171,6 +171,42 @@ def find_unit_for_run(run_id: str) -> str | None:
     return None
 
 
+_UNIT_SUFFIXES = (".log", ".log.rc", ".runs")
+
+
+def _known_units(base: Path) -> set[str]:
+    return {
+        name
+        for suffix in _UNIT_SUFFIXES
+        for p in base.glob(f"*{suffix}")
+        if is_unit_name(name := p.name.removesuffix(suffix))
+    }
+
+
+def newest_unit() -> str | None:
+    """Return the known unit whose newest record file is most recent, or None."""
+    try:
+        base = runtime_dir()
+    except DetachUnavailable:
+        return None
+    best: tuple[float, str] | None = None
+    for unit in _known_units(base):
+        mtime = _newest_mtime(tuple(base / f"{unit}{suffix}" for suffix in _UNIT_SUFFIXES))
+        if mtime is not None and (best is None or (mtime, unit) > best):
+            best = (mtime, unit)
+    return None if best is None else best[1]
+
+
+def active_units(is_active: Callable[[str], bool] | None = None) -> list[str]:
+    """Return, by name, the known units with no sentinel that ``is_active`` reports active."""
+    try:
+        base = runtime_dir()
+    except DetachUnavailable:
+        return []
+    probe = systemctl_unit_active if is_active is None else is_active
+    return [unit for unit in sorted(_known_units(base)) if read_sentinel(unit) is None and probe(unit)]
+
+
 def consume_registration_env(environ: dict[str, str] | os._Environ[str] = os.environ) -> None:
     """Pop ``REGISTRATION_ENV`` so children never inherit it.
 
