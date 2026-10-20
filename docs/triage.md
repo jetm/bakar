@@ -60,6 +60,8 @@ log.do_compile.1234 (tail):
   make[1]: *** [scripts/Makefile.build:480: drivers/net/wireless] Error 2
 ```
 
+When the tail matches a known failure pattern, a `suggestions:` section follows it.
+
 When no `bitbake-events.json` artifact is present, triage falls back to the
 `kas.log` analysis:
 
@@ -87,7 +89,8 @@ no step_fail events found
 ```
 
 With `--json`, triage prints one document with these keys: `version`,
-`run_id`, `failing_step`, `fail_reason`, `recipe_log` and `suggestions`.
+`run_id`, `failing_step`, `fail_reason`, `recipe_log`, `recipe_log_tail`,
+`recipe_log_note` and `suggestions`.
 `fail_reason` is the same text as the `failure.error` of `bakar status` for the
 run: the captured error line, else `exit_code=N`. For a run ended by
 `bakar stop` it is `stopped by bakar stop` and `failing_step` is `stopped`. For
@@ -99,6 +102,8 @@ a failing step nor a non-zero terminal event reports no failure here, although
 `bakar status` can still derive `failed` for it from the unit's exit sentinel.
 The text form prints the reason as recorded, square brackets included, and prints `no reason recorded` when the failing step recorded none.
 
+For a task failure, `recipe_log` is the host path of the task log, `recipe_log_tail` holds the last lines of that log (at most 60, escape sequences and control characters removed, each cut to 200 characters, blank lines dropped) and `suggestions` lists the hints matched against them. When the log cannot be read, `recipe_log_tail` is empty and `recipe_log_note` says why: `logfile outside workspace, not read` for a path outside the workspace and outside the node-local directory named by `[build] local_tmpdir_base` in the host's own config (a log under that directory is read), and `logfile unreadable on host` for a log that is missing, empty or unreadable. On the `kas.log` fallback, `recipe_log_tail` is the tail of the recipe log that `kas.log` names and `recipe_log_note` is null. A build host on an older bakar returns neither new key.
+
 ## How triage sources failure data
 
 Triage is structured-failure-first. Every `bakar build`, `bakar bitbake`, and
@@ -107,7 +112,9 @@ Triage is structured-failure-first. Every `bakar build`, `bakar bitbake`, and
 its `failures[]` is non-empty, triage names the failing recipe/task directly
 from it and prints a tail of the `logfile` each failure records - no `kas.log`
 scraping. The recorded `logfile` is a container path (`/work/...`); triage
-resolves it to a host path before reading it.
+resolves it to a host path before reading it. The JSON form reads the same log
+through the same check, so a logfile that resolves outside the workspace is not
+read.
 
 The failing step event also carries the first error line the build printed.
 Triage reports it as the reason, falling back to `exit_code=N` when the build

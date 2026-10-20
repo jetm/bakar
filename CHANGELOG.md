@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Builds launched inside a `systemd-run --scope` no longer have `${VAR}` and `$$` in their command rewritten by systemd.
 - `bakar triage` prints a recorded failure reason with its square-bracketed text, and no longer aborts on a reason that holds a closing tag with no opening tag.
 - A build whose checkout is not the workspace's own `meta-avocado` clone keeps that checkout when an overlay declares `meta-avocado` itself, as `kas/feature/tpm.yml` and `kas/feature/cve-check.yml` do. A routed or dispatched build used to fail with a missing machine file under a temporary directory, and a pinned worktree build could build the workspace's clone instead.
+- `bakar triage --json` for a failed bitbake task now returns the last lines of the task log as `recipe_log_tail`, the host path of that log as `recipe_log`, and the suggestions matched against it, so an agent no longer reads `log.do_*` on the build host. `fail_reason` stays null for a task failure, as `error` does in `bakar status`.
 
 ### Changed
 

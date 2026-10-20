@@ -89,9 +89,11 @@ When `failure.step` is `stopped`, the build was cancelled on purpose. Report it;
 
 When `failure.step` is `doctor`, the pre-flight checks refused the build before it started, and `failure.error` names the blocking check and its message. Report that and clear the named condition before launching the build again; for a lock held by another build, find the build with `bakar ps --json` and ask the user before stopping it. Never relaunch it unchanged.
 
-For any other failure, `failure.error` carries the cause, and `bakar triage <run_id> --json` gives a `fail_reason` equal to it.
+For a task failure (`failure.recipe` and `failure.task` are set and `failure.error` is null), `bakar triage <run_id> --json` returns the last lines of the task log in `recipe_log_tail` and the hints matched against them in `suggestions`. Read those, not the `log.do_*` files on the build host. An empty `recipe_log_tail` comes with a `recipe_log_note` that says why.
 
-A refused build recorded before this version, or dispatched to a build host that runs an older bakar, reads `blocking failure` with no check named. A run ended by `kill` or `systemctl stop` cannot be told from an ordinary failure: its `failure.error` is `exit_code=N` and `failure.step` is never `stopped`.
+For any other failure, `failure.error` carries the cause, and the `fail_reason` of the same triage document equals it.
+
+A refused build recorded before this version, or dispatched to a build host that runs an older bakar, reads `blocking failure` with no check named. A build host on an older bakar also returns no `recipe_log_tail`. A run ended by `kill` or `systemctl stop` cannot be told from an ordinary failure: its `failure.error` is `exit_code=N` and `failure.step` is never `stopped`.
 
 ## Where to build
 
