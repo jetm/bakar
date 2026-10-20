@@ -82,3 +82,20 @@ def test_after_detach_with_on_drops_run_from_stop() -> None:
     assert "bakar status h --json --on pc3" in text
     assert "bakar stop --on pc3" in text
     assert "--run" not in text
+
+
+@pytest.mark.parametrize("on", [None, "pc3"])
+def test_after_detach_wait_line_says_background(on: str | None) -> None:
+    lines = _hints.after_detach("R", "r1", on=on)
+    wait = next(line for line in lines if line.startswith("hint: wait:"))
+    expected = "bakar wait R --timeout 540" + (f" --on {on}" if on else "")
+    assert expected in wait
+    assert "background" in wait
+    assert "124" in wait
+
+
+def test_after_detach_wait_line_stays_off_stdout(streams: tuple[io.StringIO, io.StringIO]) -> None:
+    out, err = streams
+    _hints.emit(_hints.after_detach("R", "r1", on="pc3"))
+    assert out.getvalue() == ""
+    assert "background" in err.getvalue()

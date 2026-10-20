@@ -38,7 +38,8 @@ def after_detach(handle: str, run_id: str | None, on: str | None = None) -> list
     """Follow-ups for a detached run: wait, status and stop."""
     suffix = f" --on {on}" if on else ""
     lines = [
-        f"hint: wait: `bakar wait {handle} --timeout {_WAIT_TIMEOUT}{suffix}`",
+        f"hint: wait: `bakar wait {handle} --timeout {_WAIT_TIMEOUT}{suffix}`"
+        " - run it in the background so the session is notified when the build ends; re-run it on exit 124",
         f"hint: status: `bakar status {handle} --json{suffix}`",
     ]
     if on:
