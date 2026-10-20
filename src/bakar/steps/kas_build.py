@@ -126,6 +126,7 @@ from bakar.steps.kas_pty import (
 from bakar.triage import translate_container_path, write_error_report
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from typing import IO
 
     from bakar.bsp_model import BspModel
@@ -1097,7 +1098,7 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
     # its warn/error counts even if _run_pty_with_ui raises before returning.
     ui = BuildUIState(
         start_monotonic=log.start_monotonic,
-        logfile_translator=(None if cfg.host_mode else lambda p: translate_container_path(p, cfg.bsp_root)),
+        logfile_translator=_ui_logfile_translator(cfg),
         timings_path=timings_path,
         show_baseline_drift=cfg.show_baseline_drift,
     )
@@ -1297,7 +1298,7 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
 
     ui = BuildUIState(
         start_monotonic=log.start_monotonic,
-        logfile_translator=(None if cfg.host_mode else lambda p: translate_container_path(p, cfg.bsp_root)),
+        logfile_translator=_ui_logfile_translator(cfg),
         timings_path=task_timings.timings_path_for(cfg.bsp_root, cfg.machine, host_mode=cfg.host_mode),
         show_baseline_drift=cfg.show_baseline_drift,
     )
@@ -1917,6 +1918,19 @@ def persist_run_artifacts(
         )
     except Exception:  # noqa: BLE001 - a malformed artifact must not fail a completed build
         return None
+
+
+def _ui_logfile_translator(cfg: BuildConfig) -> Callable[[str], str] | None:
+    """Return the build-UI translator for in-container log paths, or None.
+
+    Container paths are rooted at ``/work``, which is ``cfg.kas_work_dir`` (the
+    workspace for meta-avocado, ``bsp_root`` otherwise), so the translator maps
+    against that same root. Host mode has no container and so no translator.
+    """
+    if cfg.host_mode:
+        return None
+    root = cfg.kas_work_dir
+    return lambda p: translate_container_path(p, root)
 
 
 def _container_eventlog_path(cfg: BuildConfig, log: RunLogger) -> str:
