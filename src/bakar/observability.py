@@ -573,6 +573,61 @@ def run_has_ended(run_dir: Path) -> bool:
     return last_run_event(run_dir / "events.jsonl", lambda r: r.get("event") in ("run_end", "run_error")) is not None
 
 
+def _record_epoch(rec: dict[str, Any]) -> float | None:
+    """Epoch seconds of a record's ISO-8601 ``ts``, or None when it does not parse."""
+    ts = rec.get("ts")
+    if not isinstance(ts, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
+
+
+def run_ended_at(run_dir: Path) -> float | None:
+    """Epoch seconds of the run's last ``run_end`` or ``run_error`` record.
+
+    None when the log holds no such record or that record's ``ts`` does not parse.
+    """
+    rec = last_run_event(run_dir / "events.jsonl", lambda r: r.get("event") in ("run_end", "run_error"))
+    return None if rec is None else _record_epoch(rec)
+
+
+def last_record_at(run_dir: Path) -> float | None:
+    """Epoch seconds of the last record in ``events.jsonl`` whose ``ts`` parses."""
+    last: float | None = None
+    for rec in iter_run_events(run_dir / "events.jsonl"):
+        epoch = _record_epoch(rec)
+        if epoch is not None:
+            last = epoch
+    return last
+
+
+def frontend_pid(run_id: str) -> int | None:
+    """The front-end pid a run id embeds: the integer after its last hyphen."""
+    tail = run_id.rsplit("-", 1)[-1]
+    return int(tail) if tail.isdecimal() and "-" in run_id else None
+
+
+def frontend_alive(run_dir: Path) -> bool:
+    """True while the run's front-end process is alive and is a bakar process.
+
+    The cmdline check guards against the pid having been reused by something
+    unrelated after the front end died.
+    """
+    pid = frontend_pid(run_dir.name)
+    if pid is None or pid <= 0:
+        return False
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return b"bakar" in cmdline
+
+
 def step_fail_text(rec: dict) -> str | None:
     """Return the failure text of a ``step_fail`` record, preferring ``error``."""
     for key in ("error", "reason"):

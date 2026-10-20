@@ -26,6 +26,8 @@ from bakar.commands._helpers import WorkspaceOption, _find_run, _find_workspace_
 from bakar.commands._status_detail import build_detail, detail_lines
 from bakar.commands.monitor import _build_progress
 from bakar.commands.triage import _read_structured_failures, _resolve_triage_dirs
+from bakar.observability import frontend_alive as _frontend_alive
+from bakar.observability import frontend_pid as _frontend_pid  # noqa: F401 - tests reach it as status._frontend_pid
 from bakar.observability import iter_run_events, last_run_event
 
 _IS_ACTIVE_TIMEOUT = 5
@@ -173,28 +175,6 @@ def _unit_log(unit: str) -> str | None:
 
 def _outcome(code: int) -> tuple[str, int]:
     return ("succeeded" if code == 0 else "failed"), code
-
-
-def _frontend_pid(run_id: str) -> int | None:
-    """The front-end pid a run id embeds: the integer after its last hyphen."""
-    tail = run_id.rsplit("-", 1)[-1]
-    return int(tail) if tail.isdecimal() and "-" in run_id else None
-
-
-def _frontend_alive(run_dir: Path) -> bool:
-    """True while the run's front-end process is alive and is a bakar process.
-
-    The cmdline check guards against the pid having been reused by something
-    unrelated after the front end died.
-    """
-    pid = _frontend_pid(run_dir.name)
-    if pid is None or pid <= 0:
-        return False
-    try:
-        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        return False
-    return b"bakar" in cmdline
 
 
 def _run_live(run_dir: Path | None) -> bool:
