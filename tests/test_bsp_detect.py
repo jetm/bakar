@@ -837,3 +837,57 @@ def test_origin_identity_git_unavailable_falls_back_to_name(tmp_path: Path, monk
     assert is_meta_avocado_yaml(public) is True
     assert is_meta_avocado_yaml(nonpublic) is True
     assert meta_avocado_checkout(nonpublic) == (tmp_path / "b" / "meta-avocado").resolve()
+
+
+# --- workspace detection applies the origin identity rule --------------------
+
+_GH_NONPUBLIC = "git@github.com:x/meta-avocado-nonpublic.git"
+_GH_PUBLIC = "git@github.com:avocado-linux/meta-avocado.git"
+
+
+def test_workspace_vetoed_clone_named_meta_avocado_resolves_to_kas_parent(tmp_path: Path) -> None:
+    kas = _clone(tmp_path / "ws" / "meta-avocado", _GH_NONPUBLIC)
+    assert is_meta_avocado_yaml(kas) is False
+    assert detect_kas_workspace(kas) == kas.resolve().parent
+    assert detect_kas_workspace(kas).name == "machine"
+
+
+def test_workspace_vetoed_clone_under_bakar_toml_resolves_to_that_ancestor(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / ".bakar.toml").write_text("")
+    kas = _clone(root / "ws" / "meta-avocado", _GH_NONPUBLIC)
+    assert detect_kas_workspace(kas) == root.resolve()
+
+
+def test_workspace_public_clone_resolves_to_meta_avocado_parent(tmp_path: Path) -> None:
+    checkout = tmp_path / "ws" / "meta-avocado"
+    kas = _clone(checkout, _GH_PUBLIC)
+    assert detect_kas_workspace(kas) == checkout.resolve().parent
+
+
+def test_workspace_clone_without_origin_resolves_to_meta_avocado_parent(tmp_path: Path) -> None:
+    checkout = tmp_path / "ws" / "meta-avocado"
+    kas = _clone(checkout, None)
+    assert detect_kas_workspace(kas) == checkout.resolve().parent
+
+
+def test_workspace_real_clone_under_bakar_toml_still_resolves_to_clone_parent(tmp_path: Path) -> None:
+    """The ancestor walk runs before the marker walk, so a .bakar.toml further up does not win."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / ".bakar.toml").write_text("")
+    checkout = root / "ws" / "meta-avocado"
+    kas = _clone(checkout, _GH_PUBLIC)
+    assert detect_kas_workspace(kas) == checkout.resolve().parent
+
+
+def test_workspace_generated_yaml_skips_vetoed_meta_avocado_sibling(tmp_path: Path) -> None:
+    """A vetoed meta-avocado sibling is not a workspace marker for a generated YAML beside it."""
+    root = tmp_path / "sources"
+    _clone(root / "meta-avocado", _GH_NONPUBLIC)
+    build = root / "build-x"
+    build.mkdir()
+    p = build / "foo.yml"
+    p.write_text("machine: qemuarm64\n")
+    assert detect_kas_workspace(p) == build.resolve()

@@ -337,6 +337,11 @@ def detect_kas_workspace(yaml_path: Path) -> Path:
     marker walk: the first ancestor holding a ``.bakar.toml`` file or a
     ``meta-avocado/`` subdirectory is the workspace root.
 
+    A directory named ``meta-avocado`` counts, in either walk, only when its
+    repository's ``origin`` does not name another repository - the same rule
+    :func:`is_meta_avocado_yaml` applies - so a ``meta-avocado-nonpublic``
+    clone checked out under that name is not pinned at its parent.
+
     For every other generic kas YAML the workspace is simply the YAML's
     parent directory (preserving the existing behavior).
     """
@@ -345,10 +350,13 @@ def detect_kas_workspace(yaml_path: Path) -> Path:
         return wt.main_checkout.parent
     resolved = yaml_path.resolve()
     for parent in resolved.parents:
-        if parent.name == "meta-avocado":
+        if parent.name == _META_AVOCADO and not _origin_vetoes(parent):
             return parent.parent
     for parent in resolved.parents:
-        if (parent / ".bakar.toml").is_file() or (parent / "meta-avocado").is_dir():
+        if (parent / ".bakar.toml").is_file():
+            return parent
+        candidate = parent / _META_AVOCADO
+        if candidate.is_dir() and not _origin_vetoes(candidate):
             return parent
     return resolved.parent
 
