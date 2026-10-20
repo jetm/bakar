@@ -697,6 +697,50 @@ def _ssh_bash_capture(
         return timed_out
 
 
+def stream_bash_script(host: str, script: str) -> int:
+    """Run ``script`` on ``host`` through ``bash -s`` and stream its stdout.
+
+    The streaming twin of :func:`_ssh_bash_capture`, for a remote command that
+    runs until interrupted (``bakar log --on``). Remote stdout is copied line by
+    line to the local stdout; remote stderr is inherited, so diagnostics never
+    mix into a piped log. Returns the ssh exit status, or 255 (ssh's own
+    connection-failure code) when the link dies before the script is delivered.
+    A Ctrl-C terminates the ssh child, killing it when it does not exit within
+    5 seconds, and re-raises so the caller picks the exit status.
+    """
+    proc = subprocess.Popen(
+        _ssh_argv(host, "bash", "-s", batch_mode=True),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=None,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    try:
+        try:
+            proc.stdin.write(script)
+            proc.stdin.close()
+        except BrokenPipeError:
+            print(f"connection to {host} lost before the script was delivered", file=sys.stderr)
+            proc.wait()
+            return 255
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        return proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        raise
+
+
 @dataclass
 class DispatchPlan:
     """What a dispatch is about to change on the remote host, printed before it does.

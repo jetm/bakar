@@ -526,6 +526,27 @@ def run_on_host(
     return proc.returncode
 
 
+def stream_on_host(host: str, command: str, options: list[str], *, transport_exit: int) -> int:
+    """Run ``bakar <command> <options>`` on ``host`` and stream its stdout until it ends.
+
+    The streaming twin of :func:`run_on_host`, for a command that runs until
+    interrupted (``bakar log``). The same preflight runs first, the command goes
+    over stdin to ``bash -s`` with every word shlex-quoted, and a failed
+    transport (ssh exit 255) returns ``transport_exit``. A ``KeyboardInterrupt``
+    propagates to the caller after the ssh child is stopped.
+    """
+    from bakar.steps import remote_dispatch as rd
+
+    refused = _preflight(host, transport_exit=transport_exit)
+    if refused is not None:
+        return refused
+    code = rd.stream_bash_script(host, shlex.join(["bakar", command, *options]) + "\n")
+    if code == SSH_TRANSPORT_FAILURE:
+        print(f"bakar {command}: ssh to {host} failed (exit {SSH_TRANSPORT_FAILURE})", file=sys.stderr)
+        return transport_exit
+    return code
+
+
 OnOption = Annotated[
     str | None,
     typer.Option("--on", help="Query the run on this host over ssh instead of locally."),
