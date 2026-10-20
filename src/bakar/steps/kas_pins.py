@@ -10,6 +10,9 @@ any missing repository that no include names.
 The three skips do not stop kas from cloning a repository an include names, so
 the includes are walked first and any repository other than ``meta-avocado``
 is refused before kas runs.
+
+When extra files are merged, a pin of the checkout is merged after them so
+that an overlay that names ``meta-avocado`` cannot move it.
 """
 
 from __future__ import annotations
@@ -141,7 +144,9 @@ def read_merged_config(
     """Return the merged kas config of ``kas_yaml`` read from ``checkout``.
 
     ``extra_files`` are merged after the entry in the given order, as the
-    build's own dump merges its overlays.
+    build's own dump merges its overlays. When there are any, a pin of the
+    checkout is merged after the extras so that an overlay that names
+    ``meta-avocado`` cannot move it.
 
     With ``wrap_parent`` (the build's ``bsp_root``) the throwaway wrapper is a
     uniquely named file directly in it and the extras are named in place, so
@@ -166,6 +171,7 @@ def read_merged_config(
             "the release cannot be read without fetching them"
         )
     text = bsp_detect.meta_avocado_wrapper_text(checkout, kas_yaml)
+    pin_text = bsp_detect.meta_avocado_pin_text(checkout) if extra_files else None
     with tempfile.TemporaryDirectory(prefix="bakar-kas-pins-work-") as work_dir:
         if wrap_parent is None:
             with tempfile.TemporaryDirectory(prefix="bakar-kas-pins-") as wrap_dir:
@@ -177,18 +183,31 @@ def read_merged_config(
                     copy = Path(wrap_dir) / f"extra-{index:02d}-{extra.name}"
                     shutil.copyfile(extra, copy)
                     extras.append(copy)
+                if pin_text is not None:
+                    pin = Path(wrap_dir) / "avocado-pin.yml"
+                    pin.write_text(pin_text)
+                    extras.append(pin)
                 out = _run_dump(kas_yaml, wrapper, extras, cwd=Path(wrap_dir), work_dir=work_dir)
         else:
             parent = wrap_parent.absolute()
             fd, name = tempfile.mkstemp(prefix=PROBE_PREFIX, suffix=".yml", dir=parent)
             wrapper = Path(name)
+            pin_path: Path | None = None
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(text)
                 extras = [extra.absolute() for extra in extra_files]
+                if pin_text is not None:
+                    pin_fd, pin_name = tempfile.mkstemp(prefix=PROBE_PREFIX + "pin-", suffix=".yml", dir=parent)
+                    pin_path = Path(pin_name)
+                    with os.fdopen(pin_fd, "w", encoding="utf-8") as fh:
+                        fh.write(pin_text)
+                    extras.append(pin_path)
                 out = _run_dump(kas_yaml, wrapper, extras, cwd=parent, work_dir=work_dir)
             finally:
                 wrapper.unlink(missing_ok=True)
+                if pin_path is not None:
+                    pin_path.unlink(missing_ok=True)
 
     if out.returncode != 0:
         if _MISSING_MARKER in out.stderr:

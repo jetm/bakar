@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from bakar import bsp_detect
 from bakar.release_workspace import ReleaseRoutingError
 from bakar.steps import kas_pins
 
@@ -268,10 +269,11 @@ def test_extra_files_follow_the_wrapper_in_order(tmp_path: Path) -> None:
     with patch.object(kas_pins.subprocess, "run", run):
         kas_pins.read_merged_config(kas_yaml, checkout=checkout, extra_files=[first, second])
 
-    ((wrapper, one, two),) = seen
+    ((wrapper, one, two, pin),) = seen
     assert "repo: meta-avocado" in wrapper
     assert one == first.read_text()
     assert two == second.read_text()
+    assert pin == bsp_detect.meta_avocado_pin_text(checkout)
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +304,10 @@ def test_wrap_parent_names_extras_in_place_beside_the_probe(tmp_path: Path) -> N
     assert wrapper.parent == bsp
     assert wrapper.name.startswith(kas_pins.PROBE_PREFIX)
     assert "repo: meta-avocado" in wrapper_text
-    assert files[1:] == [str(overlay)]
+    assert files[1:-1] == [str(overlay)]
+    pin = Path(files[-1])
+    assert pin.parent == bsp
+    assert pin.name.startswith(kas_pins.PROBE_PREFIX)
     assert cwd == bsp
     assert not wrapper.exists()
     assert list(bsp.glob(f"{kas_pins.PROBE_PREFIX}*")) == []
@@ -331,3 +336,192 @@ def test_wrap_parent_probe_is_removed_after_a_failure(tmp_path: Path, outcome: o
         kas_pins.read_merged_config(kas_yaml, checkout=checkout, wrap_parent=bsp)
 
     assert list(bsp.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# Pin file: merged after the extras so an overlay cannot move meta-avocado
+# ---------------------------------------------------------------------------
+
+
+class _FilesRecorder:
+    """Read every file the dump names; ``_Recorder`` reads only the last argument as one path."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def __call__(self, argv, **kwargs):
+        paths = [Path(f) for f in argv[-1].split(":")]
+        self.calls.append({"paths": paths, "texts": [p.read_text() for p in paths], "cwd": Path(kwargs["cwd"])})
+        return subprocess.CompletedProcess(argv, 0, "repos: {}\n", "")
+
+
+def _expected_pin(checkout: Path) -> dict:
+    return {"header": {"version": 16}, "repos": {"meta-avocado": {"path": str(checkout.resolve())}}}
+
+
+def test_pinfile_follows_the_extras_in_the_temporary_layout(tmp_path: Path) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    first = tmp_path / "one.yml"
+    first.write_text("header:\n  version: 16\nmachine: one\n")
+    second = tmp_path / "two.yml"
+    second.write_text("header:\n  version: 16\nmachine: two\n")
+    rec = _FilesRecorder()
+    with patch.object(kas_pins.subprocess, "run", rec):
+        kas_pins.read_merged_config(kas_yaml, checkout=checkout, extra_files=[first, second])
+
+    (call,) = rec.calls
+    paths, texts = call["paths"], call["texts"]
+    assert [p.name for p in paths] == ["avocado-wrapper.yml", "extra-00-one.yml", "extra-01-two.yml", "avocado-pin.yml"]
+    assert texts[1:3] == [first.read_text(), second.read_text()]
+    assert yaml.safe_load(texts[-1]) == _expected_pin(checkout)
+    assert len({p.parent for p in paths}) == 1
+    assert not paths[0].parent.exists()
+
+
+def test_pinfile_sits_beside_the_wrap_parent_probe(tmp_path: Path) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    bsp = tmp_path / "ws" / "build-m"
+    overlay = bsp / ".bakar" / "overlays" / "main.yml"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text("header:\n  version: 16\n")
+    rec = _FilesRecorder()
+    with patch.object(kas_pins.subprocess, "run", rec):
+        kas_pins.read_merged_config(kas_yaml, checkout=checkout, extra_files=[overlay], wrap_parent=bsp)
+
+    (call,) = rec.calls
+    wrapper, named, pin = call["paths"]
+    assert named == overlay
+    assert wrapper.parent == bsp
+    assert pin.parent == bsp
+    assert wrapper.name.startswith(kas_pins.PROBE_PREFIX)
+    assert pin.name.startswith(kas_pins.PROBE_PREFIX)
+    assert wrapper != pin
+    assert yaml.safe_load(call["texts"][-1]) == _expected_pin(checkout)
+    assert list(bsp.glob(f"{kas_pins.PROBE_PREFIX}*")) == []
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        subprocess.CompletedProcess([], 0, "repos: {}\n", ""),
+        subprocess.CompletedProcess([], 1, "", "ERROR - Configuration file not found: x.yml\n"),
+        subprocess.TimeoutExpired(["kas"], 120),
+        FileNotFoundError("kas"),
+    ],
+)
+def test_pinfile_is_removed_from_the_build_dir_after_every_outcome(tmp_path: Path, outcome: object) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    bsp = tmp_path / "ws" / "build-m"
+    bsp.mkdir()
+    extra = tmp_path / "extra.yml"
+    extra.write_text("header:\n  version: 16\n")
+
+    def run(argv, **_kwargs):
+        # The wrapper and the pin, nothing else.
+        assert len(list(bsp.glob(f"{kas_pins.PROBE_PREFIX}*"))) == 2
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    failing = not (isinstance(outcome, subprocess.CompletedProcess) and outcome.returncode == 0)
+    with patch.object(kas_pins.subprocess, "run", run):
+        if failing:
+            with pytest.raises(ReleaseRoutingError):
+                kas_pins.read_merged_config(kas_yaml, checkout=checkout, extra_files=[extra], wrap_parent=bsp)
+        else:
+            kas_pins.read_merged_config(kas_yaml, checkout=checkout, extra_files=[extra], wrap_parent=bsp)
+
+    assert list(bsp.iterdir()) == []
+
+
+@pytest.mark.parametrize("in_build_dir", [False, True])
+def test_pinfile_is_not_merged_without_extras(tmp_path: Path, in_build_dir: bool) -> None:
+    checkout, kas_yaml = _layout(tmp_path)
+    bsp = tmp_path / "ws" / "build-m"
+    bsp.mkdir()
+    rec = _FilesRecorder()
+    with patch.object(kas_pins.subprocess, "run", rec):
+        kas_pins.read_merged_config(kas_yaml, checkout=checkout, wrap_parent=bsp if in_build_dir else None)
+
+    (call,) = rec.calls
+    (wrapper,) = call["paths"]
+    assert "repo: meta-avocado" in call["texts"][0]
+    if in_build_dir:
+        assert wrapper.parent == bsp
+    else:
+        assert wrapper.name == "avocado-wrapper.yml"
+
+
+def _real_checkout(tmp_path: Path) -> tuple[Path, Path]:
+    checkout = tmp_path / "meta-avocado"
+    entry = checkout / "kas" / "machine" / "m.yml"
+    entry.parent.mkdir(parents=True)
+    entry.write_text(
+        "header:\n"
+        "  version: 16\n"
+        "machine: qemux86-64\n"
+        "repos:\n"
+        "  meta-avocado:\n"
+        "    path: meta-avocado\n"
+        "    layers:\n"
+        "      meta-x:\n"
+    )
+    _git(checkout, "init", "-q")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-q", "-m", "init")
+    return checkout, entry
+
+
+@pytest.mark.skipif(shutil.which("kas") is None, reason="kas is not on PATH")
+@pytest.mark.parametrize("in_build_dir", [True, False])
+def test_real_kas_pinfile_keeps_meta_avocado_on_the_checkout(tmp_path: Path, in_build_dir: bool) -> None:
+    checkout, entry = _real_checkout(tmp_path)
+    bsp = tmp_path / "build-m"
+    bsp.mkdir()
+    overlay = bsp / "overlay.yml"
+    overlay.write_text(
+        "header:\n  version: 16\nrepos:\n  meta-avocado:\n    path: meta-avocado\n    layers:\n      meta-extra:\n"
+    )
+
+    merged = kas_pins.read_merged_config(
+        entry, checkout=checkout, extra_files=[overlay], wrap_parent=bsp if in_build_dir else None
+    )
+
+    repo = merged["repos"]["meta-avocado"]
+    assert repo["path"] == str(checkout.resolve())
+    assert {"meta-x", "meta-extra"} <= set(repo["layers"])
+
+
+@pytest.mark.skipif(shutil.which("kas") is None, reason="kas is not on PATH")
+def test_real_kas_pinfile_leaves_an_unrelated_overlay_unchanged(tmp_path: Path) -> None:
+    checkout, entry = _real_checkout(tmp_path)
+    overlay = tmp_path / "overlay.yml"
+    overlay.write_text('header:\n  version: 16\nlocal_conf_header:\n  pinfile-test: |\n    FOO = "1"\n')
+
+    merged = kas_pins.read_merged_config(entry, checkout=checkout, extra_files=[overlay])
+
+    manual = tmp_path / "manual"
+    manual.mkdir()
+    work = tmp_path / "manual-work"
+    work.mkdir()
+    wrapper = manual / "avocado-wrapper.yml"
+    wrapper.write_text(bsp_detect.meta_avocado_wrapper_text(checkout, entry))
+    copy = manual / "overlay.yml"
+    shutil.copyfile(overlay, copy)
+    out_path = tmp_path / "manual.out"
+    err_path = tmp_path / "manual.err"
+    argv = ["kas", "dump", "--skip", "repos_checkout", "--skip", "finish_setup_repos", "--skip", "repos_apply_patches"]
+    with out_path.open("w") as out, err_path.open("w") as err:
+        proc = subprocess.run(
+            [*argv, f"{wrapper}:{copy}"],
+            stdout=out,
+            stderr=err,
+            stdin=subprocess.DEVNULL,
+            cwd=manual,
+            env={**os.environ, "KAS_WORK_DIR": str(work)},
+            check=False,
+            start_new_session=True,
+        )
+    assert proc.returncode == 0, err_path.read_text()
+    assert merged == yaml.safe_load(out_path.read_text())
+    assert merged["local_conf_header"]["pinfile-test"] == 'FOO = "1"\n'
