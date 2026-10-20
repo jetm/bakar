@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The failing step event records the first error line the build printed, so `bakar status` and `bakar triage` can report why a run failed when no task is named.
 - The doctor step records the blocking checks, as `<check>: <message>` joined by a semicolon and a space, on its failing step event, so `bakar status` and `bakar triage` name the check that refused a build instead of `blocking failure`.
 - `bakar ps --on HOST` lists the builds on a host, and `bakar ps` lists a detached or dispatched build that has not started bitbake yet as a `unit` row.
+- `bakar log --on HOST` follows a run's log on a build host, and `bakar log --run ID` outside a workspace finds a run a detached or dispatched unit registered.
 
 ### Changed
 

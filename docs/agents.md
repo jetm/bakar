@@ -110,13 +110,13 @@ Run from the meta-avocado checkout or worktree and pass the kas YAML as a path r
 | `pgrep` or `ps \| grep` for a build | `bakar ps --json` (`bakar ps --on HOST --json` for a build dispatched to another host), `bakar status <handle> --json` |
 | `kill` or `pkill` on bitbake or kas | `bakar stop <kas.yml> --run <run_id>` |
 | reading `log.do_*` files | `bakar triage <run_id> --json` |
-| `tail` or `grep` on a build log | `bakar status <handle> --detail [--on HOST]` |
+| `tail` or `grep` on a build log | `bakar status <handle> --detail [--on HOST]` for progress; `bakar log --on HOST` to stream another host's log |
 | `grep -c FAILED` over a build log | `bakar status <handle> --detail [--on HOST]` |
 | `df` or `free` on the build host | `bakar status <handle> --detail [--on HOST]` |
 | `ssh HOST` probes for build progress | `bakar status <handle> --detail --on HOST` |
 | `ssh HOST 'bakar build ...'` | `bakar build <kas.yml> --on HOST --detach` |
 | `kas build` or `kas-container build` | `bakar build <kas.yml>` |
-| `tee` on build output | `bakar log` or `bakar monitor` |
+| `tee` on build output | `bakar log` or `bakar monitor`; `bakar log --on HOST` for a build on another host |
 
 ## Hints under Claude Code
 
