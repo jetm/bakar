@@ -103,7 +103,7 @@ One JSON object with exactly these twelve keys. A value that does not apply is
 | `tasks_done` | integer or null | Tasks finished, from the run's progress data |
 | `tasks_total` | integer or null | Tasks planned |
 | `tasks_running` | integer or null | Tasks executing now; null without a bitbake event log |
-| `elapsed_seconds` | number or null | Seconds since the run started |
+| `elapsed_seconds` | number or null | Seconds from the run's start to its terminal record for a finished run, to its last record for a run that ended without one, and to now only while the run is live (build or front-end process alive) |
 | `failure` | object or null | Set only when `state` is `failed`: `{"recipe", "task", "step", "error"}`. A task failure fills `recipe` and `task` (`step` and `error` null). Otherwise `step` and `error` say why: `step` is the first failing step (else the terminal error type) and `error` is the first error line the build printed (bitbake's `ERROR:` line or kas's own, as `ERROR: <message>`, at most 200 characters), captured while the build ran and never read from the log at query time. `error` is `exit_code=N` when the build printed none. When `bakar stop` ended the run, `step` is `stopped` and `error` is `stopped by bakar stop`, with `state` still `failed` (see [Stopped runs](#stopped-runs)). When the pre-flight checks refused the build, `step` is `doctor` and `error` names each failed blocking check as `<check>: <message>` (see [Refused builds](#refused-builds)). Null when the run recorded none of these |
 
 ```bash

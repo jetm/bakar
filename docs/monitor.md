@@ -83,7 +83,10 @@ is `null` when no build container is running. When no run exists the document is
 `runQueueTaskStarted` is seen (early parse/setscene), where `tasks_done` falls
 back to the executed-task success count. `elapsed_seconds` is derived from the
 run directory's `YYYYMMDD-HHMMSS-PID` name, because bitbake's `BuildStarted` event
-carries no timestamp (so `started` stays `null`).
+carries no timestamp (so `started` stays `null`). The span ends at the run's
+terminal record for a finished run, at its last record for a run that ended
+without one, and at now only while the run is live (build or front-end process
+alive).
 
 ## Examples
 

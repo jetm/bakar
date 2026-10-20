@@ -85,6 +85,10 @@ fewer, and this is the frozen schema `bakar ps --json` output must match:
 | `machine` | string | The resolved MACHINE, or the placeholder `"unknown"` under the same condition as `family` |
 | `elapsed_seconds` | integer | Seconds since the run started, or the placeholder `0` when the start time could not be determined |
 
+Host and container rows report the family and machine the build recorded when
+it started. A machine reads `unknown` when nothing names one (a run started
+before this version, or a `unit` row); it is never `generic`.
+
 `family` and `machine` are always `"unknown"` on a `unit` row. They fall
 back to `"unknown"` on a container-mode row whose `/work` bind-mount source
 can't be resolved (the runtime inspect call failed or timed out), or whose
