@@ -593,6 +593,17 @@ and uses the `kas` policy.
 
 ### Worktree build directories
 
+bakar takes a kas file to belong to a meta-avocado checkout when it sits under
+a directory named `meta-avocado`, or in a linked worktree whose main checkout
+directory has that name. When the enclosing repository has an `origin` remote,
+that remote's repository name must also be `meta-avocado`, so a different
+repository such as meta-avocado-nonpublic under a directory with that name is
+not taken for it. A repository with no `origin` is decided by its directory
+name alone. A worktree of a bare repository named `meta-avocado.git` counts,
+with the workspace root taken from the directory that holds the bare
+repository. A clone of meta-avocado in a directory with another name is not
+recognised, so build from a clone or worktree named `meta-avocado`.
+
 A build whose kas file sits in a linked `meta-avocado` worktree gets its own
 build directory, named by `[build] worktree_build_dir`. The default is
 `build-{stem}-{worktree}`, where `{stem}` is the kas file stem (for example
