@@ -776,3 +776,135 @@ def test_ps_on_host_transport_failure_exits_2(runner: _CliRunner, remote: MagicM
 
     assert result.exit_code == 2
     assert "255" in result.output
+
+
+# --- recorded build_config (family/machine from the run's own record) ---
+
+
+def _record_build_config(run_dir: Path, family: str, machine: str, mode: str = "host") -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    rec = {"event": "build_config", "family": family, "machine": machine, "mode": mode, "work_mount": None}
+    (run_dir / "events.jsonl").write_text(json.dumps(rec) + "\n")
+
+
+def _host_candidate(tmp_path: Path, machine: str, family: str = "generic") -> RunCandidate:
+    run_dir = tmp_path / "ws" / "build" / "runs" / "20260618-120000-111"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    root = RunRoot(bsp_root=tmp_path / "ws", family=family, resolve_workspace=tmp_path, resolve_family=family)
+    return RunCandidate(run_dir=run_dir, root=root, cfg=make_build_config(workspace=tmp_path / "ws", machine=machine))
+
+
+def _stub_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+    hosts: list[RunCandidate],
+    containers: list[ContainerCandidate] | None = None,
+) -> None:
+    monkeypatch.setattr(ps_cmd.proc_tree, "_discover_host_cookers", lambda: {"fake": frozenset()})
+    monkeypatch.setattr(ps_cmd.run_discovery, "correlate_host_discoveries", lambda _d, **_kw: hosts)
+    monkeypatch.setattr(ps_cmd.stop_container, "detect_runtime", lambda: "docker")
+    monkeypatch.setattr(
+        ps_cmd.stop_container, "discover_running_containers_or_warn", lambda _r: (containers or [], None)
+    )
+
+
+def test_ps_host_row_reports_recorded_family_and_machine(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cand = _host_candidate(tmp_path, machine="generic")
+    _record_build_config(cand.run_dir, "generic", "avocado-jetson-agx-orin")
+    _stub_discovery(monkeypatch, [cand])
+
+    plain = runner.invoke(app, ["ps"])
+    assert plain.exit_code == 0, plain.output
+    assert "machine=avocado-jetson-agx-orin" in plain.output
+    assert "machine=generic" not in plain.output
+
+    payload = json.loads(runner.invoke(app, ["ps", "--json"]).output)
+    assert payload[0]["machine"] == "avocado-jetson-agx-orin"
+
+
+def test_ps_host_row_without_record_reports_generic_as_unknown(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_discovery(monkeypatch, [_host_candidate(tmp_path, machine="generic")])
+
+    plain = runner.invoke(app, ["ps"])
+    assert "machine=unknown" in plain.output
+    assert "machine=generic" not in plain.output
+    assert json.loads(runner.invoke(app, ["ps", "--json"]).output)[0]["machine"] == "unknown"
+
+
+def test_ps_host_row_without_record_keeps_configured_machine(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_discovery(monkeypatch, [_host_candidate(tmp_path, machine="imx8mp-var-dart", family="nxp")])
+
+    out = runner.invoke(app, ["ps"]).output
+    assert "machine=imx8mp-var-dart" in out
+    assert "family=nxp" in out
+
+
+def test_ps_container_row_reads_the_record(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = tmp_path / "ws" / "build-s" / "build" / "runs" / "20260618-150000-444"
+    _record_build_config(run_dir, "meta-avocado", "avocado-jetson-agx-orin", mode="container")
+    _stub_discovery(monkeypatch, [], [ContainerCandidate(run_id=run_dir.name, container_id="c1")])
+    monkeypatch.setattr(ps_cmd, "_container_row_info", lambda _rt, _c: ("generic", "generic", run_dir))
+
+    out = runner.invoke(app, ["ps"]).output
+    assert "mode=container" in out
+    assert "family=meta-avocado" in out
+    assert "machine=avocado-jetson-agx-orin" in out
+
+
+def test_ps_container_row_without_run_dir_skips_lookup_and_stays_unknown(
+    runner: _CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_discovery(monkeypatch, [], [ContainerCandidate(run_id="20260618-160000-555", container_id="c2")])
+    monkeypatch.setattr(ps_cmd, "_container_row_info", lambda _rt, _c: ("unknown", "unknown", None))
+
+    def _boom(_run_dir: object) -> None:
+        raise AssertionError("lookup must be skipped when no run dir was recovered")
+
+    monkeypatch.setattr(ps_cmd.observability, "last_build_config", _boom)
+
+    result = runner.invoke(app, ["ps"])
+    assert result.exit_code == 0, result.output
+    assert "family=unknown" in result.output
+    assert "machine=unknown" in result.output
+
+
+def test_ps_unit_rows_and_json_keys_unchanged(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cand = _host_candidate(tmp_path, machine="generic")
+    _record_build_config(cand.run_dir, "generic", "avocado-jetson-agx-orin")
+    _stub_discovery(monkeypatch, [cand])
+    monkeypatch.setattr(ps_cmd.detach_records, "active_units", lambda: ["bakar-unit-1"])
+    monkeypatch.setattr(ps_cmd.detach_records, "read_registrations", lambda _u: [])
+
+    payload = json.loads(runner.invoke(app, ["ps", "--json"]).output)
+    assert [p["mode"] for p in payload] == ["host", "unit"]
+    unit = payload[1]
+    assert unit["family"] == "unknown"
+    assert unit["machine"] == "unknown"
+    for entry in payload:
+        assert set(entry) == {"run_id", "mode", "family", "machine", "elapsed_seconds"}
+
+
+def test_ps_container_row_survives_unreadable_run_record(
+    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "ws" / "build-s" / "build" / "runs" / "20260618-170000-666"
+    run_dir.mkdir(parents=True)
+    _stub_discovery(monkeypatch, [], [ContainerCandidate(run_id=run_dir.name, container_id="c3")])
+    monkeypatch.setattr(ps_cmd, "_container_row_info", lambda _rt, _c: ("nxp", "generic", run_dir))
+
+    def _denied(_run_dir: object) -> None:
+        raise PermissionError("events.jsonl")
+
+    monkeypatch.setattr(ps_cmd.observability, "last_build_config", _denied)
+
+    result = runner.invoke(app, ["ps"])
+    assert result.exit_code == 0, result.output
+    assert "family=nxp" in result.output
+    assert "machine=unknown" in result.output

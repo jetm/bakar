@@ -34,7 +34,7 @@ from typing import Annotated
 import typer
 
 import bakar.commands._app as _state
-from bakar import build_stop, detach_records, proc_tree, run_discovery, stop_container
+from bakar import build_stop, detach_records, observability, proc_tree, run_discovery, stop_container
 from bakar.commands._app import app, console
 from bakar.commands._helpers import _run_started_epoch
 from bakar.fmt import fmt_duration
@@ -158,6 +158,27 @@ def _container_row_info(runtime: str, candidate: stop_container.ContainerCandida
     return _UNKNOWN, _UNKNOWN, None
 
 
+def _recorded_identity(run_dir: Path | None, family: str, machine: str) -> tuple[str, str]:
+    """Return the ``(family, machine)`` to report for a run.
+
+    Prefers the run's own ``build_config`` record; a ``run_dir`` of None skips
+    the lookup. A machine of the placeholder ``generic`` is reported as
+    ``unknown`` whichever source it came from.
+    """
+    if run_dir is not None:
+        try:
+            record = observability.last_build_config(run_dir)
+        except OSError:
+            record = None
+        if record is not None:
+            rec_family, rec_machine = record.get("family"), record.get("machine")
+            if isinstance(rec_family, str) and rec_family:
+                family = rec_family
+            if isinstance(rec_machine, str) and rec_machine:
+                machine = rec_machine
+    return family, _UNKNOWN if machine == "generic" else machine
+
+
 def _collect_rows() -> list[_Row]:
     """Aggregate group 13's deduplicated host-wide discovery into display rows.
 
@@ -178,18 +199,23 @@ def _collect_rows() -> list[_Row]:
 
     host_candidates, container_candidates = run_discovery.dedup_across_sources(host_candidates, container_candidates)
 
-    rows: list[_Row] = [
-        _Row(
-            run_id=candidate.run_dir.name,
-            mode="host",
-            family=candidate.root.family,
-            machine=candidate.cfg.machine,
-            elapsed_seconds=_elapsed_seconds(candidate.run_dir, now),
+    rows: list[_Row] = []
+    for host_candidate in host_candidates:
+        family, machine = _recorded_identity(
+            host_candidate.run_dir, host_candidate.root.family, host_candidate.cfg.machine
         )
-        for candidate in host_candidates
-    ]
+        rows.append(
+            _Row(
+                run_id=host_candidate.run_dir.name,
+                mode="host",
+                family=family,
+                machine=machine,
+                elapsed_seconds=_elapsed_seconds(host_candidate.run_dir, now),
+            )
+        )
     for candidate in container_candidates:
         family, machine, run_dir = _container_row_info(runtime, candidate)
+        family, machine = _recorded_identity(run_dir, family, machine)
         rows.append(
             _Row(
                 run_id=candidate.run_id,
@@ -241,7 +267,8 @@ def ps(
     cookers), container-mode builds (``container``, discovered by querying the
     container runtime) and ``unit`` rows: a detached or dispatched build whose
     unit is active but has not started bitbake yet, with unknown family and
-    machine. One row per live build - run id, mode, family, and machine. With
+    machine. A foreground local build still in doctor or sync is not listed.
+    One row per listed build - run id, mode, family, and machine. With
     ``--json`` each row is emitted as an object with exactly five fields
     (``run_id``, ``mode``, ``family``, ``machine``, ``elapsed_seconds`` as a
     JSON integer); an empty result emits ``[]``. ``--on HOST`` runs ``bakar
