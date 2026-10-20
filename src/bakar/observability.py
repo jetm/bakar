@@ -308,6 +308,23 @@ class RunLogger:
         """
         self._emit("build_paths", tmpdir=_absolute_or_none(tmpdir), sstate_dir=_absolute_or_none(sstate_dir))
 
+    def build_config(self, family: str, machine: str, mode: str, work_mount: Path | None) -> None:
+        """Record the build's family, machine, mode and work mount as one ``build_config`` event.
+
+        ``bakar ps`` and ``bakar triage`` read this back to name the build's
+        machine and to map its ``/work`` paths. An empty or ``generic`` machine
+        is recorded as ``unknown``. Never raises: the
+        write goes through the best-effort :meth:`_emit`, and a path that cannot
+        be made absolute is recorded as null.
+        """
+        self._emit(
+            "build_config",
+            family=family,
+            machine="unknown" if machine in ("", "generic") else machine,
+            mode=mode,
+            work_mount=_absolute_or_none(work_mount),
+        )
+
     def check_start(self, check: str) -> None:
         """Emit a ``check_start`` event only - no console output.
 
@@ -530,6 +547,24 @@ def last_build_paths(run_dir: Path) -> tuple[Path | None, Path | None]:
     if rec is None:
         return None, None
     return _recorded_path(rec.get("tmpdir")), _recorded_path(rec.get("sstate_dir"))
+
+
+def last_build_config(run_dir: Path) -> dict[str, object] | None:
+    """Return the run's last ``build_config`` event as a dict, or None.
+
+    The dict carries ``family``, ``machine``, ``mode`` and ``work_mount``.
+    ``work_mount`` is None unless it is a non-empty absolute path string. A
+    missing ``events.jsonl`` or a run that never recorded the event gives None.
+    """
+    rec = last_run_event(run_dir / "events.jsonl", lambda r: r.get("event") == "build_config")
+    if rec is None:
+        return None
+    return {
+        "family": rec.get("family"),
+        "machine": rec.get("machine"),
+        "mode": rec.get("mode"),
+        "work_mount": _recorded_path(rec.get("work_mount")),
+    }
 
 
 STOP_REQUEST_FILENAME = "stop-request.json"
