@@ -378,3 +378,106 @@ def test_registered_run_unknown_id_and_bad_which(
     result = runner.invoke(app, ["log", "--which", "bogus", "--run", _RUN_ID])
     assert result.exit_code == 2
     assert "invalid --which value" in result.stderr
+
+
+def _record_stream(monkeypatch: pytest.MonkeyPatch, result: int | BaseException = 0) -> list[tuple]:
+    """Replace ``stream_on_host`` with a recorder that returns ``result`` (or raises it)."""
+    import bakar.commands.status as status_module
+
+    calls: list[tuple] = []
+
+    def _fake(host: str, command: str, options: list[str], *, transport_exit: int) -> int:
+        calls.append((host, command, list(options), transport_exit))
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(status_module, "stream_on_host", _fake)
+    return calls
+
+
+def test_on_host_forwards_default_options(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``bakar log --on pc3`` streams ``bakar log --which kas`` from pc3 with transport_exit=2."""
+    calls = _record_stream(monkeypatch)
+
+    result = runner.invoke(app, ["log", "--on", "pc3"])
+
+    assert result.exit_code == 0, result.stderr
+    assert calls == [("pc3", "log", ["--which", "kas"], 2)]
+
+
+def test_on_host_forwards_run_and_which(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _record_stream(monkeypatch)
+
+    result = runner.invoke(app, ["log", "--on", "pc3", "--run", "R", "--which", "console"])
+
+    assert result.exit_code == 0, result.stderr
+    assert calls == [("pc3", "log", ["--which", "console", "--run", "R"], 2)]
+
+
+@pytest.mark.parametrize(
+    ("extra", "label"),
+    [
+        (["my.yml"], "the positional kas YAML"),
+        # -w must name an existing directory or Typer rejects it before log_cmd runs.
+        (["-w", "{tmp}"], "-w/--workspace"),
+        (["-f", "default.xml"], "-f/--manifest"),
+    ],
+)
+def test_on_host_refuses_local_paths(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: list[str], label: str
+) -> None:
+    calls = _record_stream(monkeypatch)
+    args = [a.replace("{tmp}", str(tmp_path)) for a in extra]
+
+    result = runner.invoke(app, ["log", *args, "--on", "pc3"])
+
+    assert result.exit_code == 2
+    assert f"bakar log: {label} names a local path and cannot be combined with --on" in result.stderr
+    assert calls == []
+
+
+@pytest.mark.parametrize("code", [0, 1, 2, 7])
+def test_on_host_exit_status_is_stream_result(runner: CliRunner, monkeypatch: pytest.MonkeyPatch, code: int) -> None:
+    _record_stream(monkeypatch, code)
+
+    result = runner.invoke(app, ["log", "--on", "pc3"])
+
+    assert result.exit_code == code
+
+
+def test_on_host_keyboard_interrupt_exits_0(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _record_stream(monkeypatch, KeyboardInterrupt())
+
+    result = runner.invoke(app, ["log", "--on", "pc3", "--run", "R"])
+
+    assert result.exit_code == 0
+    assert len(calls) == 1
+
+
+def test_on_host_resolves_nothing_locally(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No workspace, config or registry lookup happens locally with ``--on``."""
+    calls = _record_stream(monkeypatch)
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("local resolution with --on")
+
+    monkeypatch.setattr(log_module, "_resolve_workspace", _boom)
+    monkeypatch.setattr(log_module, "_find_workspace_from_cwd", _boom)
+    monkeypatch.setattr(log_module, "resolve", _boom)
+    _forbid_registry(monkeypatch, "registry read locally with --on")
+
+    result = runner.invoke(app, ["log", "--on", "pc3", "--run", "R"])
+
+    assert result.exit_code == 0, result.stderr
+    assert len(calls) == 1
+
+
+def test_on_host_invalid_which_exits_2_first(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _record_stream(monkeypatch)
+
+    result = runner.invoke(app, ["log", "--on", "pc3", "--which", "bogus"])
+
+    assert result.exit_code == 2
+    assert "invalid --which value" in result.stderr
+    assert calls == []

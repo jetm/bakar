@@ -103,6 +103,17 @@ def log_cmd(
         typer.Option("--manifest", "-f", help="Manifest filename used to dispatch BSP family"),
     ] = None,
     workspace: WorkspaceOption = None,
+    on: Annotated[
+        str | None,
+        typer.Option(
+            "--on",
+            help=(
+                "Follow the log of a run on this host over ssh instead of locally. "
+                "--run takes a run ID or unit name the host registered; without it, "
+                "the newest unit's latest run is followed."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Tail the latest bakar run's kas.log live. Use --run for a specific run, --which to pick a different log file.
 
@@ -112,10 +123,34 @@ def log_cmd(
 
     Outside any workspace, ``--run`` (or, without it, the newest unit's latest
     run) is looked up among the runs a detached or dispatched unit registered.
+
+    With ``--on HOST`` nothing is resolved locally: ``bakar log --which W
+    [--run R]`` runs on the host from its home directory, so it finds the run
+    the host registered, and its stdout streams here until Ctrl-C.
     """
     if which not in _LOG_FILES:
         console.print(f"[red]invalid --which value[/]: {which!r} (expected one of: kas, console, events)")
         raise typer.Exit(code=2)
+
+    if on is not None:
+        for given, label in (
+            (kas_yaml, "the positional kas YAML"),
+            (workspace, "-w/--workspace"),
+            (manifest, "-f/--manifest"),
+        ):
+            if given is not None:
+                print(f"bakar log: {label} names a local path and cannot be combined with --on", file=sys.stderr)
+                raise typer.Exit(code=2)
+        from bakar.commands.status import stream_on_host
+
+        options = ["--which", which]
+        if run is not None:
+            options += ["--run", run]
+        try:
+            code = stream_on_host(on, "log", options, transport_exit=2)
+        except KeyboardInterrupt:
+            raise typer.Exit(code=0) from None
+        raise typer.Exit(code=code)
 
     if kas_yaml is None and workspace is None and _find_workspace_from_cwd() is None:
         # Outside any workspace (e.g. a host's home directory) a run a detached
