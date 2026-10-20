@@ -102,7 +102,7 @@ One JSON object with exactly these twelve keys. A value that does not apply is
 | `tasks_total` | integer or null | Tasks planned |
 | `tasks_running` | integer or null | Tasks executing now; null without a bitbake event log |
 | `elapsed_seconds` | number or null | Seconds since the run started |
-| `failure` | object or null | Set only when `state` is `failed`: `{"recipe", "task", "step", "error"}`. A task failure fills `recipe` and `task` (`step` and `error` null). Otherwise `step` and `error` say why: `step` is the first failing step (else the terminal error type) and `error` is the first error line the build printed (bitbake's `ERROR:` line or kas's own, as `ERROR: <message>`, at most 200 characters), captured while the build ran and never read from the log at query time. `error` is `exit_code=N` when the build printed none. When `bakar stop` ended the run, `step` is `stopped` and `error` is `stopped by bakar stop`, with `state` still `failed` (see [Stopped runs](#stopped-runs)). Null when the run recorded none of these |
+| `failure` | object or null | Set only when `state` is `failed`: `{"recipe", "task", "step", "error"}`. A task failure fills `recipe` and `task` (`step` and `error` null). Otherwise `step` and `error` say why: `step` is the first failing step (else the terminal error type) and `error` is the first error line the build printed (bitbake's `ERROR:` line or kas's own, as `ERROR: <message>`, at most 200 characters), captured while the build ran and never read from the log at query time. `error` is `exit_code=N` when the build printed none. When `bakar stop` ended the run, `step` is `stopped` and `error` is `stopped by bakar stop`, with `state` still `failed` (see [Stopped runs](#stopped-runs)). When the pre-flight checks refused the build, `step` is `doctor` and `error` names each failed blocking check as `<check>: <message>` (see [Refused builds](#refused-builds)). Null when the run recorded none of these |
 
 ```bash
 $ bakar status bakar-detach-20260701-090000-a1b2c3 --json
@@ -127,6 +127,19 @@ Limits, each of which reads as an ordinary failure:
 - A stop issued while the host's bakar is older than this version.
 
 A forced `bakar stop --on HOST --force` hard-kills the unit, including the wrapper that writes the exit sentinel. The run can then read `unknown` and `bakar wait` exits 3, because a stop request never decides the state.
+
+## Refused builds
+
+When the pre-flight checks refuse a build, the doctor step records the failed blocking checks on its failing event, joined by a semicolon and a space in the order they ran, as one clean line of at most 200 characters. When several checks fail together each entry is shortened to a fair share and ends with `...`. The complete results stay in `diagnosis.txt` in the run directory and in `bakar doctor`; `status` reads only the event records, never that file.
+
+```json
+"failure": {"recipe": null, "task": null, "step": "doctor", "error": "bitbake-locks: bitbake.lock held by PID 4242 - another build is running"}
+```
+
+Limits, each of which reads `blocking failure` with no check named:
+
+- A run recorded before this version.
+- A build dispatched to a host that runs an older bakar.
 
 ## Detail snapshot
 

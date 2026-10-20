@@ -91,10 +91,13 @@ With `--json`, triage prints one document with these keys: `version`,
 `fail_reason` is the same text as the `failure.error` of `bakar status` for the
 run: the captured error line, else `exit_code=N`. For a run ended by
 `bakar stop` it is `stopped by bakar stop` and `failing_step` is `stopped`. For
-a structured task failure it is null, because the failing recipe and task
+a build the pre-flight checks refused it is the doctor text, with
+`failing_step` `doctor` on the same line.
+For a structured task failure it is null, because the failing recipe and task
 already name the cause. A run that carries a stop request but recorded neither
 a failing step nor a non-zero terminal event reports no failure here, although
 `bakar status` can still derive `failed` for it from the unit's exit sentinel.
+The text form prints the reason as recorded, square brackets included.
 
 ## How triage sources failure data
 

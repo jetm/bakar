@@ -50,7 +50,7 @@ Progress lines go to stderr, one per poll (`--interval`, default 30 seconds, min
 - `state` is one of `starting`, `running`, `succeeded`, `failed`, `unknown`.
 - `succeeded` and `failed` come only from a recorded exit status, which is `exit_code`. Liveness only separates `running` from `unknown`.
 - `unit` is null for a run that was not detached. `run_id`, `run_dir` and the task counts are null until they exist.
-- `failure` is null unless `state` is `failed`; then it is `{"recipe": ..., "task": ..., "step": ..., "error": ...}`. A task failure sets `recipe` and `task`. Otherwise `step` is the failing step and `error` is the first error line the build printed (or `exit_code=N` when it printed none), with `recipe` and `task` null. When `bakar stop` ended the run, `step` is `stopped`. It is null when the run recorded none of these.
+- `failure` is null unless `state` is `failed`; then it is `{"recipe": ..., "task": ..., "step": ..., "error": ...}`. A task failure sets `recipe` and `task`. Otherwise `step` is the failing step and `error` is the first error line the build printed (or `exit_code=N` when it printed none), with `recipe` and `task` null. When `bakar stop` ended the run, `step` is `stopped`; when the pre-flight checks refused the build, `step` is `doctor`. It is null when the run recorded none of these.
 - `host` is the ssh target for a run queried with `--on`; a local query leaves it null.
 - `bakar status` exits 0 whenever it reports a state and 2 when the handle does not resolve. It never reflects the build outcome in its exit status; read `state`.
 
@@ -87,9 +87,11 @@ Without `--json` the same record prints as one line: `<id> <state> [exit=N] task
 
 When `failure.step` is `stopped`, the build was cancelled on purpose. Report it; do not diagnose, fix or relaunch unless asked.
 
+When `failure.step` is `doctor`, the pre-flight checks refused the build before it started, and `failure.error` names the blocking check and its message. Report that and clear the named condition before launching the build again; for a lock held by another build, find the build with `bakar ps --json` and ask the user before stopping it. Never relaunch it unchanged.
+
 For any other failure, `failure.error` carries the cause, and `bakar triage <run_id> --json` gives a `fail_reason` equal to it.
 
-A run recorded before this version, or one ended by `kill` or `systemctl stop`, cannot be told from an ordinary failure: its `failure.error` is `exit_code=N` and `failure.step` is never `stopped`.
+A run recorded before this version, or one ended by `kill` or `systemctl stop`, cannot be told from an ordinary failure: its `failure.error` is `exit_code=N` and `failure.step` is never `stopped`. A refused build from such a run reads `blocking failure`.
 
 ## Where to build
 
