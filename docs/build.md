@@ -511,6 +511,11 @@ with its `-avocado` suffix removed: `wrynose-avocado` builds `wrynose`,
 `scarthgap-avocado` builds `scarthgap`. When the merged config also sets
 `env.AVOCADO_YOCTO_SERIES` to a different value, bakar refuses and names both.
 
+When that dump fails, the error names the kas file, the overlays merged after it
+and the first twelve characters of the checkout's HEAD commit, and a path under
+bakar's empty work directory in kas's line means a kas file declares a
+repository by a relative path.
+
 The mapping lives in the user-global `~/.config/bakar/config.toml`. Keep it
 identical on every host; a remote host needs no config of its own for dispatch:
 
@@ -533,7 +538,13 @@ Routing applies to local builds too. Whenever a mapping resolves for the
 release, a meta-avocado kas build without `-w` uses the routed workspace as its
 workspace and `KAS_WORK_DIR`, wherever the kas file's checkout lives. The
 generated wrapper declares `meta-avocado` at the checkout's absolute path, so
-kas reads your checkout and not the workspace's own `meta-avocado`. A routed
+kas reads your checkout and not the workspace's own `meta-avocado`. An overlay
+that names `meta-avocado` itself, as `kas/feature/tpm.yml` does to add a layer,
+cannot move it: when the checkout is not the workspace's own clone, bakar
+merges a one-line pin of the checkout after the last overlay, in the build's
+dump and in the dump that reads the release, and the layers the overlay adds
+still apply. The build host runs its own bakar, so a host needs this version
+before a dispatch of such an overlay benefits. A routed
 path that does not exist stops the build with exit 2 before any kas command
 runs. With no mapping for the release, a local build resolves its workspace as
 before: the parent of the `meta-avocado` main checkout. `-w` always wins.
@@ -560,7 +571,9 @@ that has a `url:`:
 | missing | no checkout exists | left to kas, which clones it at its pin |
 | side | the checkout is on another commit or has local changes | the overlay points the repository's `path:` at `<workspace>/.bakar/pins/<repo>/<commit12>`, which kas clones from the pinned URL; the shared clone is never moved |
 
-The overlay is written to `<build dir>/avocado-reuse.yml` and merged last. Each
+The overlay is written to `<build dir>/avocado-reuse.yml` and merged after every
+other overlay; for a checkout the workspace does not own,
+`<build dir>/avocado-pin.yml` follows it. Each
 new side checkout prints one line,
 `side checkout <repo> at <commit12>: <path>`. An existing side checkout that is
 clean at its pin is frozen and reused as is; one with local changes or another

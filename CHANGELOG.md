@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `bakar triage` reports the same failure reason as `bakar status`, including `stopped by bakar stop` for a stopped run.
+- The error for a failed release or pins dump names the overlays merged and the checkout's HEAD revision.
 
 ### Fixed
 
@@ -36,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bakar triage` accepts a detached unit name and resolves it to the unit's latest registered run, naming the pick on stderr.
 - Builds launched inside a `systemd-run --scope` no longer have `${VAR}` and `$$` in their command rewritten by systemd.
 - `bakar triage` prints a recorded failure reason with its square-bracketed text, and no longer aborts on a reason that holds a closing tag with no opening tag.
+- A build whose checkout is not the workspace's own `meta-avocado` clone keeps that checkout when an overlay declares `meta-avocado` itself, as `kas/feature/tpm.yml` and `kas/feature/cve-check.yml` do. A routed or dispatched build used to fail with a missing machine file under a temporary directory, and a pinned worktree build could build the workspace's clone instead.
 
 ### Changed
 
