@@ -222,9 +222,9 @@ def _build_progress(run_dir: Path) -> dict[str, Any]:
         end = run_ended_at(run_dir)
         if end is None:
             end = time.time() if run_live else last_record_at(run_dir)
-        if end is None:
-            end = time.time()
-        elapsed = max(0.0, end - start_epoch)
+        # A dead run that left no parseable record has no end to measure to;
+        # falling back to now would grow its elapsed time forever.
+        elapsed = None if end is None else max(0.0, end - start_epoch)
     else:
         elapsed = None
 

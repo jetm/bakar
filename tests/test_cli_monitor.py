@@ -163,9 +163,10 @@ def test_json_once_emits_cluster_and_build(
     # The running entry's start time is the fixture zlib task's TaskStarted time.
     assert build["running"][0]["started"] == 2.0
     assert build["live"] is False
-    # Elapsed is derived from the run-dir name (BuildStarted carries no time),
-    # so it is populated even though build.started is None.
-    assert build["elapsed_seconds"] is not None and build["elapsed_seconds"] > 0
+    # Elapsed starts from the run-dir name (BuildStarted carries no time), but
+    # this run is not live and its fixture dir holds no events.jsonl, so there is
+    # no end to measure to and it reports null rather than growing with the clock.
+    assert build["elapsed_seconds"] is None
 
 
 def test_json_once_unparseable_run_id_reports_null_elapsed(

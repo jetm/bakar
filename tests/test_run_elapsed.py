@@ -91,3 +91,24 @@ def test_unparseable_run_name_is_none(tmp_path: Path, monkeypatch: pytest.Monkey
     run = _make_run(tmp_path, [{"ts": START, "event": "run_start"}], name="not-a-run-id")
     _patch(monkeypatch)
     assert monitor._build_progress(run)["elapsed_seconds"] is None
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [],
+        [{"event": "run_start"}, {"ts": "not-a-timestamp", "event": "step"}],
+    ],
+    ids=["no-records", "no-parseable-ts"],
+)
+def test_no_terminal_no_parseable_record_not_live_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, records: list[dict]
+) -> None:
+    run = _make_run(tmp_path, records)
+    _patch(monkeypatch)
+    now = _clock(monkeypatch, 2_000_000_000.0)
+    first = monitor._build_progress(run)["elapsed_seconds"]
+    now[0] += 20
+    second = monitor._build_progress(run)["elapsed_seconds"]
+    assert first is None
+    assert second is None

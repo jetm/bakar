@@ -86,7 +86,7 @@ run directory's `YYYYMMDD-HHMMSS-PID` name, because bitbake's `BuildStarted` eve
 carries no timestamp (so `started` stays `null`). The span ends at the run's
 terminal record for a finished run, at its last record for a run that ended
 without one, and at now only while the run is live (build or front-end process
-alive).
+alive). A run that is not live and left no parseable record reports `null`.
 
 ## Examples
 
