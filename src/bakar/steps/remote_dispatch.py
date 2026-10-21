@@ -47,6 +47,7 @@ from bakar.buildtools import parse_layerseries_corenames
 from bakar.config import WORKSPACE_FEED_DIRNAME, WORKSPACE_FEED_STAGE_DIRNAME
 from bakar.detach import escape_for_systemd_run
 from bakar.observability import RUN_ID_TS_FORMAT
+from bakar.output_mode import silence_stdout as _silence_stdout
 from bakar.output_mode import stdout_reader_gone
 
 if TYPE_CHECKING:
@@ -762,18 +763,6 @@ def stream_bash_script(host: str, script: str) -> int:
                 proc.wait()
         if local_gone:
             _silence_stdout()
-
-
-def _silence_stdout() -> None:
-    """Point fd 1 at ``/dev/null`` so interpreter shutdown cannot flush into a dead pipe."""
-    try:
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        try:
-            os.dup2(devnull, 1)
-        finally:
-            os.close(devnull)
-    except OSError:
-        pass
 
 
 @dataclass

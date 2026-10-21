@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from bakar.commands.log import _last_lines
-from bakar.output_mode import stdout_reader_gone
+from bakar.output_mode import silence_stdout, stdout_reader_gone
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -151,3 +151,40 @@ def test_tail_follow_returns_when_reader_closes(tmp_path: Path, content: bytes) 
     code = _wait_or_kill(child, timeout=5)
     assert code == 0, f"follower still running or failed; stderr: {err.read_text()!r}"
     assert "Exception ignored" not in err.read_text()
+
+
+# ---------------------------------------------------------------------------
+# (d) silence_stdout is best effort
+# ---------------------------------------------------------------------------
+
+
+def test_silence_stdout_swallows_open_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*_a: object, **_k: object) -> int:
+        raise OSError("no fds left")
+
+    dup2_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("bakar.output_mode.os.open", boom)
+    monkeypatch.setattr("bakar.output_mode.os.dup2", lambda a, b: dup2_calls.append((a, b)))
+
+    silence_stdout()
+
+    assert dup2_calls == []
+
+
+def test_silence_stdout_closes_devnull_when_dup2_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    opened = os.open(os.devnull, os.O_WRONLY)
+    closed: list[int] = []
+
+    def fake_dup2(_src: int, _dst: int) -> None:
+        raise OSError("dup2 refused")
+
+    try:
+        with monkeypatch.context() as mp:
+            mp.setattr("bakar.output_mode.os.open", lambda *_a, **_k: opened)
+            mp.setattr("bakar.output_mode.os.dup2", fake_dup2)
+            mp.setattr("bakar.output_mode.os.close", closed.append)
+            silence_stdout()
+    finally:
+        os.close(opened)
+
+    assert closed == [opened]

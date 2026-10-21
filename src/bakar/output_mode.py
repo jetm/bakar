@@ -9,6 +9,7 @@ violation (``steps/`` cannot import ``commands/``).
 
 from __future__ import annotations
 
+import os
 import select
 from enum import StrEnum
 
@@ -73,3 +74,18 @@ def stdout_reader_gone(fd: int = 1) -> bool:
         return False
     gone = select.POLLERR | select.POLLHUP | select.POLLNVAL
     return any(mask & gone for _fd, mask in events)
+
+
+def silence_stdout() -> None:
+    """Point fd 1 at ``/dev/null`` so interpreter shutdown cannot flush into a dead reader.
+
+    Best effort: a failure to open or redirect leaves fd 1 as it was.
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, 1)
+        finally:
+            os.close(devnull)
+    except OSError:
+        pass

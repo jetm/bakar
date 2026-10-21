@@ -20,6 +20,7 @@ from bakar.commands._helpers import (
     _resolve_workspace,
 )
 from bakar.config import BSPSpec, ResolveRequest, resolve
+from bakar.output_mode import silence_stdout as _silence_stdout
 from bakar.output_mode import stdout_reader_gone
 
 _LOG_FILES: dict[str, str] = {
@@ -61,15 +62,6 @@ def _last_lines(fh: BinaryIO, n: int, max_bytes: int = 8 * 1024 * 1024) -> tuple
         lines = lines[1:]
     truncated = start > 0 and len(data) >= max_bytes and len(lines) < n
     return (lines[-n:] if n > 0 else []), truncated
-
-
-def _silence_stdout() -> None:
-    """Point fd 1 at /dev/null so interpreter shutdown cannot flush into a dead reader."""
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(devnull, 1)
-    finally:
-        os.close(devnull)
 
 
 def _tail_follow(path: Path, history_lines: int = 40) -> None:
