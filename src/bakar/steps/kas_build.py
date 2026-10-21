@@ -566,8 +566,8 @@ def _ccache_args(
     # Always add the host mapping when hashequiv is enabled: _build_env calls
     # ensure_running() after _ccache_args, so the daemon may not be alive yet on
     # the first build. The flag is harmless when the daemon is absent and
-    # mandatory when it is running. sccache-dist needs the same route when its
-    # scheduler is on the host (localhost), reached via the gateway alias.
+    # mandatory when it is running. sccache-dist does not use this route: its
+    # scheduler URL must be a host LAN address (see the use_sccache_dist block).
     need_host_gateway = cfg.use_hashequiv
     if cfg.use_sccache_dist:
         # The in-container compiler launcher is the host sccache binary, mounted

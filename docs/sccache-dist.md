@@ -18,7 +18,7 @@ The scheduler hands compile jobs from clients to build-servers. The build-server
 
 bakar owns the client side only:
 
-- When `cfg.use_sccache_dist` is true, `bakar build` appends `overlays/bakar-tuning-sccache.yml`, which sets `CCACHE = "sccache "`, `INHERIT:remove = "ccache"` (ccache and sccache are mutually-exclusive launchers - chaining them double-wraps `CC`), and exports `SCCACHE_DIST_SCHEDULER_URL` from the env bakar passes in.
+- When `cfg.use_sccache_dist` is true, `bakar build` appends `overlays/bakar-tuning-sccache.yml`, which adds the bakar-provided `meta-bakar-sccache` layer and inherits its `sccache.bbclass` (`INHERIT += "sccache"`). The class sets `CCACHE` to the sccache launcher per recipe, only for recipes on its allow-list (`SCCACHE_INCLUDED_PN`), and exports `SCCACHE_DIST_SCHEDULER_URL` from the env bakar passes in. ccache stays the launcher for every other recipe, so there is no `INHERIT:remove`: the two are complementary, and the per-recipe override keeps `CC` from being double-wrapped.
 - `_build_env` exports `BAKAR_SCCACHE_SCHEDULER_URL = cfg.sccache_scheduler_url` into the build, but only when distributed compile is enabled. A disabled build is byte-for-byte unchanged: ccache stays as today.
 - `bakar doctor` runs the `sccache-dist` check (see [doctor integration](#doctor-integration)).
 
