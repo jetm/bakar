@@ -10,12 +10,14 @@ import yaml
 
 from bakar.steps.repo_reuse import (
     RepoFacts,
-    RepoReuseError,
     RepoState,
+    blocking,
     classify,
     classify_facts,
     gather_local_facts,
     pinned_entries,
+    render_pin_table,
+    render_refusal,
     reuse_overlay_text,
 )
 
@@ -102,11 +104,6 @@ def test_absent_is_missing(tmp_path: Path) -> None:
     assert state.state == "missing"
 
 
-def test_url_without_commit_raises(tmp_path: Path) -> None:
-    with pytest.raises(RepoReuseError, match="meta-x"):
-        classify({"meta-x": _entry(None)}, tmp_path)
-
-
 def test_url_less_entries_skipped(tmp_path: Path) -> None:
     assert classify({"meta-avocado": {"path": "meta-avocado"}, "x": None}, tmp_path) == []
 
@@ -152,21 +149,99 @@ def test_existing_clean_side_checkout_emits_path_and_null_url(tmp_path: Path) ->
     assert doc["repos"]["meta-x"] == {"path": side.relative_to(tmp_path).as_posix(), "url": None}
 
 
-def test_existing_dirty_side_checkout_raises(tmp_path: Path) -> None:
+def test_existing_dirty_side_checkout_is_blocking(tmp_path: Path) -> None:
     first, _ = _make_repo(tmp_path / "meta-x")
     side = _side_checkout(tmp_path, "meta-x", first)
     (side / "f.txt").write_text("dirty\n")
-    with pytest.raises(RepoReuseError, match=str(side)):
-        classify({"meta-x": _entry(first)}, tmp_path)
+    (state,) = classify({"meta-x": _entry(first)}, tmp_path)
+    assert state.state == "side"
+    assert state.blocking is not None
+    assert str(side) in state.blocking
+    assert state.side_exists is False
 
 
-def test_existing_side_checkout_at_other_head_raises(tmp_path: Path) -> None:
+def test_existing_side_checkout_at_other_head_is_blocking(tmp_path: Path) -> None:
     first, second = _make_repo(tmp_path / "meta-x")
     side = _side_checkout(tmp_path, "meta-x", second)
     renamed = side.parent / first[:12]
     side.rename(renamed)
-    with pytest.raises(RepoReuseError, match=str(renamed)):
-        classify({"meta-x": _entry(first)}, tmp_path)
+    (state,) = classify({"meta-x": _entry(first)}, tmp_path)
+    assert state.blocking is not None
+    assert str(renamed) in state.blocking
+
+
+def test_single_refusal_names_every_blocker(tmp_path: Path) -> None:
+    bb_first, _ = _make_repo(tmp_path / "bitbake")
+    oe_first, _ = _make_repo(tmp_path / "openembedded-core")
+    first, _ = _make_repo(tmp_path / "meta-x")
+    _side_checkout(tmp_path, "meta-x", first)
+    (tmp_path / ".bakar" / "pins" / "meta-x" / first[:12] / "f.txt").write_text("dirty\n")
+    states = classify(
+        {
+            "bitbake": _entry(bb_first),
+            "openembedded-core": _entry(oe_first),
+            "meta-x": _entry(first),
+        },
+        tmp_path,
+    )
+    assert [s.name for s in blocking(states)] == ["bitbake", "openembedded-core", "meta-x"]
+    text = render_refusal(states, repair="bakar sync -f m.yml")
+    assert text.splitlines()[0].startswith("3 repositories block")
+    for name in ("bitbake", "openembedded-core", "meta-x"):
+        assert f"  {name}: " in text
+    assert "off its pin or has local changes" in text
+    assert "has local changes or is not at its pin" in text
+    assert f"pin {bb_first[:12]}" in text
+    assert "clean" in text
+    assert "pin commit present" in text
+    assert "Move the clean clones to their pins with: bakar sync -f m.yml" in text
+
+
+def test_commit_less_url_is_blocking_not_raised(tmp_path: Path) -> None:
+    (state,) = classify({"meta-x": _entry(None)}, tmp_path)
+    assert state.state == "invalid"
+    assert state.pin is None
+    assert state.blocking == "no commit pin"
+    assert "pin none" in render_refusal([state], repair="r")
+
+
+def test_non_hex_pin_is_invalid(tmp_path: Path) -> None:
+    (state,) = classify({"meta-x": _entry("main")}, tmp_path)
+    assert state.state == "invalid"
+    assert state.blocking == "commit pin is not a hexadecimal commit id"
+
+
+def test_only_side_repos_do_not_block(tmp_path: Path) -> None:
+    first, _ = _make_repo(tmp_path / "meta-x")
+    states = classify({"meta-x": _entry(first)}, tmp_path)
+    assert states[0].state == "side"
+    assert blocking(states) == []
+    sides = [s for s in states if s.state == "side"]
+    assert [s.name for s in sides] == ["meta-x"]
+
+
+def test_refusal_lists_non_blocking_side_repos(tmp_path: Path) -> None:
+    bb_first, _ = _make_repo(tmp_path / "bitbake")
+    first, _ = _make_repo(tmp_path / "meta-x")
+    states = classify({"bitbake": _entry(bb_first), "meta-x": _entry(first)}, tmp_path)
+    text = render_refusal(states, repair="r")
+    assert text.splitlines()[0].startswith("1 repository blocks")
+    assert "Using side checkouts: meta-x" in text
+
+
+def test_render_pin_table_lists_every_repo(tmp_path: Path) -> None:
+    _, second = _make_repo(tmp_path / "frozen")
+    first, _ = _make_repo(tmp_path / "off")
+    states = classify(
+        {"frozen": _entry(second), "off": _entry(first), "gone": _entry("a" * 40), "bad": _entry(None)},
+        tmp_path,
+    )
+    lines = render_pin_table(states)
+    assert len(lines) == 4
+    assert lines[0].startswith("frozen: frozen, HEAD ")
+    assert lines[1].startswith("off: side, ")
+    assert lines[2].startswith("gone: missing, HEAD none, pin aaaaaaaaaaaa, unknown, pin commit unknown")
+    assert lines[3].startswith("bad: invalid, HEAD none, pin none")
 
 
 def test_overlay_parses_and_omits_missing(tmp_path: Path) -> None:

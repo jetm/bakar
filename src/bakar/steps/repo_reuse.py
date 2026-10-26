@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import sys
 import time
 from contextlib import contextmanager
@@ -30,7 +31,13 @@ from bakar.gitutil import git_stdout
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-RepoStateKind = Literal["frozen", "missing", "side"]
+RepoStateKind = Literal["frozen", "missing", "side", "invalid"]
+
+# The build puts <workspace>/bitbake/bin first on PATH and oe-core finds bitbake
+# as ../bitbake, so a side checkout of either is never the copy the build runs.
+NO_SIDE_CHECKOUT = ("bitbake", "openembedded-core")
+
+_HEX_PIN = re.compile(r"[0-9a-fA-F]{4,40}")
 
 _KAS_HEADER_VERSION = 16
 
@@ -53,13 +60,14 @@ class RepoReuseError(Exception):
 class RepoState:
     name: str
     path: Path
-    pin: str
+    pin: str | None
     state: RepoStateKind
     side_path: Path | None = None
     side_exists: bool = False
     head: str | None = None
     clean: bool | None = None
     pin_present: bool | None = None
+    blocking: str | None = None
 
 
 @contextmanager
@@ -209,19 +217,21 @@ def _at_pin(head: str | None, pin: str) -> bool:
 def classify_facts(entries: list[PinnedRepo], facts: list[RepoFacts]) -> list[RepoState]:
     """Apply the reuse rules to already-gathered facts.
 
-    A ``url`` without a ``commit`` raises, because kas would move that clone
-    to a branch tip; so does an existing side checkout that is not clean at
-    its pin.
+    Never raises: a repository the reuse policy cannot serve comes back with
+    ``blocking`` set to the reason, so the caller can report every blocker at
+    once. Those are a ``url`` without a usable ``commit`` (kas would move the
+    clone to a branch tip), an existing side checkout that is not clean at its
+    pin, and a side-kind entry named in ``NO_SIDE_CHECKOUT``. The head, clean
+    and pin-commit fields always describe the shared clone.
     """
     states: list[RepoState] = []
     for entry, fact in zip(entries, facts, strict=True):
         pin = entry.pin
-        if not pin:
-            raise RepoReuseError(
-                f"repository {entry.name!r} has a url but no commit pin; "
-                "kas would move the shared clone to a branch tip"
-            )
         extra = {"head": fact.head, "clean": fact.clean, "pin_present": fact.pin_present}
+        if not pin or not _HEX_PIN.fullmatch(pin):
+            reason = "no commit pin" if not pin else "commit pin is not a hexadecimal commit id"
+            states.append(RepoState(entry.name, entry.path, pin, "invalid", blocking=reason, **extra))
+            continue
         if not fact.exists:
             states.append(RepoState(entry.name, entry.path, pin, "missing", **extra))
             continue
@@ -229,10 +239,17 @@ def classify_facts(entries: list[PinnedRepo], facts: list[RepoFacts]) -> list[Re
             states.append(RepoState(entry.name, entry.path, pin, "frozen", **extra))
             continue
         if fact.side_exists and not (_at_pin(fact.side_head, pin) and fact.side_clean is True):
-            raise RepoReuseError(
-                f"side checkout {entry.side_path} for {entry.name!r} is not clean at "
-                f"pin {pin}; inspect it by hand, bakar never modifies it"
+            reason = (
+                f"side checkout {entry.side_path} has local changes or is not at its pin; "
+                "inspect it by hand, bakar never modifies it"
             )
+            states.append(RepoState(entry.name, entry.path, pin, "side", blocking=reason, **extra))
+            continue
+        if entry.name in NO_SIDE_CHECKOUT:
+            states.append(
+                RepoState(entry.name, entry.path, pin, "side", blocking="off its pin or has local changes", **extra)
+            )
+            continue
         states.append(RepoState(entry.name, entry.path, pin, "side", entry.side_path, fact.side_exists, **extra))
     return states
 
@@ -241,6 +258,48 @@ def classify(repos: dict, workspace: Path) -> list[RepoState]:
     """Classify every pinned repository in a kas ``repos`` mapping."""
     entries = pinned_entries(repos, workspace)
     return classify_facts(entries, gather_local_facts(entries))
+
+
+def blocking(states: list[RepoState]) -> list[RepoState]:
+    """The states the reuse policy refuses to build with."""
+    return [st for st in states if st.blocking is not None]
+
+
+def _short(value: str | None) -> str:
+    return value[:12] if value else "none"
+
+
+def _clean_word(clean: bool | None) -> str:
+    return "unknown" if clean is None else ("clean" if clean else "dirty")
+
+
+def _presence_word(present: bool | None) -> str:
+    return "unknown" if present is None else ("present" if present else "absent")
+
+
+def _facts_text(st: RepoState) -> str:
+    return (
+        f"HEAD {_short(st.head)}, pin {_short(st.pin)}, {_clean_word(st.clean)}, "
+        f"pin commit {_presence_word(st.pin_present)}"
+    )
+
+
+def render_refusal(states: list[RepoState], *, repair: str) -> str:
+    """One message naming every blocking repository and the repair command."""
+    blockers = blocking(states)
+    noun = "repository blocks" if len(blockers) == 1 else "repositories block"
+    lines = [f"{len(blockers)} {noun} this build:"]
+    lines.extend(f"  {st.name}: {st.blocking}; {_facts_text(st)}" for st in blockers)
+    lines.append(f"Move the clean clones to their pins with: {repair}")
+    sides = [st.name for st in states if st.state == "side" and st.blocking is None]
+    if sides:
+        lines.append(f"Using side checkouts: {', '.join(sides)}")
+    return "\n".join(lines)
+
+
+def render_pin_table(states: list[RepoState]) -> list[str]:
+    """One line per repository: kind, HEAD, pin, clean state, pin presence."""
+    return [f"{st.name}: {st.state}, {_facts_text(st)}" for st in states]
 
 
 def _kas_path(path: Path, workspace: Path) -> str:
