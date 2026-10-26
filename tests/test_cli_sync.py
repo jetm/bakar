@@ -580,8 +580,143 @@ def test_sync_kas_dry_run_changes_nothing(
 
     assert result.exit_code == 0, result.output
     assert f"repo-a: would move to {pin[:12]}" in _norm(result.output)
+    assert "would still block" not in _norm(result.output)
     assert _git("-C", str(repo), "rev-parse", "HEAD") == old
     assert not (lay.ws / ".bakar").exists()
+
+
+def test_sync_kas_dry_run_exits_1_when_a_dirty_bitbake_at_its_pin_would_still_block(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dry run predicts the real sync's post-sync re-check, exit code included."""
+    from bakar.steps import kas_pins
+
+    lay = meta_avocado_worktree_layout
+    repo, _old, pin = _pinned_clone(lay.ws, "bitbake")
+    _git("-C", str(repo), "checkout", "-q", "--detach", pin)
+    (repo / "f").write_text("local edit")
+    repos = {"bitbake": {"url": _PIN_URL, "commit": pin, "path": "bitbake"}}
+    monkeypatch.setattr(kas_pins, "probe_pins", lambda _yaml, _checkout: ("wrynose", repos))
+
+    dry = runner.invoke(app, ["sync", str(lay.kas_yaml), "-w", str(lay.ws), "--dry-run"])
+    real = runner.invoke(app, ["sync", str(lay.kas_yaml), "-w", str(lay.ws)])
+
+    out = _norm(dry.output)
+    assert dry.exit_code == 1, dry.output
+    assert "bitbake: already at its pin (has local changes)" in out
+    assert "after the sync 1 repository would still block a build, and bakar sync cannot clear it:" in out
+    assert f"bitbake ({repo}): off its pin or has local changes" in out
+    assert real.exit_code == dry.exit_code, real.output
+
+
+def _frozen_bitbake_and_dirty_core(ws: Path) -> dict:
+    """A clean bitbake at its pin and an openembedded-core at its pin with a local edit."""
+    bitbake, _old, bb_pin = _pinned_clone(ws, "bitbake")
+    _git("-C", str(bitbake), "checkout", "-q", "--detach", bb_pin)
+    core, _old, core_pin = _pinned_clone(ws, "openembedded-core")
+    _git("-C", str(core), "checkout", "-q", "--detach", core_pin)
+    (core / "f").write_text("local edit")
+    return {
+        "bitbake": {"url": _PIN_URL, "commit": bb_pin, "path": "bitbake"},
+        "openembedded-core": {"url": _PIN_URL, "commit": core_pin, "path": "openembedded-core"},
+    }
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("container", [True, False])
+def test_sync_kas_pairs_core_with_bitbake_only_in_host_mode(
+    runner: CliRunner,
+    meta_avocado_worktree_layout,
+    monkeypatch: pytest.MonkeyPatch,
+    container: bool,
+    dry_run: bool,
+) -> None:
+    """A container build refuses a dirty openembedded-core, so the re-check and the dry run do too."""
+    from bakar.steps import kas_pins
+
+    lay = meta_avocado_worktree_layout
+    repos = _frozen_bitbake_and_dirty_core(lay.ws)
+    monkeypatch.setattr(kas_pins, "probe_pins", lambda _yaml, _checkout: ("wrynose", repos))
+    monkeypatch.setenv("BAKAR_CONTAINER", "1" if container else "0")
+
+    argv = ["sync", str(lay.kas_yaml), "-w", str(lay.ws), *(["--dry-run"] if dry_run else [])]
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == (1 if container else 0), result.output
+    core = lay.ws / "openembedded-core"
+    assert (f"openembedded-core ({core}): off its pin or has local changes" in _norm(result.output)) is container
+
+
+def test_sync_kas_output_replaces_control_characters(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A kas key carrying an escape sequence cannot rewrite earlier terminal lines."""
+    from bakar.steps import kas_pins
+
+    lay = meta_avocado_worktree_layout
+    repos = {"repo-\x1b[2Kb": {"url": _PIN_URL, "path": "repo-b"}}
+    monkeypatch.setattr(kas_pins, "probe_pins", lambda _yaml, _checkout: ("wrynose", repos))
+
+    result = runner.invoke(app, ["sync", str(lay.kas_yaml), "-w", str(lay.ws), "--dry-run"])
+
+    assert "repo-?[2Kb: no commit pin" in result.output
+    assert "\x1b" not in result.output
+
+
+def test_sync_kas_exits_1_when_a_dirty_bitbake_at_its_pin_still_blocks_the_build(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar.steps import kas_pins
+
+    lay = meta_avocado_worktree_layout
+    repo, _old, pin = _pinned_clone(lay.ws, "bitbake")
+    _git("-C", str(repo), "checkout", "-q", "--detach", pin)
+    (repo / "f").write_text("local edit")
+    repos = {"bitbake": {"url": _PIN_URL, "commit": pin, "path": "bitbake"}}
+    monkeypatch.setattr(kas_pins, "probe_pins", lambda _yaml, _checkout: ("wrynose", repos))
+
+    result = runner.invoke(app, ["sync", str(lay.kas_yaml), "-w", str(lay.ws)])
+
+    out = _norm(result.output)
+    assert result.exit_code == 1, result.output
+    assert "AT PIN bitbake (has local changes)" in out
+    assert "1 repository still blocks a build" in out
+    assert f"bitbake ({repo}): off its pin or has local changes" in out
+    assert out.index("still blocks") < out.index("batch complete")
+    assert (repo / "f").read_text() == "local edit"
+
+
+def test_sync_kas_dirty_clone_a_build_tolerates_does_not_fail_the_sync(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lay = meta_avocado_worktree_layout
+    repo, _old, pin = _pinned_clone(lay.ws)
+    _git("-C", str(repo), "checkout", "-q", "--detach", pin)
+    (repo / "f").write_text("local edit")
+    _patch_pins(monkeypatch, pin)
+
+    result = runner.invoke(app, ["sync", str(lay.kas_yaml), "-w", str(lay.ws)])
+
+    assert result.exit_code == 0, result.output
+    assert "AT PIN repo-a (has local changes)" in _norm(result.output)
+    assert "still block" not in _norm(result.output)
+
+
+def test_sync_kas_dry_run_names_an_entry_without_a_pin(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar.steps import kas_pins
+
+    lay = meta_avocado_worktree_layout
+    repos = {"repo-b": {"url": _PIN_URL, "path": "repo-b"}}
+    monkeypatch.setattr(kas_pins, "probe_pins", lambda _yaml, _checkout: ("wrynose", repos))
+
+    result = runner.invoke(app, ["sync", str(lay.kas_yaml), "-w", str(lay.ws), "--dry-run"])
+
+    # A build refuses an entry without a pin and sync cannot give it one, so the dry run fails as the sync does.
+    assert result.exit_code == 1, result.output
+    assert "repo-b: no commit pin" in _norm(result.output)
+    assert "1 repository would still block a build" in _norm(result.output)
 
 
 def test_sync_kas_on_runs_script_on_host(
@@ -611,7 +746,10 @@ def test_sync_kas_on_runs_script_on_host(
 
     assert result.exit_code == 0, result.output
     assert checked == [("pc2", str(lay.ws), "wrynose")]
-    assert len(scripts) == 1
+    # The sync itself, then a read-only probe that re-checks what still blocks a build.
+    assert len(scripts) == 2
+    assert "BAKAR_SYNC" in scripts[0]
+    assert "BAKAR_PIN" in scripts[1]
     assert "MOVED repo-a" in _norm(result.output)
     assert _git("-C", str(repo), "rev-parse", "HEAD") == pin
 
@@ -674,9 +812,101 @@ def test_sync_on_missing_workspace_refused(
 
     result = runner.invoke(app, ["sync", str(lay.kas_yaml), "--on", "pc2"])
 
-    assert result.exit_code == 2, result.output
+    # A host that cannot be checked is not a usage error.
+    assert result.exit_code == 1, result.output
     assert "does not exist on pc2" in _norm(result.output)
     assert ran == []
+
+
+def _invoke_dry_and_real(runner: CliRunner, lay) -> tuple:
+    dry = runner.invoke(app, ["sync", str(lay.kas_yaml), "-w", str(lay.ws), "--dry-run"])
+    real = runner.invoke(app, ["sync", str(lay.kas_yaml), "-w", str(lay.ws)])
+    return dry, real
+
+
+def test_sync_kas_dry_run_exits_1_for_a_clone_the_sync_would_leave_dirty(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lay = meta_avocado_worktree_layout
+    repo, _old, pin = _pinned_clone(lay.ws)
+    (repo / "f").write_text("local edit")
+    _patch_pins(monkeypatch, pin)
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+
+    dry, real = _invoke_dry_and_real(runner, lay)
+
+    assert "repo-a: left alone because of local changes" in _norm(dry.output)
+    assert "LEFT repo-a" in _norm(real.output)
+    assert (dry.exit_code, real.exit_code) == (1, 1), (dry.output, real.output)
+
+
+def test_sync_kas_dry_run_exits_1_for_a_rejected_entry(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar.steps import kas_pins
+
+    lay = meta_avocado_worktree_layout
+    _repo, _old, pin = _pinned_clone(lay.ws)
+    repos = {"repo-a": {"url": "-evil", "commit": pin, "path": "repo-a"}}
+    monkeypatch.setattr(kas_pins, "probe_pins", lambda _yaml, _checkout: ("wrynose", repos))
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+
+    dry, real = _invoke_dry_and_real(runner, lay)
+
+    assert "repo-a: cannot be synced (url begins with '-')" in _norm(dry.output)
+    assert (dry.exit_code, real.exit_code) == (1, 1), (dry.output, real.output)
+
+
+def test_sync_kas_abbreviated_pin_already_at_its_commit_is_at_pin(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lay = meta_avocado_worktree_layout
+    repo, _old, pin = _pinned_clone(lay.ws)
+    _git("-C", str(repo), "checkout", "-q", "--detach", pin)
+    _patch_pins(monkeypatch, pin[:12])
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+
+    dry, real = _invoke_dry_and_real(runner, lay)
+
+    # Only git in the clone can tell whether the prefix names one commit, so the dry run claims no more.
+    assert "repo-a: HEAD starts with its abbreviated pin, which a dry run cannot resolve" in _norm(dry.output)
+    assert "already at its pin" not in dry.output
+    assert "AT PIN repo-a" in _norm(real.output)
+    assert (dry.exit_code, real.exit_code) == (0, 0), (dry.output, real.output)
+
+
+def test_sync_kas_dry_run_checks_an_abbreviated_pin_before_local_changes(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lay = meta_avocado_worktree_layout
+    repo, old, pin = _pinned_clone(lay.ws)
+    (repo / "f").write_text("dirty")
+    _patch_pins(monkeypatch, pin[:12])
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+
+    dry, real = _invoke_dry_and_real(runner, lay)
+
+    # The script checks the pin's length before the clone's state, and the dry run says what it will.
+    assert "repo-a: cannot be synced (pin is not a full 40-character commit id)" in _norm(dry.output)
+    assert "FAIL repo-a pin is not a full 40-character commit id" in _norm(real.output)
+    assert (dry.exit_code, real.exit_code) == (1, 1), (dry.output, real.output)
+    assert _git("-C", str(repo), "rev-parse", "HEAD") == old
+
+
+def test_sync_kas_abbreviated_pin_off_its_commit_is_not_moved(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lay = meta_avocado_worktree_layout
+    repo, old, pin = _pinned_clone(lay.ws)
+    _patch_pins(monkeypatch, pin[:12])
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+
+    dry, real = _invoke_dry_and_real(runner, lay)
+
+    assert "repo-a: cannot be synced (pin is not a full 40-character commit id)" in _norm(dry.output)
+    assert "FAIL repo-a pin is not a full 40-character commit id" in _norm(real.output)
+    assert (dry.exit_code, real.exit_code) == (1, 1), (dry.output, real.output)
+    assert _git("-C", str(repo), "rev-parse", "HEAD") == old
 
 
 def test_sync_on_with_workspace_option_refused(
@@ -696,3 +926,147 @@ def test_sync_on_without_kas_refused(runner: CliRunner) -> None:
 
     assert result.exit_code == 2, result.output
     assert "--on needs a kas file" in _norm(result.output)
+
+
+# ---------------------------------------------------------------------------
+# bakar sync --revert
+# ---------------------------------------------------------------------------
+
+
+def _revert_record(ws: Path, repo: Path, head: str, branch: str = "main") -> Path:
+    record_dir = ws / ".bakar" / "sync-revert"
+    record_dir.mkdir(parents=True)
+    record = record_dir / "20260101-000000-1.tsv"
+    record.write_text(f"repo-a\t{repo}\t{head}\t{branch}\n")
+    return record
+
+
+def test_sync_revert_restores_local(runner: CliRunner, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    repo, _old, pin = _pinned_clone(ws)
+    record = _revert_record(ws, repo, pin)
+
+    result = runner.invoke(app, ["sync", "--revert", str(record)])
+
+    assert result.exit_code == 0, result.output
+    out = _norm(result.output)
+    assert "RESTORED line 1" in out
+    assert "batch complete: 1/1" in out
+    assert _git("-C", str(repo), "rev-parse", "HEAD") == pin
+    assert _git("-C", str(repo), "symbolic-ref", "--short", "HEAD") == "main"
+
+
+def test_sync_revert_on_host(runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from bakar.steps import remote_dispatch
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    repo, _old, pin = _pinned_clone(ws)
+    record = _revert_record(ws, repo, pin)
+    seen: list[str] = []
+
+    def fake_ssh(host: str, script: str, **_kw) -> subprocess.CompletedProcess:
+        seen.append(host)
+        return subprocess.run(["bash", "-s"], input=script, capture_output=True, text=True, check=False)
+
+    monkeypatch.setattr(remote_dispatch, "_ssh_bash_capture", fake_ssh)
+
+    result = runner.invoke(app, ["sync", "--revert", str(record), "--on", "pc2"])
+
+    assert result.exit_code == 0, result.output
+    assert seen == ["pc2"]
+    assert "RESTORED line 1" in _norm(result.output)
+    assert _git("-C", str(repo), "rev-parse", "HEAD") == pin
+
+
+def test_sync_revert_refuses_path_outside_sync_revert_dir(runner: CliRunner, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    repo, old, pin = _pinned_clone(ws)
+    stray = ws / "record.tsv"
+    stray.write_text(f"repo-a\t{repo}\t{pin}\tmain\n")
+
+    result = runner.invoke(app, ["sync", "--revert", str(stray)])
+
+    assert result.exit_code == 2, result.output
+    assert "sync-revert" in _norm(result.output)
+    assert _git("-C", str(repo), "rev-parse", "HEAD") == old
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--dry-run"], ["--machine", "m"], ["--clean"], ["--dry-run-script", "-"]],
+)
+def test_sync_revert_conflicts_refused(runner: CliRunner, tmp_path: Path, extra: list[str]) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    repo, old, pin = _pinned_clone(ws)
+    record = _revert_record(ws, repo, pin)
+
+    result = runner.invoke(app, ["sync", "--revert", str(record), *extra])
+    with_kas = runner.invoke(app, ["sync", "some.yml", "--revert", str(record)])
+
+    assert result.exit_code == 2, result.output
+    assert extra[0] in _norm(result.output)
+    assert with_kas.exit_code == 2, with_kas.output
+    assert _git("-C", str(repo), "rev-parse", "HEAD") == old
+
+
+def test_sync_revert_refuses_workspace_option(runner: CliRunner, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    repo, old, pin = _pinned_clone(ws)
+    record = _revert_record(ws, repo, pin)
+
+    result = runner.invoke(app, ["sync", "--revert", str(record), "-w", str(ws)])
+
+    assert result.exit_code == 2, result.output
+    assert "-w" in _norm(result.output)
+    assert _git("-C", str(repo), "rev-parse", "HEAD") == old
+
+
+def test_sync_revert_on_host_refuses_a_relative_record(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a host a relative record resolves against the login directory, so it is refused."""
+    from bakar.steps import pin_sync
+
+    ran: list[str] = []
+    monkeypatch.setattr(pin_sync, "run_host", lambda host, script: ran.append(host) or (0, "", ""))
+
+    result = runner.invoke(app, ["sync", "--revert", "ws/.bakar/sync-revert/r.tsv", "--on", "pc2"])
+
+    assert result.exit_code == 2, result.output
+    assert "--revert FILE on a host must be an absolute path" in _norm(result.output)
+    assert ran == []
+
+
+def test_sync_revert_refuses_option_like_host(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar.steps import pin_sync
+
+    ran: list[str] = []
+    monkeypatch.setattr(pin_sync, "run_host", lambda host, script: ran.append(host) or (0, "", ""))
+    record = tmp_path / ".bakar" / "sync-revert" / "r.tsv"
+
+    result = runner.invoke(app, ["sync", "--revert", str(record), "--on=-oProxyCommand=x"])
+
+    assert result.exit_code == 2, result.output
+    assert "begins with '-'" in _norm(result.output)
+    assert ran == []
+
+
+def test_sync_kas_form_refuses_option_like_host(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lay = meta_avocado_worktree_layout
+    _patch_pins(monkeypatch, "0" * 40)
+
+    result = runner.invoke(app, ["sync", str(lay.kas_yaml), "--on=-oProxyCommand=x"])
+
+    assert result.exit_code == 2, result.output
+    assert "begins with '-'" in _norm(result.output)

@@ -52,13 +52,17 @@ class Case(NamedTuple):
     extra_params: int = 0
 
 
-# Parameter counts measured at the pre-change baseline f2aa66a. A drop here is a
-# removed user-facing CLI option, not a refactor.
+# Each count is the number of parameters ``inspect.signature`` reports for the
+# Typer command, which test_typer_parameter_count_did_not_drop counts itself.
+# They were measured at the pre-change baseline f2aa66a, except ``sync``: 10
+# there, 13 since remote-dispatch-stale-workspace added the kas positional,
+# ``--on`` and ``--revert``. A drop here is a removed user-facing CLI option,
+# not a refactor.
 REPACKED: list[Case] = [
     Case("bakar.commands._app", "_main", "_main_impl", "_GlobalOptions", 12, "opts"),
     Case("bakar.commands.clean_cache", "clean_cache", "_clean_cache_impl", "_CleanCacheCtx", 10, "ctx"),
     Case("bakar.commands.getvar", "getvar", "_getvar_impl", "_GetvarCtx", 10, "ctx"),
-    Case("bakar.commands.sync", "sync", "_sync_impl", "_SyncCtx", 12, "ctx"),
+    Case("bakar.commands.sync", "sync", "_sync_impl", "_SyncCtx", 13, "ctx"),
     Case("bakar.commands.stress_parse", "stress_parse", "_stress_parse_impl", "_StressParseCtx", 11, "ctx"),
     # Private helpers: no shim, no Typer surface, so the signature is free to
     # shrink. ``_render_sstate_lines`` keeps ``console`` positional.

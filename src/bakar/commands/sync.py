@@ -188,8 +188,19 @@ def sync(
             "(ssh alias or user@ip) instead of locally. No bakar install is needed there.",
         ),
     ] = None,
+    revert: Annotated[
+        str | None,
+        typer.Option(
+            "--revert",
+            metavar="FILE",
+            help="Put the clones named in a revert record (<workspace>/.bakar/sync-revert/*.tsv, "
+            "written by a pin sync) back on their recorded HEADs. With --on, FILE is a path on that host.",
+        ),
+    ] = None,
 ) -> None:
     """Run the manifest-driven sync without building.
+
+    ``bakar sync --revert FILE [--on HOST]`` undoes a pin sync from its record.
 
     With a kas file (``bakar sync <meta-avocado kas file>``) it instead moves the
     shared clones of that release workspace onto the commits the kas file pins;
@@ -203,7 +214,7 @@ def sync(
     bitbake-setup workspaces are initialized externally via
     ``bitbake-setup init``; ``bakar sync`` fails fast for them.
     """
-    if kas_yaml is not None or on is not None:
+    if kas_yaml is not None or on is not None or revert is not None:
         from bakar.commands._sync_pins import SyncPinsRequest, run_pin_sync
 
         manifest_flags = {
@@ -223,6 +234,7 @@ def sync(
                 workspace=workspace,
                 dry_run=dry_run,
                 conflicts=tuple(flag for flag, given in manifest_flags.items() if given),
+                revert=revert,
             )
         )
         raise typer.Exit(code=code)
