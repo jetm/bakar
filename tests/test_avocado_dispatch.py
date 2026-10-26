@@ -40,6 +40,10 @@ class Recorder:
         self.ensure_script = ""
         self.capability_script = ""
         self.remote_script = ""
+        self.probe_script = ""
+        # index -> tab-joined "exists head clean pin_present side_exists side_head side_clean" fields
+        self.probe_rows: dict[int, str] = {}
+        self.probe_error: int | None = None
 
         def preflight(host: str) -> tuple[bool, str | None]:
             self.calls.append(("preflight", host))
@@ -78,6 +82,14 @@ class Recorder:
                 self.calls.append(("capability", host))
                 self.capability_script = script
                 return subprocess.CompletedProcess(["ssh"], self.capability_rc, "", self.capability_stderr)
+            if "BAKAR_PIN" in script:
+                self.calls.append(("pin_probe", host))
+                self.probe_script = script
+                if self.probe_error is not None:
+                    return subprocess.CompletedProcess(["ssh"], self.probe_error, "", "ssh: broken")
+                rows = [f"BAKAR_PIN\t{i}\t{row}" for i, row in sorted(self.probe_rows.items())]
+                rows.append(f"BAKAR_PIN_DONE\t{len(self.probe_rows)}")
+                return subprocess.CompletedProcess(["ssh"], 0, "\n".join(rows) + "\n", "")
             self.calls.append(("ensure", host))
             self.ensure_script = script
             return subprocess.CompletedProcess(["ssh"], self.ensure_rc, "", "boom")
@@ -141,6 +153,7 @@ def _dispatch(checkout: Path, kas_arg: str, local_args: list[str], **overrides: 
         "build_dir_template": None,
         "cap_mb": 64,
         "invoking_cwd": checkout,
+        "pinned_repos": {},
     }
     flags = {"sccache_dist": overrides.pop("sccache_dist", False), "assume_yes": overrides.pop("assume_yes", False)}
     kwargs.update(overrides)
@@ -719,3 +732,84 @@ def test_delivery_script_timeout_says_the_host_answered_and_the_script_may_still
     assert "delivery lock" in out
     assert "could not reach" not in out
     assert "exit status 255" not in out
+
+
+PIN_A = "1" * 40
+PIN_B = "2" * 40
+OTHER = "9" * 40
+PINNED = {
+    "meta-a": {"url": "https://example.invalid/a.git", "commit": PIN_A},
+    "meta-b": {"url": "https://example.invalid/b.git", "commit": PIN_B},
+}
+ARGV = ["build", "kas/machine/m.yml", "--on", HOST]
+
+
+def _frozen(pin: str) -> str:
+    return f"1\t{pin}\t1\t1\t0\t-\t-"
+
+
+def test_stale_pins_refused_before_push(rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Both shared clones are off their pins and each already has a dirty side checkout.
+    rec.probe_rows = {0: f"1\t{OTHER}\t1\t1\t1\t{OTHER}\t0", 1: f"1\t{OTHER}\t1\t1\t1\t{OTHER}\t0"}
+    rc = _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=PINNED)
+    out = " ".join(capsys.readouterr().err.split())
+    assert rc == 1
+    assert not {"push", "ensure", "stream"} & set(rec.names())
+    assert "meta-a" in out
+    assert "meta-b" in out
+    # The console wraps the long path, so the unwrapped message is checked by its pieces.
+    assert "Move the clean clones to their pins with: bakar sync" in out
+    assert f"kas/machine/m.yml --on {HOST}" in out.replace("/ kas", "/kas")
+
+
+def test_pins_ok_dispatch_proceeds(rec: Recorder, checkout: Path) -> None:
+    rec.probe_rows = {0: _frozen(PIN_A), 1: _frozen(PIN_B)}
+    assert _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=PINNED) == 0
+    assert "pin_probe" in rec.names()
+    assert "push" in rec.names()
+
+
+def test_side_repos_listed_in_plan(rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # meta-a is off its pin with no side checkout yet: the build will create one, which does not stop dispatch.
+    rec.probe_rows = {0: f"1\t{OTHER}\t1\t1\t0\t-\t-", 1: _frozen(PIN_B)}
+    assert _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=PINNED) == 0
+    out = capsys.readouterr().err
+    assert "side checkouts the host build will use:" in out
+    assert "meta-a" in out.split("side checkouts the host build will use:")[1]
+    assert "meta-b" not in out.split("side checkouts the host build will use:")[1].split("snapshot")[0]
+
+
+def test_incomplete_pin_probe_refuses(rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    rec.probe_error = 255
+    rc = _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=PINNED)
+    out = " ".join(capsys.readouterr().err.split())
+    assert rc == 1
+    assert f"the shared-clone pin check on {HOST} did not complete:" in out
+    assert not {"push", "ensure", "stream"} & set(rec.names())
+
+
+def test_pin_check_runs_after_workspace_check(rec: Recorder, checkout: Path) -> None:
+    rec.probe_rows = {0: _frozen(PIN_A), 1: _frozen(PIN_B)}
+    _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=PINNED)
+    names = rec.names()
+    assert names.index("check_workspace") < names.index("pin_probe") < names.index("push")
+    # A refused workspace never reaches the pin probe.
+    rec.calls.clear()
+    rec.workspace_error = "release mismatch"
+    _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=PINNED)
+    assert "pin_probe" not in rec.names()
+
+
+def test_yes_does_not_bypass_pin_check(rec: Recorder, checkout: Path) -> None:
+    rec.probe_rows = {0: f"1\t{OTHER}\t1\t1\t1\t{OTHER}\t0", 1: _frozen(PIN_B)}
+    rc = _dispatch(checkout, "kas/machine/m.yml", [*ARGV, "--yes"], pinned_repos=PINNED, assume_yes=True)
+    assert rc == 1
+    assert "pin_probe" in rec.names()
+    assert not {"push", "ensure", "stream"} & set(rec.names())
+
+
+def test_plan_names_workspace_and_source(rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert _dispatch(checkout, "kas/machine/m.yml", ARGV, workspace_source="--workspace flag") == 0
+    assert f"{WORKSPACE} (--workspace flag)" in capsys.readouterr().err
+    assert _dispatch(checkout, "kas/machine/m.yml", ARGV) == 0
+    assert f"{WORKSPACE} (release routing)" in capsys.readouterr().err

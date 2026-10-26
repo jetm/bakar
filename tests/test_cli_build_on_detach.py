@@ -106,6 +106,7 @@ def test_detach_is_not_forwarded_to_the_remote_from_meta_avocado(
             build_dir_template=None,
             cap_mb=64,
             invoking_cwd=checkout,
+            pinned_repos={},
         ),
         flags,
     )

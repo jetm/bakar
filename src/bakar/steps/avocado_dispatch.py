@@ -33,7 +33,7 @@ from bakar.release_workspace import (
     parse_repo_policy,
     worktree_build_dir_name,
 )
-from bakar.steps import layer_delivery, layer_delivery_remote
+from bakar.steps import kas_pins, layer_delivery, layer_delivery_remote, pin_probe, repo_reuse
 from bakar.steps import remote_dispatch as rd
 
 if TYPE_CHECKING:
@@ -197,6 +197,9 @@ class AvocadoDispatchRequest:
     build_dir_template: str | None
     cap_mb: int
     invoking_cwd: Path | None = None
+    # ``None`` means "read them from the kas file"; ``{}`` is a real value (no pinned repositories).
+    pinned_repos: dict | None = None
+    workspace_source: str | None = None
 
 
 def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd.DispatchFlags) -> int:
@@ -258,10 +261,34 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
         console.print(f"[red]remote workspace check failed:[/] {exc}")
         return 1
 
+    # Classified on the host by the build's own rules, before anything is written
+    # there; --yes does not reach this check.
+    repos = request.pinned_repos
+    if repos is None:
+        try:
+            repos = kas_pins.read_merged_config(kas_yaml, checkout=checkout).get("repos") or {}
+        except ReleaseRoutingError as exc:
+            console.print(f"[red]cannot dispatch:[/] {exc}")
+            return 2
+    entries = repo_reuse.pinned_entries(repos, workspace)
+    states: list[repo_reuse.RepoState] = []
+    if entries:
+        try:
+            facts = pin_probe.probe_host(host, entries)
+        except pin_probe.PinProbeIncomplete as exc:
+            console.print(f"[red]the shared-clone pin check on {host} did not complete:[/] {escape(str(exc))}")
+            return 1
+        states = repo_reuse.classify_facts(entries, facts)
+        if repo_reuse.blocking(states):
+            console.print(repo_reuse.render_refusal(states, repair=f"bakar sync {kas_yaml} --on {host}"), markup=False)
+            return 1
+    side_repos = [st for st in states if st.state == "side" and st.blocking is None]
+
     root = worktree_root if worktree_root is not None else workspace / ".bakar" / "worktrees"
     target = root / name
     remote_repo = f"{workspace}/meta-avocado"
     plan = rd.DispatchPlan(
+        workspace=f"{workspace} ({request.workspace_source or 'release routing'})",
         writes=[
             f"worktree {target} (created, or moved to the delivered commit), with its git admin directory "
             f"{remote_repo}/.git/worktrees/{name} holding the delivery marker "
@@ -269,9 +296,13 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
             f"bookkeeping files in {root} (created if missing): .{name}.lock, .{name}.pending, .{name}.build.lock",
             f"ref refs/bakar/{name}/{commit[:12]} in {remote_repo}",
             f"build directory {workspace}/{build_dir}",
-        ]
+        ],
     )
     rd.print_dispatch_plan(host, plan)
+    if side_repos:
+        console.print("  side checkouts the host build will use:")
+        for st in side_repos:
+            console.print(f"    {st.name}: {st.side_path}", markup=False)
     console.print(f"  snapshot of uncommitted changes: {'yes' if snapshot else 'no'}")
     if untracked:
         console.print("  untracked paths the snapshot carries:")
