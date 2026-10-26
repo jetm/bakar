@@ -7,7 +7,7 @@
 | `setup` | [setup.md](setup.md) | Prepare the host once: profile, remediate doctor host checks, persist `[host]` config |
 | `init` | [init.md](init.md) | Interactive wizard: scaffold a new workspace and write `.bakar.toml` |
 | `build` | [build.md](build.md) | Full pipeline: doctor, sync, gen-kas, kas build |
-| `sync` | [sync.md](sync.md) | Sync sources without building |
+| `sync` | [sync.md](sync.md) | Sync sources without building; `bakar sync <kas> [--on HOST] [--dry-run]` moves a release workspace's clones onto their pins, `bakar sync --revert FILE` undoes it |
 | `gen-kas` | [gen-kas.md](gen-kas.md) | Regenerate kas YAML from manifest |
 | `bitbake` | [bitbake.md](bitbake.md) | Run a single recipe or task through bitbake, with run logging |
 | `clean-recipe` | [bitbake.md](bitbake.md) | Clean one recipe's sstate (`bitbake -c cleansstate`) |
@@ -65,6 +65,7 @@
 - Already synced, just want to rebuild: `bakar build --skip-sync`
 - Run a build that outlives your terminal or tool call: `bakar build --detach` ([build.md](build.md)), then follow it with [status.md](status.md) and [wait.md](wait.md); driving bakar from an agent or a script: [agents.md](agents.md)
 - Only want to sync sources: [sync.md](sync.md)
+- A release workspace is stale (its shared clones sit off the commits the kas file pins), locally or on a build node: `bakar sync <kas> --dry-run`, then `bakar sync <kas> [--on HOST]`; undo with `bakar sync --revert FILE` ([sync.md](sync.md))
 - Only want to regenerate the kas YAML: [gen-kas.md](gen-kas.md)
 
 **Build failed:**
@@ -137,7 +138,7 @@
 
 ```text
 bakar doctor    - pre-flight (runs automatically before build)
-bakar sync      - fetch/update sources
+bakar sync      - fetch/update sources; `bakar sync <kas>` repairs a stale release workspace's pins, `--revert FILE` undoes it
 bakar gen-kas   - translate manifest → kas YAML
 bakar build     - all of the above, then kas build
 ```
