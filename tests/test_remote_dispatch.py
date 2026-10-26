@@ -2272,6 +2272,40 @@ def test_capture_timeout_is_typed_and_keeps_the_probe_wording(fake_sp: FakeSubpr
     assert f"could not reach {HOST}" in result.stderr
 
 
+def test_capture_timeout_keeps_the_output_the_child_already_printed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A real child, not FakeSubprocess: the partial output only exists if the
+    # producer reads it off the TimeoutExpired the real subprocess.run raises.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ssh = bin_dir / "ssh"
+    ssh.write_text("#!/bin/sh\nprintf 'MOVED\\tr\\n\\377\\n'; printf 'warn\\n' >&2; exec sleep 30\n")
+    ssh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    result = rd._ssh_bash_capture(HOST, "true", timeout=1.0)
+    assert isinstance(result, rd.CaptureTimedOut)
+    assert result.returncode == 255
+    assert result.stdout == "MOVED\tr\n�\n"
+    assert result.child_stderr == "warn\n"
+    assert result.stderr.startswith("warn\n")
+    assert f"could not reach {HOST}" in result.stderr
+
+
+@pytest.mark.parametrize(("partial", "joined"), [(b"warn", "warn\n"), (b"warn\n", "warn\n"), (None, "")])
+def test_capture_timeout_keeps_the_unreachable_text_on_its_own_line(
+    monkeypatch: pytest.MonkeyPatch, partial: bytes | None, joined: str
+) -> None:
+    def timed_out(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(argv, 1.0, output=None, stderr=partial)
+
+    monkeypatch.setattr(rd.subprocess, "run", timed_out)
+    result = rd._ssh_bash_capture(HOST, "true", timeout=1.0)
+    assert isinstance(result, rd.CaptureTimedOut)
+    assert result.stderr == f"{joined}could not reach {HOST}: no response within 1s"
+    assert result.child_stderr == (partial or b"").decode()
+
+
 def test_interrupt_message_after_a_unit_marker_does_not_claim_it_is_running(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2559,3 +2593,20 @@ def test_detached_dispatch_refuses_a_host_without_user_units(
     assert "run without --detach" in cap.err
     assert "BAKAR_DISPATCH_NO_UNIT" not in cap.err
     assert fake_sp.last_proc.stdin.buffer.endswith("exit 97")
+
+
+def test_plan_prints_workspace_line_first(capsys: pytest.CaptureFixture[str]) -> None:
+    """A set workspace is the first line under the header; markup is not parsed."""
+    rd.print_dispatch_plan(HOST, rd.DispatchPlan(writes=["/ws"], workspace="/srv/[ws]"))
+    lines = capsys.readouterr().err.splitlines()
+    assert lines[0].endswith(f"-> {HOST}")
+    assert lines[1] == "  workspace: /srv/[ws]"
+    assert "  nothing is deleted on the host" in lines
+
+    rd.print_dispatch_plan(HOST, rd.DispatchPlan(writes=["/ws"]))
+    assert "workspace:" not in capsys.readouterr().err
+
+
+def test_dispatch_flags_dry_run_defaults_false() -> None:
+    flags = rd.DispatchFlags(sccache_dist=False, assume_yes=True)
+    assert flags.dry_run is False

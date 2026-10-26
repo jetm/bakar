@@ -662,9 +662,21 @@ class CaptureTimedOut(subprocess.CompletedProcess[str]):
 
     Exit status 255 and a "could not reach" stderr, so a caller that only checks
     the status behaves as before. ``timeout`` is the bound that elapsed.
+    ``stdout`` and ``child_stderr`` hold what the child printed before the kill;
+    ``stderr`` is ``child_stderr`` followed by the "could not reach" text.
     """
 
     timeout: float = 0.0
+    child_stderr: str = ""
+
+
+def decode_partial(value: bytes | str | None) -> str:
+    """Text from a ``TimeoutExpired`` output field: bytes even under ``text=True``, or None when nothing arrived."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _ssh_bash_capture(
@@ -697,9 +709,16 @@ def _ssh_bash_capture(
         # handles it; 255 is ssh's own connection-failure code. The default
         # stderr says "could not reach", which is only true of a short probe;
         # a caller whose script ran on a host that had already answered tells
-        # the two apart by the type and words the timeout itself.
-        timed_out = CaptureTimedOut(argv, 255, stdout="", stderr=_unreachable(host, exc))
+        # the two apart by the type and words the timeout itself. What the child
+        # printed before the kill is kept: a pin sync's MOVED rows and revert
+        # record are on stdout by then.
+        child_stderr = decode_partial(exc.stderr)
+        separator = "\n" if child_stderr and not child_stderr.endswith("\n") else ""
+        timed_out = CaptureTimedOut(
+            argv, 255, stdout=decode_partial(exc.stdout), stderr=child_stderr + separator + _unreachable(host, exc)
+        )
         timed_out.timeout = float(exc.timeout)
+        timed_out.child_stderr = child_stderr
         return timed_out
 
 
@@ -775,11 +794,14 @@ class DispatchPlan:
 
     writes: list[str]
     deletes: list[str] = field(default_factory=list)
+    workspace: str | None = None
 
 
 def print_dispatch_plan(host: str, plan: DispatchPlan) -> None:
     """Print ``plan`` for ``host``. There is no prompt: nothing in it destroys data."""
     console.print(f"[bold]dispatch plan[/] -> {host}")
+    if plan.workspace is not None:
+        console.print(f"  workspace: {plan.workspace}", markup=False)
     for write in plan.writes:
         # markup=False: paths may contain '[' which Rich would parse as markup.
         console.print(f"  + {write}", markup=False)
@@ -1468,6 +1490,7 @@ class DispatchFlags:
     sccache_dist: bool
     assume_yes: bool
     detach: bool = False
+    dry_run: bool = False
     hint_lines: Callable[[str, str | None, str], Iterable[str]] | None = None
 
 
