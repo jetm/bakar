@@ -44,6 +44,7 @@ class Recorder:
         # index -> tab-joined "exists head clean pin_present side_exists side_head side_clean" fields
         self.probe_rows: dict[int, str] = {}
         self.probe_error: int | None = None
+        self.probe_stderr = "ssh: broken"
 
         def preflight(host: str) -> tuple[bool, str | None]:
             self.calls.append(("preflight", host))
@@ -90,7 +91,7 @@ class Recorder:
                 self.calls.append(("pin_probe", host))
                 self.probe_script = script
                 if self.probe_error is not None:
-                    return subprocess.CompletedProcess(["ssh"], self.probe_error, "", "ssh: broken")
+                    return subprocess.CompletedProcess(["ssh"], self.probe_error, "", self.probe_stderr)
                 rows = [f"BAKAR_PIN\t{i}\t{row}" for i, row in sorted(self.probe_rows.items())]
                 rows.append(f"BAKAR_PIN_DONE\t{len(self.probe_rows)}")
                 return subprocess.CompletedProcess(["ssh"], 0, "\n".join(rows) + "\n", "")
@@ -119,6 +120,8 @@ class Recorder:
         monkeypatch.setattr(layer_delivery, "snapshot_preview", preview)
         monkeypatch.setattr(layer_delivery, "snapshot_untracked_paths", untracked, raising=False)
         monkeypatch.delenv("BAKAR_REPO_POLICY", raising=False)
+        # Forwarded to the host, where it decides whether oe-core pairs with bitbake.
+        monkeypatch.delenv("BAKAR_CONTAINER", raising=False)
         monkeypatch.setattr(ad.subprocess, "run", run)
         monkeypatch.setattr(remote_dispatch, "_ssh_bash_capture", capture)
         monkeypatch.setattr(remote_dispatch, "_stream_remote_build", stream)
@@ -797,6 +800,19 @@ def test_incomplete_pin_probe_refuses(rec: Recorder, checkout: Path, capsys: pyt
     assert not {"push", "ensure", "stream"} & set(rec.names())
 
 
+def test_incomplete_pin_probe_does_not_print_host_control_characters(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rec.probe_error = 255
+    rec.probe_stderr = "ssh: \x1b]0;pwned\x07broken\x1b[2J"
+    rc = _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=PINNED)
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "\x1b]0;pwned" not in err
+    assert "\x1b[2J" not in err
+    assert "pwned" in err
+
+
 def test_pin_check_runs_after_workspace_check(rec: Recorder, checkout: Path) -> None:
     rec.probe_rows = {0: _frozen(PIN_A), 1: _frozen(PIN_B)}
     _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=PINNED)
@@ -868,3 +884,78 @@ def test_dry_run_does_not_write_snapshot_object(
     assert "snapshot_preview" in rec.names()
     assert f"<snapshot of HEAD {COMMIT[:12]}, computed at dispatch>" in out
     assert "notes.txt" in out
+
+
+CORE_PINNED = {
+    "bitbake": {"url": "https://example.invalid/bitbake.git", "commit": PIN_A},
+    "openembedded-core": {"url": "https://example.invalid/oe-core.git", "commit": PIN_B},
+}
+
+
+def _core_off_pin(rec: Recorder) -> None:
+    # bitbake is frozen; openembedded-core is clean but off its pin, with no side checkout yet.
+    rec.probe_rows = {0: _frozen(PIN_A), 1: f"1\t{OTHER}\t1\t1\t0\t-\t-"}
+
+
+def test_precheck_pairs_core_in_host_mode(rec: Recorder, checkout: Path) -> None:
+    _core_off_pin(rec)
+    assert _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=CORE_PINNED) == 0
+    assert "push" in rec.names()
+
+
+def test_precheck_core_blocks_with_container_flag(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _core_off_pin(rec)
+    rc = _dispatch(checkout, "kas/machine/m.yml", [*ARGV, "--container"], pinned_repos=CORE_PINNED)
+    assert rc == 1
+    assert "openembedded-core" in " ".join(capsys.readouterr().err.split())
+    assert not {"push", "ensure", "stream"} & set(rec.names())
+
+
+def test_precheck_core_blocks_with_forwarded_container_env(
+    rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("BAKAR_CONTAINER", "1")
+    _core_off_pin(rec)
+    rc = _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=CORE_PINNED)
+    assert rc == 1
+    assert "openembedded-core" in " ".join(capsys.readouterr().err.split())
+    assert not {"push", "ensure", "stream"} & set(rec.names())
+
+
+def test_precheck_host_flag_outranks_forwarded_container_env(
+    rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_CONTAINER", "1")
+    _core_off_pin(rec)
+    assert _dispatch(checkout, "kas/machine/m.yml", [*ARGV, "--host"], pinned_repos=CORE_PINNED) == 0
+    assert "push" in rec.names()
+
+
+@pytest.mark.parametrize(
+    ("argv", "env", "pairs"),
+    [
+        ([], {}, True),
+        ([], {"BAKAR_CONTAINER": "yes"}, False),
+        ([], {"BAKAR_CONTAINER": "0"}, True),
+        ([], {"BAKAR_CONTAINER": "  "}, True),
+        (["--container"], {}, False),
+        (["--container", "--host"], {}, False),
+        (["--host"], {"BAKAR_CONTAINER": "true"}, True),
+    ],
+)
+def test_host_pairs_core_with_bitbake_precedence(argv: list[str], env: dict[str, str], pairs: bool) -> None:
+    assert ad.host_pairs_core_with_bitbake(["build", "m.yml", *argv], env) is pairs
+
+
+def test_plan_side_checkout_line_replaces_control_characters(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    evil = "meta-\x1b[2Ka"
+    pinned = {evil: PINNED["meta-a"], "meta-b": PINNED["meta-b"]}
+    rec.probe_rows = {0: f"1\t{OTHER}\t1\t1\t0\t-\t-", 1: _frozen(PIN_B)}
+    assert _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=pinned) == 0
+    out = capsys.readouterr().err
+    assert "\x1b[2K" not in out
+    assert "meta-?[2Ka" in out

@@ -49,6 +49,12 @@ _PLAN_UNTRACKED_SHOWN = 20
 # Bounds the delivery push so a dead link ends it through the keepalive instead of hanging.
 _PUSH_SSH_COMMAND = shlex.join(["ssh", *rd.SSH_BOUND_OPTS, "-o", "BatchMode=yes"])
 
+
+def _sync_repair(kas_yaml: Path, host: str) -> str:
+    """The ``bakar sync`` line a refusal tells the user to run, quoted for a shell."""
+    return shlex.join(["bakar", "sync", str(kas_yaml), "--on", host])
+
+
 _GIT_CONFIG_TIMEOUT_SECONDS = 10
 
 
@@ -151,6 +157,23 @@ def remote_env(build_dir_template: str | None) -> dict[str, str]:
     # the one the plan names and the remote run is scoped to.
     env["BAKAR_WORKTREE_BUILD_DIR"] = build_dir_template or DEFAULT_BUILD_DIR_TEMPLATE
     return env
+
+
+def host_pairs_core_with_bitbake(remote_argv: list[str], env: dict[str, str]) -> bool:
+    """Whether the host build will run in host mode, the only mode that pairs oe-core with bitbake.
+
+    Applies the host's own precedence (``config.resolve``) to what dispatch
+    forwards: ``--container`` beats ``--host``, which beats ``BAKAR_CONTAINER``
+    (``1/true/yes/on`` truthy, any other non-blank value falsy), which beats
+    the host-mode default. A host whose own workspace or user config selects
+    the container is invisible here; the in-build check still catches it.
+    """
+    if "--container" in remote_argv:
+        return False
+    if "--host" in remote_argv:
+        return True
+    toggle = env.get("BAKAR_CONTAINER", "").strip()
+    return not toggle or toggle.lower() not in ("1", "true", "yes", "on")
 
 
 def _check_remote_capability(host: str) -> bool:
@@ -288,13 +311,21 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
         try:
             facts = pin_probe.probe_host(host, entries)
         except pin_probe.PinProbeIncomplete as exc:
-            console.print(f"[red]the shared-clone pin check on {host} did not complete:[/] {escape(str(exc))}")
+            console.print(
+                f"[red]the shared-clone pin check on {host} did not complete:[/] {escape(repo_reuse.printable(exc))}"
+            )
             return 1
-        states = repo_reuse.classify_facts(entries, facts)
+        states = repo_reuse.classify_facts(
+            entries,
+            facts,
+            pair_core_with_bitbake=host_pairs_core_with_bitbake(remote_argv, remote_env(build_dir_template)),
+        )
         blocked = bool(repo_reuse.blocking(states))
         # A dry run still prints the table before it refuses, so the refusal waits for it.
         if blocked and not flags.dry_run:
-            console.print(repo_reuse.render_refusal(states, repair=f"bakar sync {kas_yaml} --on {host}"), markup=False)
+            console.print(
+                repo_reuse.render_refusal(states, repair=_sync_repair(kas_yaml, host)), markup=False, soft_wrap=True
+            )
             return 1
     side_repos = [st for st in states if st.state == "side" and st.blocking is None]
 
@@ -316,7 +347,11 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
     if side_repos:
         console.print("  side checkouts the host build will use:")
         for st in side_repos:
-            console.print(f"    {st.name}: {st.side_path}", markup=False)
+            console.print(
+                f"    {repo_reuse.printable(st.name)}: {repo_reuse.printable(st.side_path)}",
+                markup=False,
+                soft_wrap=True,
+            )
     console.print(f"  snapshot of uncommitted changes: {'yes' if snapshot else 'no'}")
     if untracked:
         console.print("  untracked paths the snapshot carries:")
@@ -332,7 +367,9 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
                 console.print(f"    {line}", markup=False)
         # Every read-only check has run; nothing below this point is reachable in a preview.
         if blocked:
-            console.print(repo_reuse.render_refusal(states, repair=f"bakar sync {kas_yaml} --on {host}"), markup=False)
+            console.print(
+                repo_reuse.render_refusal(states, repair=_sync_repair(kas_yaml, host)), markup=False, soft_wrap=True
+            )
             return 1
         console.print(f"dry run: nothing was pushed or created on {host}")
         return 0
