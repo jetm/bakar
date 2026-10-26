@@ -66,6 +66,10 @@ class Recorder:
             self.calls.append(("snapshot", (checkout, cap_mb)))
             return COMMIT, self.snapshot
 
+        def preview(checkout: Path, *, cap_mb: int) -> layer_delivery.SnapshotPreview:
+            self.calls.append(("snapshot_preview", (checkout, cap_mb)))
+            return layer_delivery.SnapshotPreview(head=COMMIT, dirty=self.snapshot, untracked=self.untracked)
+
         def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
             if argv[-3:] == ["config", "--get", "core.sshCommand"]:
                 return subprocess.CompletedProcess(argv, 0 if self.core_ssh_command else 1, self.core_ssh_command, "")
@@ -112,6 +116,7 @@ class Recorder:
         monkeypatch.setattr(remote_dispatch, "check_remote_workspace", check_ws)
         monkeypatch.setattr(layer_delivery, "delivered_name", name)
         monkeypatch.setattr(layer_delivery, "snapshot_commit", snapshot)
+        monkeypatch.setattr(layer_delivery, "snapshot_preview", preview)
         monkeypatch.setattr(layer_delivery, "snapshot_untracked_paths", untracked, raising=False)
         monkeypatch.delenv("BAKAR_REPO_POLICY", raising=False)
         monkeypatch.setattr(ad.subprocess, "run", run)
@@ -155,7 +160,11 @@ def _dispatch(checkout: Path, kas_arg: str, local_args: list[str], **overrides: 
         "invoking_cwd": checkout,
         "pinned_repos": {},
     }
-    flags = {"sccache_dist": overrides.pop("sccache_dist", False), "assume_yes": overrides.pop("assume_yes", False)}
+    flags = {
+        "sccache_dist": overrides.pop("sccache_dist", False),
+        "assume_yes": overrides.pop("assume_yes", False),
+        "dry_run": overrides.pop("dry_run", False),
+    }
     kwargs.update(overrides)
     return ad.dispatch_avocado_build(HOST, ad.AvocadoDispatchRequest(**kwargs), remote_dispatch.DispatchFlags(**flags))
 
@@ -813,3 +822,49 @@ def test_plan_names_workspace_and_source(rec: Recorder, checkout: Path, capsys: 
     assert f"{WORKSPACE} (--workspace flag)" in capsys.readouterr().err
     assert _dispatch(checkout, "kas/machine/m.yml", ARGV) == 0
     assert f"{WORKSPACE} (release routing)" in capsys.readouterr().err
+
+
+_WRITES = {"push", "ensure", "stream", "surface", "snapshot"}
+
+
+def test_dry_run_stale_prints_table_and_exits_1_without_push(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rec.probe_rows = {0: f"1\t{OTHER}\t1\t1\t1\t{OTHER}\t0", 1: _frozen(PIN_B)}
+    rc = _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=PINNED, dry_run=True)
+    out = " ".join(capsys.readouterr().err.split())
+    assert rc == 1
+    assert not _WRITES & set(rec.names())
+    assert "meta-a" in out
+    assert "meta-b" in out
+    assert "shared-clone pin states on the host:" in out
+    assert "Move the clean clones to their pins with: bakar sync" in out
+    assert "dry run: nothing was pushed" not in out
+    # The plan, with its workspace line, is printed before the refusal.
+    assert f"{WORKSPACE} (release routing)" in out
+
+
+def test_dry_run_clean_exits_0_without_push(rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    rec.probe_rows = {0: _frozen(PIN_A), 1: _frozen(PIN_B)}
+    rc = _dispatch(checkout, "kas/machine/m.yml", ARGV, pinned_repos=PINNED, dry_run=True)
+    out = " ".join(capsys.readouterr().err.split())
+    assert rc == 0
+    assert not _WRITES & set(rec.names())
+    assert {"preflight", "capability", "check_workspace", "pin_probe"} <= set(rec.names())
+    assert f"dry run: nothing was pushed or created on {HOST}" in out
+    assert f"refs/bakar/feature-x/{COMMIT[:12]}" in out
+    assert f"{WORKSPACE} (release routing)" in out
+
+
+def test_dry_run_does_not_write_snapshot_object(
+    rec: Recorder, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rec.snapshot = True
+    rec.untracked = ["notes.txt"]
+    rc = _dispatch(checkout, "kas/machine/m.yml", ARGV, dry_run=True)
+    out = " ".join(capsys.readouterr().err.split())
+    assert rc == 0
+    assert "snapshot" not in rec.names()
+    assert "snapshot_preview" in rec.names()
+    assert f"<snapshot of HEAD {COMMIT[:12]}, computed at dispatch>" in out
+    assert "notes.txt" in out

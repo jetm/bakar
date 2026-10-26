@@ -242,8 +242,19 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
     try:
         name = layer_delivery.delivered_name(checkout, worktree)
         build_dir = worktree_build_dir_name(kas_yaml.stem, name, build_dir_template)
-        commit, snapshot = layer_delivery.snapshot_commit(checkout, cap_mb=cap_mb)
-        untracked = layer_delivery.snapshot_untracked_paths(checkout) if snapshot else []
+        if flags.dry_run:
+            # Same refusal checks as snapshot_commit, but no git object is written.
+            preview = layer_delivery.snapshot_preview(checkout, cap_mb=cap_mb)
+            commit, snapshot, untracked = preview.head, preview.dirty, preview.untracked
+            ref_name = (
+                f"refs/bakar/{name}/<snapshot of HEAD {commit[:12]}, computed at dispatch>"
+                if snapshot
+                else f"refs/bakar/{name}/{commit[:12]}"
+            )
+        else:
+            commit, snapshot = layer_delivery.snapshot_commit(checkout, cap_mb=cap_mb)
+            untracked = layer_delivery.snapshot_untracked_paths(checkout) if snapshot else []
+            ref_name = f"refs/bakar/{name}/{commit[:12]}"
     except ReleaseRoutingError as exc:
         console.print(f"[red]cannot dispatch:[/] {exc}")
         return 2
@@ -272,6 +283,7 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
             return 2
     entries = repo_reuse.pinned_entries(repos, workspace)
     states: list[repo_reuse.RepoState] = []
+    blocked = False
     if entries:
         try:
             facts = pin_probe.probe_host(host, entries)
@@ -279,7 +291,9 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
             console.print(f"[red]the shared-clone pin check on {host} did not complete:[/] {escape(str(exc))}")
             return 1
         states = repo_reuse.classify_facts(entries, facts)
-        if repo_reuse.blocking(states):
+        blocked = bool(repo_reuse.blocking(states))
+        # A dry run still prints the table before it refuses, so the refusal waits for it.
+        if blocked and not flags.dry_run:
             console.print(repo_reuse.render_refusal(states, repair=f"bakar sync {kas_yaml} --on {host}"), markup=False)
             return 1
     side_repos = [st for st in states if st.state == "side" and st.blocking is None]
@@ -294,7 +308,7 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
             f"{remote_repo}/.git/worktrees/{name} holding the delivery marker "
             f"{layer_delivery_remote.MARKER_FILENAME}",
             f"bookkeeping files in {root} (created if missing): .{name}.lock, .{name}.pending, .{name}.build.lock",
-            f"ref refs/bakar/{name}/{commit[:12]} in {remote_repo}",
+            f"ref {ref_name} in {remote_repo}",
             f"build directory {workspace}/{build_dir}",
         ],
     )
@@ -310,6 +324,18 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
             console.print(f"    {path}", markup=False)
         if len(untracked) > _PLAN_UNTRACKED_SHOWN:
             console.print(f"    and {len(untracked) - _PLAN_UNTRACKED_SHOWN} more")
+
+    if flags.dry_run:
+        if states:
+            console.print("  shared-clone pin states on the host:")
+            for line in repo_reuse.render_pin_table(states):
+                console.print(f"    {line}", markup=False)
+        # Every read-only check has run; nothing below this point is reachable in a preview.
+        if blocked:
+            console.print(repo_reuse.render_refusal(states, repair=f"bakar sync {kas_yaml} --on {host}"), markup=False)
+            return 1
+        console.print(f"dry run: nothing was pushed or created on {host}")
+        return 0
 
     try:
         push = layer_delivery.push_argv(checkout, host, remote_repo, commit, name)
