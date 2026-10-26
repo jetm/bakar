@@ -8,7 +8,16 @@ from pathlib import Path
 import pytest
 import yaml
 
-from bakar.steps.repo_reuse import RepoReuseError, RepoState, classify, reuse_overlay_text
+from bakar.steps.repo_reuse import (
+    RepoFacts,
+    RepoReuseError,
+    RepoState,
+    classify,
+    classify_facts,
+    gather_local_facts,
+    pinned_entries,
+    reuse_overlay_text,
+)
 
 PIN = "0123456789abcdef0123456789abcdef01234567"
 
@@ -212,3 +221,42 @@ def test_overlay_path_through_a_symlinked_workspace_is_relative(tmp_path: Path) 
     state = RepoState("meta-a", real / "meta-a", PIN, "frozen")
     doc = yaml.safe_load(reuse_overlay_text([state], link))
     assert doc["repos"]["meta-a"]["path"] == "meta-a"
+
+
+def test_pinned_entries_resolves_paths_and_side_paths(tmp_path: Path) -> None:
+    repos = {
+        "local": {"path": "x"},
+        "meta-a": _entry(PIN, path="layers/meta-a"),
+        "meta-b": _entry(None),
+        "meta-c": _entry(PIN, path=str(tmp_path / "abs")),
+    }
+    a, b, c = pinned_entries(repos, tmp_path)
+    assert (a.name, a.pin, a.path) == ("meta-a", PIN, tmp_path / "layers" / "meta-a")
+    assert a.side_path == tmp_path / ".bakar" / "pins" / "meta-a" / PIN[:12]
+    assert (b.pin, b.path, b.side_path) == (None, tmp_path / "meta-b", None)
+    assert c.path == tmp_path / "abs"
+
+
+def test_gather_local_facts_reports_head_clean_and_pin_presence(tmp_path: Path) -> None:
+    first, second = _make_repo(tmp_path / "meta-x")
+    (tmp_path / "meta-x" / "f.txt").write_text("dirty\n")
+    entries = pinned_entries({"meta-x": _entry(first), "meta-y": _entry(PIN)}, tmp_path)
+    fx, fy = gather_local_facts(entries)
+    assert fx.exists
+    assert fx.head == second
+    assert fx.clean is False
+    assert fx.pin_present is True
+    assert fx.side_exists is False
+    assert fy == RepoFacts.unknown()
+
+
+def test_classify_facts_matches_classify(tmp_path: Path) -> None:
+    first, second = _make_repo(tmp_path / "meta-x")
+    repos = {"meta-x": _entry(second), "meta-y": _entry(first, path="meta-x"), "meta-z": _entry(PIN)}
+    entries = pinned_entries(repos, tmp_path)
+    states = classify_facts(entries, gather_local_facts(entries))
+    assert [(s.name, s.state) for s in states] == [("meta-x", "frozen"), ("meta-y", "side"), ("meta-z", "missing")]
+    assert states == classify(repos, tmp_path)
+    assert states[0].head == second
+    assert states[0].clean is True
+    assert states[0].pin_present is True

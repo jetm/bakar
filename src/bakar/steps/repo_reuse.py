@@ -57,6 +57,9 @@ class RepoState:
     state: RepoStateKind
     side_path: Path | None = None
     side_exists: bool = False
+    head: str | None = None
+    clean: bool | None = None
+    pin_present: bool | None = None
 
 
 @contextmanager
@@ -104,12 +107,41 @@ def workspace_lock(workspace: Path, *, wait_limit_s: float = LOCK_WAIT_LIMIT_S) 
             fcntl.flock(fh, fcntl.LOCK_UN)
 
 
-def _at_pin_and_clean(path: Path, pin: str) -> bool:
-    head = git_stdout(path, "--no-optional-locks", "rev-parse", "HEAD", timeout=_GIT_READ_TIMEOUT_S)
-    if head is None or not head.strip().lower().startswith(pin.lower()):
-        return False
-    status = git_stdout(path, "--no-optional-locks", "status", "--porcelain", timeout=_GIT_READ_TIMEOUT_S)
-    return status is not None and status.strip() == ""
+@dataclass(frozen=True)
+class PinnedRepo:
+    """One URL-bearing kas repository with its pin and checkout locations."""
+
+    name: str
+    url: str
+    pin: str | None
+    path: Path
+    side_path: Path | None
+
+
+@dataclass(frozen=True)
+class RepoFacts:
+    """What the local filesystem and git say about one ``PinnedRepo``."""
+
+    exists: bool
+    head: str | None
+    clean: bool | None
+    pin_present: bool | None
+    side_exists: bool
+    side_head: str | None
+    side_clean: bool | None
+
+    @classmethod
+    def unknown(cls) -> RepoFacts:
+        """Facts for a repository nothing could be observed about."""
+        return cls(
+            exists=False,
+            head=None,
+            clean=None,
+            pin_present=None,
+            side_exists=False,
+            side_head=None,
+            side_clean=None,
+        )
 
 
 def _resolve_path(name: str, entry: dict, workspace: Path) -> Path:
@@ -118,42 +150,97 @@ def _resolve_path(name: str, entry: dict, workspace: Path) -> Path:
     return path if path.is_absolute() else workspace / path
 
 
-def classify(repos: dict, workspace: Path) -> list[RepoState]:
-    """Classify every pinned repository in a kas ``repos`` mapping.
-
-    Entries without a ``url`` are local path-only repositories kas never
-    touches, so they are skipped. A ``url`` without a ``commit`` raises,
-    because kas would move that clone to a branch tip.
-    """
-    states: list[RepoState] = []
+def pinned_entries(repos: dict, workspace: Path) -> list[PinnedRepo]:
+    """Walk a kas ``repos`` mapping in order, skipping url-less local entries."""
+    entries: list[PinnedRepo] = []
     for name, raw_entry in (repos or {}).items():
         entry = raw_entry or {}
-        if not entry.get("url"):
+        url = entry.get("url")
+        if not url:
             continue
-        pin = entry.get("commit")
+        commit = entry.get("commit")
+        pin = str(commit) if commit else None
+        side_path = workspace / ".bakar" / "pins" / name / pin[:12] if pin else None
+        entries.append(PinnedRepo(name, str(url), pin, _resolve_path(name, entry, workspace), side_path))
+    return entries
+
+
+def _head_and_clean(path: Path) -> tuple[str | None, bool | None]:
+    head = git_stdout(path, "--no-optional-locks", "rev-parse", "HEAD", timeout=_GIT_READ_TIMEOUT_S)
+    status = git_stdout(path, "--no-optional-locks", "status", "--porcelain", timeout=_GIT_READ_TIMEOUT_S)
+    return (head.strip() if head is not None else None), (status.strip() == "" if status is not None else None)
+
+
+def _gather_one(entry: PinnedRepo) -> RepoFacts:
+    if not entry.path.is_dir():
+        return RepoFacts.unknown()
+    head, clean = _head_and_clean(entry.path)
+    pin_present: bool | None = None
+    if entry.pin:
+        probe = git_stdout(
+            entry.path, "--no-optional-locks", "cat-file", "-e", f"{entry.pin}^{{commit}}", timeout=_GIT_READ_TIMEOUT_S
+        )
+        pin_present = probe is not None
+    side_exists = entry.side_path is not None and entry.side_path.exists()
+    side_head: str | None = None
+    side_clean: bool | None = None
+    if side_exists and entry.side_path is not None:
+        side_head, side_clean = _head_and_clean(entry.side_path)
+    return RepoFacts(
+        exists=True,
+        head=head,
+        clean=clean,
+        pin_present=pin_present,
+        side_exists=side_exists,
+        side_head=side_head,
+        side_clean=side_clean,
+    )
+
+
+def gather_local_facts(entries: list[PinnedRepo]) -> list[RepoFacts]:
+    """Observe each entry's clone with read-only git; same order as ``entries``."""
+    return [_gather_one(e) for e in entries]
+
+
+def _at_pin(head: str | None, pin: str) -> bool:
+    return head is not None and head.lower().startswith(pin.lower())
+
+
+def classify_facts(entries: list[PinnedRepo], facts: list[RepoFacts]) -> list[RepoState]:
+    """Apply the reuse rules to already-gathered facts.
+
+    A ``url`` without a ``commit`` raises, because kas would move that clone
+    to a branch tip; so does an existing side checkout that is not clean at
+    its pin.
+    """
+    states: list[RepoState] = []
+    for entry, fact in zip(entries, facts, strict=True):
+        pin = entry.pin
         if not pin:
             raise RepoReuseError(
-                f"repository {name!r} has a url but no commit pin; kas would move the shared clone to a branch tip"
+                f"repository {entry.name!r} has a url but no commit pin; "
+                "kas would move the shared clone to a branch tip"
             )
-        pin = str(pin)
-        path = _resolve_path(name, entry, workspace)
-        if not path.is_dir():
-            states.append(RepoState(name, path, pin, "missing"))
+        extra = {"head": fact.head, "clean": fact.clean, "pin_present": fact.pin_present}
+        if not fact.exists:
+            states.append(RepoState(entry.name, entry.path, pin, "missing", **extra))
             continue
-        if _at_pin_and_clean(path, pin):
-            states.append(RepoState(name, path, pin, "frozen"))
+        if _at_pin(fact.head, pin) and fact.clean is True:
+            states.append(RepoState(entry.name, entry.path, pin, "frozen", **extra))
             continue
-        side_path = workspace / ".bakar" / "pins" / name / pin[:12]
-        side_exists = False
-        if side_path.exists():
-            if not _at_pin_and_clean(side_path, pin):
-                raise RepoReuseError(
-                    f"side checkout {side_path} for {name!r} is not clean at "
-                    f"pin {pin}; inspect it by hand, bakar never modifies it"
-                )
-            side_exists = True
-        states.append(RepoState(name, path, pin, "side", side_path, side_exists))
+        if fact.side_exists and not (_at_pin(fact.side_head, pin) and fact.side_clean is True):
+            raise RepoReuseError(
+                f"side checkout {entry.side_path} for {entry.name!r} is not clean at "
+                f"pin {pin}; inspect it by hand, bakar never modifies it"
+            )
+        states.append(RepoState(entry.name, entry.path, pin, "side", entry.side_path, fact.side_exists, **extra))
     return states
+
+
+def classify(repos: dict, workspace: Path) -> list[RepoState]:
+    """Classify every pinned repository in a kas ``repos`` mapping."""
+    entries = pinned_entries(repos, workspace)
+    return classify_facts(entries, gather_local_facts(entries))
 
 
 def _kas_path(path: Path, workspace: Path) -> str:
