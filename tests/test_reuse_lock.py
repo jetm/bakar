@@ -16,6 +16,7 @@ from bakar.steps import kas_build, repo_reuse
 from bakar.steps.repo_reuse import RepoState, workspace_lock
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 PIN = "0123456789abcdef0123456789abcdef01234567"
@@ -202,3 +203,97 @@ def test_kas_policy_takes_no_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         kas_build._build_kas_arg(cfg, kas_yaml, overlay)
 
     assert not (tmp_path / ".bakar" / "repos.lock").exists()
+
+
+@pytest.fixture(autouse=True)
+def _drop_in_use_holds() -> Iterator[None]:
+    yield
+    for fh in repo_reuse._IN_USE_HELD.values():
+        fh.close()
+    repo_reuse._IN_USE_HELD.clear()
+
+
+def _flock_state(lock: Path, mode: int) -> bool:
+    """True when a fresh open file description can take ``mode`` without blocking."""
+    with lock.open("a") as fh:
+        try:
+            fcntl.flock(fh, mode | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        return True
+
+
+def test_reuse_build_holds_in_use_lock_shared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, kas_yaml, overlay = _cfg(tmp_path)
+    lock = tmp_path / ".bakar" / repo_reuse.IN_USE_LOCK_NAME
+
+    with (
+        patch.object(kas_build.kas_pins, "read_merged_config", return_value={"repos": {}}),
+        patch.object(
+            kas_build.repo_reuse,
+            "classify",
+            return_value=[RepoState("meta-foo", tmp_path / "meta-foo", PIN, "missing")],
+        ),
+        patch(
+            "bakar.steps.kas_build.subprocess.run",
+            return_value=subprocess.CompletedProcess(["kas"], 0, DUMP_YAML, ""),
+        ),
+    ):
+        kas_build._build_kas_arg(cfg, kas_yaml, overlay)
+
+    assert lock.is_file()
+    assert not _flock_state(lock, fcntl.LOCK_EX)
+    assert _flock_state(lock, fcntl.LOCK_SH)
+
+
+def test_in_use_lock_waits_then_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock = tmp_path / ".bakar" / repo_reuse.IN_USE_LOCK_NAME
+    holder = _hold(lock)
+    monkeypatch.setattr(repo_reuse, "_LOCK_NOTICE_AFTER_S", 0.2)
+    try:
+        with pytest.raises(RuntimeError) as exc:
+            repo_reuse.hold_workspace_in_use(tmp_path, wait_limit_s=1)
+    finally:
+        _release(holder)
+    assert str(lock) in str(exc.value)
+    err = capsys.readouterr().err
+    assert f"waiting for {lock}: a bakar sync holds it" in err
+    assert err.count("\n") == 1
+    assert tmp_path.resolve() not in repo_reuse._IN_USE_HELD
+
+
+_TAKE_SHARED = (
+    "import sys\n"
+    "from pathlib import Path\n"
+    "from bakar.steps.repo_reuse import hold_workspace_in_use\n"
+    "hold_workspace_in_use(Path(sys.argv[1]))\n"
+    "print('held', flush=True)\n"
+)
+
+
+def test_in_use_lock_released_when_process_exits(tmp_path: Path) -> None:
+    lock = tmp_path / ".bakar" / repo_reuse.IN_USE_LOCK_NAME
+    proc = subprocess.run(
+        [sys.executable, "-c", _TAKE_SHARED, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert proc.stdout.strip() == "held"
+    assert lock.is_file()
+    assert _flock_state(lock, fcntl.LOCK_EX)
+
+
+def test_in_use_lock_holders_share(tmp_path: Path) -> None:
+    lock = tmp_path / ".bakar" / repo_reuse.IN_USE_LOCK_NAME
+    repo_reuse.hold_workspace_in_use(tmp_path, wait_limit_s=1)
+    repo_reuse.hold_workspace_in_use(tmp_path, wait_limit_s=1)
+    with lock.open("a") as other:
+        fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        fcntl.flock(other, fcntl.LOCK_UN)
+    assert len(repo_reuse._IN_USE_HELD) == 1

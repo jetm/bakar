@@ -30,6 +30,7 @@ from bakar.gitutil import git_stdout
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from typing import IO
 
 RepoStateKind = Literal["frozen", "missing", "side", "invalid"]
 
@@ -113,6 +114,54 @@ def workspace_lock(workspace: Path, *, wait_limit_s: float = LOCK_WAIT_LIMIT_S) 
             yield
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+# A sync takes this exclusively and without waiting; every reuse build holds it
+# shared for its whole run, so a sync never moves a clone under a live build.
+IN_USE_LOCK_NAME = "repos-in-use.lock"
+
+# Kept open for the life of the process: closing the file would drop the flock.
+_IN_USE_HELD: dict[Path, IO[str]] = {}
+
+
+def hold_workspace_in_use(workspace: Path, *, wait_limit_s: float = LOCK_WAIT_LIMIT_S) -> None:
+    """Hold the workspace's whole-run lock in shared mode until the process exits.
+
+    Shared holders never block each other; only a sync, which takes the lock
+    exclusively, does. A killed process releases it with its file descriptor.
+    A second call for the same workspace is a no-op.
+
+    Raises RuntimeError naming the lock file when a sync holds it past
+    ``wait_limit_s``.
+    """
+    key = workspace.resolve()
+    if key in _IN_USE_HELD:
+        return
+    lock_dir = workspace / ".bakar"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / IN_USE_LOCK_NAME
+    fh = lock_path.open("a")
+    start = time.monotonic()
+    noticed = False
+    try:
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                waited = time.monotonic() - start
+                if waited >= wait_limit_s:
+                    raise RuntimeError(
+                        f"gave up after waiting {waited:.0f}s for {lock_path}: a bakar sync still holds it"
+                    ) from None
+                if not noticed and waited >= _LOCK_NOTICE_AFTER_S:
+                    print(f"waiting for {lock_path}: a bakar sync holds it", file=sys.stderr)
+                    noticed = True
+                time.sleep(_LOCK_POLL_S)
+    except BaseException:
+        fh.close()
+        raise
+    _IN_USE_HELD[key] = fh
 
 
 @dataclass(frozen=True)
@@ -269,18 +318,18 @@ def _short(value: str | None) -> str:
     return value[:12] if value else "none"
 
 
-def _clean_word(clean: bool | None) -> str:
+def _clean_word(*, clean: bool | None) -> str:
     return "unknown" if clean is None else ("clean" if clean else "dirty")
 
 
-def _presence_word(present: bool | None) -> str:
+def _presence_word(*, present: bool | None) -> str:
     return "unknown" if present is None else ("present" if present else "absent")
 
 
 def _facts_text(st: RepoState) -> str:
     return (
-        f"HEAD {_short(st.head)}, pin {_short(st.pin)}, {_clean_word(st.clean)}, "
-        f"pin commit {_presence_word(st.pin_present)}"
+        f"HEAD {_short(st.head)}, pin {_short(st.pin)}, {_clean_word(clean=st.clean)}, "
+        f"pin commit {_presence_word(present=st.pin_present)}"
     )
 
 

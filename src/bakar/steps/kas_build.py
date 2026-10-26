@@ -726,6 +726,8 @@ def _build_kas_arg(
             pin = _write_meta_avocado_pin(cfg, entry)
             pin_rels = [pin] if pin is not None else []
             if _repo_policy(entry) == REPO_POLICY_REUSE:
+                # Shared and process-long, so a sync cannot move a clone mid-build.
+                repo_reuse.hold_workspace_in_use(cfg.workspace)
                 # Held through the dump, because the dump is where kas clones
                 # whatever classify found missing.
                 with repo_reuse.workspace_lock(cfg.workspace):
