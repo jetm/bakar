@@ -53,7 +53,7 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--branch` | `-b` | Branch override (inferred from manifest when omitted) |
 | `--skip-sync` | | Skip repo/layertool sync step |
 | `--keep-going` | `-k` | Pass `-k` to bitbake: continue building other targets when one fails |
-| `--dry-run` | `-n` | Regenerate YAML and exit before invoking kas |
+| `--dry-run` | `-n` | Regenerate YAML and exit before invoking kas. With `--on` it previews a meta-avocado dispatch and creates nothing; see [Remote dry run](#remote-dry-run) |
 | `--dry-run-script` | | Write a runnable bash script to PATH instead of building; use `-` for stdout. Distinct from `--dry-run`: this produces an executable script, not a preview. |
 | `--clean` | | Remove `<bsp>/build/` before running (forces from-scratch build). Refuses, deletes nothing and exits 1 while a peer node's marker or a live local build holds the lock; the message names the holder and the marker, and the marker can be deleted by hand if no build runs on any node. An unreadable lock only warns and proceeds. |
 | `--show-layers` | | Print layer git hashes before the build starts |
@@ -549,7 +549,17 @@ host runs its own bakar, so a host needs this version before a dispatch of such
 an overlay benefits. A routed path that does not exist stops the build with exit 2
 before any kas command
 runs. With no mapping for the release, a local build resolves its workspace as
-before: the parent of the `meta-avocado` main checkout. `-w` always wins.
+the parent of the `meta-avocado` main checkout. For a local build `-w` always
+wins.
+
+`-w` names a local workspace: bakar checks it on the machine you run it on and
+changes into it, so a path that exists only on the build host fails there with
+`workspace does not exist or is not a directory` (exit 2). A meta-avocado `--on`
+build ignores the local workspace and always builds in the workspace its release
+maps to on the host. A `-w` naming a different workspace than that one is
+refused with exit 2 before any ssh command runs, and the refusal names the
+routed path; drop `-w`, or point it at the routed path when that path also
+exists locally.
 
 bakar does not create release workspaces. Create one once per host with the
 commands the missing-workspace refusal prints (see
@@ -575,14 +585,44 @@ that has a `url:`:
 
 The overlay is written to `<build dir>/avocado-reuse.yml` and merged after every
 other overlay; for a checkout the workspace does not own,
-`<build dir>/avocado-pin.yml` follows it. Each
-new side checkout prints one line,
-`side checkout <repo> at <commit12>: <path>`. An existing side checkout that is
-clean at its pin is frozen and reused as is; one with local changes or another
+`<build dir>/avocado-pin.yml` follows it. Every
+side checkout the build uses prints one line,
+`side checkout <repo> at <commit12>: <path>`, and one that already exists from
+an earlier build carries a `(reused)` suffix, so the second and later builds
+print `side checkout <repo> at <commit12>: <path> (reused)`. An existing side
+checkout that is clean at its pin is reused as is; one with local changes or another
 HEAD fails the build, naming the path. A repository with a `url:` but no
 `commit:` pin also fails the build, because kas would move the shared clone to a
 branch tip. Under `reuse` the "does not contain commit" retry with
 `--skip repos_checkout` is not attempted, so the original kas error stands.
+
+`bitbake` and `openembedded-core` normally never take a side checkout, because
+the build puts `<workspace>/bitbake/bin` first on `PATH` and oe-core finds
+bitbake as a sibling. The exception is host mode, the default: when `bitbake`
+is frozen (clean at its pin) and `openembedded-core` is the repository that
+diverged, `openembedded-core` takes a side checkout and bakar creates a
+`bitbake` symlink beside it, under `<workspace>/.bakar/pins/openembedded-core/`,
+pointing at the frozen clone, so the side checkout's sibling bitbake is that same
+clone. An existing entry at that link that resolves elsewhere is never replaced
+and fails the build. A diverged `bitbake` always blocks, as does a diverged
+`openembedded-core` when `bitbake` is not frozen or the build runs in container
+mode.
+
+Every bakar session that builds, shells or dumps under the `reuse` policy holds
+`<workspace>/.bakar/repos-in-use.lock` shared for its whole run, from before
+classification until the process exits, so those sessions never block each
+other. `bakar sync` takes it exclusively without waiting, so a sync never moves
+a clone under a live build or shell; a session that starts while a sync holds it
+waits, and gives up after 20 minutes naming the lock. A killed session releases
+the lock with its process. Only the PTY build path goes further: if the build
+front end dies without `--detach` while kas keeps running in its scope, a small
+detached `flock` process keeps the lock until the build's own process exits, so a
+sync still cannot move a clone under it. This
+is separate from the short exclusive
+`repos.lock`, which serialises classification through the kas dump. A
+repository that cannot be reused is refused once with every blocker listed and,
+for the ones sync can move, the `bakar sync` line that repairs them; see
+[Refusals and fixes](#refusals-and-fixes).
 
 Set `BAKAR_REPO_POLICY=kas` to opt out and let kas manage the repositories as it
 always has, retry included. Any other value is refused, so a typo never hands
@@ -849,13 +889,76 @@ the workspace check, push and worktree script). On a high-latency link, a
 `~/.ssh/config` entry with `ControlMaster auto` and a `ControlPersist` window
 amortizes them onto one shared connection.
 
+### Remote dry run
+
+`bakar build <kas> --on HOST --dry-run` previews a meta-avocado dispatch without
+creating anything. It runs every read-only check a real dispatch runs: the
+snapshot checks (the untracked-file cap, key material, the delivered name), the
+ssh preflight and bakar version check (`--yes` overrides a mismatch as usual),
+the host's capability probe, the release workspace check and the shared-clone pin
+check. It then prints the dispatch plan (the delivered worktree, its ref, the
+bookkeeping files and the build directory), the side checkouts the host build
+would use, whether a snapshot of uncommitted changes would ride along and the
+untracked paths it carries, and one pin line per repository,
+`<repo>: <frozen|missing|side|invalid>, HEAD <commit12>, pin <commit12>, <clean|dirty>, pin commit <present|absent>`.
+
+```bash
+# Preview the dispatch, pin states included, without touching pc3
+bakar build meta-avocado/kas/machine/qemux86-64.yml --on pc3 --dry-run
+```
+
+The exit code is 0 when a real dispatch would pass its checks, after printing
+`dry run: nothing was pushed or created on <host>`. It is 1 when a check refuses,
+for example blocking repositories, which print after the pin table; every
+refusal in the table below applies unchanged. No git object, ref, worktree, lock
+file or build directory is written, locally or on the host. The ref line for a
+dirty checkout reads `refs/bakar/<name>/<snapshot of HEAD <commit12>, computed at
+dispatch>`, because the snapshot commit is not built.
+
+Three combinations are refused with exit 2 before any ssh: `--on` with
+`--dry-run-script` (run the dry run locally), `--dry-run` with `--detach`, and a
+remote dry run of anything other than a meta-avocado kas build.
+
 ### Refusals and fixes
 
-The routing, preflight, workspace and delivery refusals happen before the first
-remote write. The worktree refusals come after the push, so the pushed ref and
-its objects stay on the remote; the next dispatch of the same commit reuses
-them. The last two refusals come from the build itself, before kas touches the
+The routing, preflight, workspace, pin check and delivery refusals happen before
+the first remote write. The worktree refusals come after the push, so the pushed
+ref and its objects stay on the remote; the next dispatch of the same commit
+reuses them. The last refusals come from the build itself, before kas touches the
 workspace.
+
+A repository that cannot be reused is refused once, however many there are. The
+refusal names every blocking repository on its own line,
+`<repo> (<path>): <reason>; HEAD <commit12>, pin <commit12>, clean or dirty, pin commit present or absent`.
+When at least one blocker is a clean clone off a full 40-hex pin, it prints the
+`bakar sync` line that moves the clean clones to their pins (see
+[sync.md](sync.md)); the line is shell-quoted, so it can be pasted as is.
+Blockers `bakar sync` leaves alone (a dirty clone, a dirty side checkout, an
+entry with no usable pin, and a pin that is abbreviated or a SHA-256 commit id,
+which sync never moves to) are named on a
+`bakar sync leaves these alone, so fix them by hand:` line, and when every
+blocker is of that kind there is no `bakar sync` line at all. Repositories that
+would take a side checkout are listed on a final `Using side checkouts:` line.
+
+The same refusal comes from two places. The pre-dispatch pin check runs on your
+machine and reads the host's shared clones over ssh with `rev-parse`, `status`
+and `cat-file` only, using the rules the host build applies. It refuses before
+anything is pushed or created on the host, and its `bakar sync` line is
+`bakar sync <kas> --on <host>`. It pairs `openembedded-core` with `bitbake` by
+the host's own precedence applied to what dispatch forwards: `--container` in
+the forwarded arguments means no pairing, otherwise `--host` pairs, otherwise a
+truthy forwarded `BAKAR_CONTAINER` (`1`, `true`, `yes` or `on`) means no
+pairing, and with none of them it pairs as the host-mode default does. The build
+on the host runs the same check again, because the shared clones can change
+between the two, and because only the host's own workspace or user
+configuration can still select container mode there, which the pre-dispatch
+check cannot see. For a
+dispatched build that fails only in the host build, for example on the pins of a
+colon-joined extra kas file the pre-dispatch check did not cover, the in-build
+refusal's `bakar sync` line is `bakar sync <kas> -w <workspace>`, naming the
+host's delivered worktree path and the build's workspace, with no `--on`: run it
+on the host, for example with `ssh <host> bakar sync ...`, or adapt it to the
+release workspace's own kas file.
 
 | Message (abridged) | Cause | Fix |
 |--------------------|-------|-----|
@@ -875,7 +978,10 @@ workspace.
 | `cannot dispatch: the name '<raw>' has no usable characters after sanitising`, or `...contains '..'`, or `...ends in '.lock'` / `'.build'` | the worktree or branch name has no character in `[A-Za-z0-9._-]`, or git or a bakar lock file name would reject it (exit 2, before any ssh) | rename the worktree or branch |
 | `cannot mirror <ws> to <host>: it is a configured release workspace, ...` or `...it holds a meta-avocado repository whose clone on the host the mirror would overwrite` | `--on` resolved the workspace root to a release workspace, or to a root holding a `meta-avocado` directory, through a preset, a generated `avocado-bakar.yml`, a kas file outside a `meta-avocado` checkout, or no kas file (exit 2) | run `bakar build <kas file inside the meta-avocado checkout> --on <host>` |
 | `--clean cannot be combined with --on`, or `KAS_TASK=... cannot be combined with --on`, or `<target> cannot be combined with --on` | the request would delete on the remote: `--clean`, a `KAS_TASK` other than `build`, a clean task in `-t`/`-i`/`BAKAR_IMAGE`/`KAS_TARGET` (exit 2); a `task:` set inside a kas file is user-authored and not inspected | run it on the host with `ssh <host> bakar ...` |
-| `-w <path> does not match the routed workspace <path>` | `--on` routes by release and `-w` names another workspace (exit 2) | drop `-w`, or point it at the routed workspace |
+| `-w <path> does not match the release workspace <path> that the 'x' build is routed to on <host>` | `--on` routes by release and `-w` names another workspace (exit 2) | drop `-w`, or point it at the routed workspace if that path exists locally |
+| `workspace does not exist or is not a directory: <path>` with `--workspace/-w` named | `-w` is checked on the machine you run bakar on before the dispatch starts, so a path that exists only on the host fails here (exit 2) | drop `-w`; `--on` builds in the workspace the release maps to on the host |
+| `N repositories block this build:` (or `1 repository blocks this build:`) followed by one `<repo> (<path>): <reason>; HEAD <commit12>, pin <commit12>, clean or dirty, pin commit present or absent` line per repository, then, when a blocker is a clean clone off a full 40-hex pin, `Move the clean clones to their pins with: bakar sync <kas> --on <host>`, and a `bakar sync leaves these alone, so fix them by hand: <names>` line for the rest | the pre-dispatch pin check classified the host's shared clones by the build's own rules and at least one cannot be served (exit 1, nothing written on the host; `--yes` does not override it) | run the printed `bakar sync` line, which moves clean clones onto their pins, then dispatch again; a repository it lists as dirty or with an absent pin commit is dealt with by hand |
+| `the shared-clone pin check on <host> did not complete: <reason>` | the read-only probe over ssh could not observe every repository (exit 1, nothing written on the host) | fix the host or the connection named in the reason and dispatch again |
 | `could not confirm that the bakar on <host> supports release-workspace dispatch (exit N): <stderr>` | the probe for `dispatch.snapshot_untracked_cap_mb` failed on the host: an older bakar rejects the key and would ignore the reuse policy, a current one with a broken config fails the same way; `--yes` does not override it | read the stderr shown, then update bakar on the host or fix its config |
 | `untracked files in <checkout> look like key material: ...` | a snapshot would put a private key, keystore, certificate bundle, credentials file (`.netrc`, `.git-credentials`, `.pgpass`, `credentials`) or `.env` file into a permanent ref on the host; public keys (`*.pub`) and `.env.example`, `.env.sample` and `.env.template` are exempt | move it out of the checkout, ignore it, or commit it after review |
 | `bakar: cannot open the build lock <path>` or `bakar: cannot take the build lock <path>` | the remote build guard could not open or take the shared lock on the delivered worktree and refuses to build unguarded (exit 9) | check the lock directory is writable on the host and that its filesystem supports `flock`, then re-run |
@@ -889,8 +995,9 @@ workspace.
 | `...: the delivered worktree has uncommitted changes` | the delivered tree was edited on the remote; the changed paths are listed (script exit 6) | inspect and clean it by hand; bakar never discards changes |
 | `--clean cannot be combined with --on` | `--clean` would delete a build directory on the remote (exit 2) | build with `--on`, or run `bakar build --clean` on that host |
 | `...: a build is running in the delivered worktree's build directory` | a `bitbake.lock` in any build directory of the workspace is held (script exit 7) | wait for the build, or `bakar stop --on <host>` |
-| `repository 'x' has a url but no commit pin; kas would move the shared clone to a branch tip` | the build runs under `reuse` | pin the repository to a commit |
-| `side checkout <path> for 'x' is not clean at pin <commit>` | an existing side checkout was changed | inspect it by hand; bakar never modifies it |
+| `N repositories block this build:` (or `1 repository blocks this build:`) with a per-repository `<repo> (<path>): <reason>; HEAD ..., pin ..., ..., pin commit ...` line, ending in `Move the clean clones to their pins with: bakar sync <kas> -w <workspace>` when sync can move at least one blocker (a clean clone off a full 40-hex pin), and `bakar sync leaves these alone, so fix them by hand: <names>` for the others | the build runs under `reuse` and a pinned repository cannot be served; the reasons are `no commit pin` (kas would move the shared clone to a branch tip), `commit pin is not a hexadecimal commit id`, `off its pin or has local changes` (for `bitbake`, or for `openembedded-core` when `bitbake` is not clean at its pin or the build runs in container mode), and `side checkout <path> has local changes or is not at its pin; inspect it by hand, bakar never modifies it` | pin the repository to a commit, move the clean clones with the `bakar sync` line, or inspect the named path by hand |
+| `<path> already exists and does not resolve to <path>; bakar never replaces it` | the `bitbake` link beside a paired `openembedded-core` side checkout points somewhere else | inspect it by hand |
+| `gave up after waiting Ns for <workspace>/.bakar/repos-in-use.lock: a bakar sync still holds it` | a `bakar sync` held the whole-run lock exclusively for 20 minutes | wait for the sync, then re-run |
 
 ### Manual cleanup
 
