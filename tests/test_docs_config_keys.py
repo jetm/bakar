@@ -90,6 +90,15 @@ SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "bakar"
 # without one.
 _UNDOCUMENTED_ENV: dict[str, str] = {
     "BAKAR_EOF": "heredoc delimiter in generated setup scripts, not an environment variable",
+    "BAKAR_PIN": "marker tag the generated pin probe script prints and Python parses, not an env var",
+    "BAKAR_PIN_DONE": "marker tag the generated pin probe script prints and Python parses, not an env var",
+    "BAKAR_SYNC": "marker tag the generated pin sync script prints and Python parses, not an env var",
+    "BAKAR_SYNC_NOTE": "marker tag the generated pin sync script prints and Python parses, not an env var",
+    "BAKAR_SYNC_REVERT": "marker tag the generated pin sync script prints and Python parses, not an env var",
+    "BAKAR_SYNC_DONE": "marker tag the generated pin sync script prints and Python parses, not an env var",
+    "BAKAR_SYNC_REFUSED": "marker tag the generated pin sync script prints and Python parses, not an env var",
+    "BAKAR_REVERT": "marker tag the generated pin revert script prints and Python parses, not an env var",
+    "BAKAR_REVERT_DONE": "marker tag the generated pin revert script prints and Python parses, not an env var",
     "BAKAR_SSTATE_MIRROR_URL": "exported by bakar into the build from `sstate_mirror_url`, documented in docs/build.md",
     "BAKAR_SCCACHE_SCHEDULER_URL": "exported by bakar into the build from `sccache_scheduler_url`, see sccache-dist.md",
     "BAKAR_REPO_NAME": "exported to the child command by `bakar for-all`, documented in docs/for-all.md",

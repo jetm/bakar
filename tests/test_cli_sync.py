@@ -508,3 +508,191 @@ def test_sync_clean_refuses_when_a_peer_holds_the_marker(
     assert "pc2" in result.output
     assert mock_run.call_count == 0
     assert (build_dir / "tmp").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# kas form: ``bakar sync <meta-avocado kas file>`` moves clones onto their pins
+# ---------------------------------------------------------------------------
+
+_PIN_URL = "https://example.invalid/repo-a.git"
+
+
+def _git(*args: str) -> str:
+    import os
+    import subprocess
+
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    ident = ["-c", "user.email=t@example.invalid", "-c", "user.name=t"]
+    done = subprocess.run(["git", *ident, *args], check=True, capture_output=True, text=True, env=env)
+    return done.stdout.strip()
+
+
+def _pinned_clone(ws: Path, name: str = "repo-a") -> tuple[Path, str, str]:
+    """A clone under ``ws`` sitting at an old commit; returns (path, old sha, pin sha)."""
+    repo = ws / name
+    _git("init", "-q", "-b", "main", str(repo))
+    (repo / "f").write_text("old")
+    _git("-C", str(repo), "add", "-A")
+    _git("-C", str(repo), "commit", "-q", "-m", "old")
+    old = _git("-C", str(repo), "rev-parse", "HEAD")
+    (repo / "f").write_text("new")
+    _git("-C", str(repo), "commit", "-q", "-am", "new")
+    pin = _git("-C", str(repo), "rev-parse", "HEAD")
+    _git("-C", str(repo), "checkout", "-q", "--detach", old)
+    return repo, old, pin
+
+
+def _patch_pins(monkeypatch: pytest.MonkeyPatch, pin: str, release: str = "wrynose") -> None:
+    from bakar.steps import kas_pins
+
+    repos = {"repo-a": {"url": _PIN_URL, "commit": pin, "path": "repo-a"}}
+    monkeypatch.setattr(kas_pins, "probe_pins", lambda _yaml, _checkout: (release, repos))
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_sync_kas_moves_local_workspace(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lay = meta_avocado_worktree_layout
+    repo, _old, pin = _pinned_clone(lay.ws)
+    _patch_pins(monkeypatch, pin)
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+
+    result = runner.invoke(app, ["sync", str(lay.kas_yaml), "-w", str(lay.ws)])
+
+    assert result.exit_code == 0, result.output
+    assert "MOVED repo-a" in _norm(result.output)
+    assert _git("-C", str(repo), "rev-parse", "HEAD") == pin
+
+
+def test_sync_kas_dry_run_changes_nothing(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lay = meta_avocado_worktree_layout
+    repo, old, pin = _pinned_clone(lay.ws)
+    _patch_pins(monkeypatch, pin)
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+
+    result = runner.invoke(app, ["sync", str(lay.kas_yaml), "-w", str(lay.ws), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert f"repo-a: would move to {pin[:12]}" in _norm(result.output)
+    assert _git("-C", str(repo), "rev-parse", "HEAD") == old
+    assert not (lay.ws / ".bakar").exists()
+
+
+def test_sync_kas_on_runs_script_on_host(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    from bakar.steps import remote_dispatch
+    from bakar.user_config import UserConfig
+
+    lay = meta_avocado_worktree_layout
+    repo, _old, pin = _pinned_clone(lay.ws)
+    _patch_pins(monkeypatch, pin)
+    cfg = UserConfig(workspaces_releases={"wrynose": str(lay.ws)})
+    monkeypatch.setattr("bakar.commands._app.load_user_config", lambda *a, **k: cfg)
+    checked: list[tuple] = []
+    monkeypatch.setattr(remote_dispatch, "check_remote_workspace", lambda *a: checked.append(a))
+    scripts: list[str] = []
+
+    def fake_ssh(host: str, script: str, **_kw) -> subprocess.CompletedProcess:
+        scripts.append(script)
+        return subprocess.run(["bash", "-s"], input=script, capture_output=True, text=True, check=False)
+
+    monkeypatch.setattr(remote_dispatch, "_ssh_bash_capture", fake_ssh)
+
+    result = runner.invoke(app, ["sync", str(lay.kas_yaml), "--on", "pc2"])
+
+    assert result.exit_code == 0, result.output
+    assert checked == [("pc2", str(lay.ws), "wrynose")]
+    assert len(scripts) == 1
+    assert "MOVED repo-a" in _norm(result.output)
+    assert _git("-C", str(repo), "rev-parse", "HEAD") == pin
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        ["--machine", "m"],
+        ["--distro", "d"],
+        ["--image", "i"],
+        ["--manifest", "x.xml"],
+        ["--branch", "b"],
+        ["--clean"],
+        ["--show-layers"],
+        ["--dry-run-script", "-"],
+    ],
+)
+def test_sync_kas_conflicts_refused(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch, flag: list[str]
+) -> None:
+    lay = meta_avocado_worktree_layout
+    _patch_pins(monkeypatch, "0" * 40)
+
+    result = runner.invoke(app, ["sync", str(lay.kas_yaml), "-w", str(lay.ws), *flag])
+
+    assert result.exit_code == 2, result.output
+    assert flag[0] in _norm(result.output)
+    assert not (lay.ws / ".bakar").exists()
+
+
+def test_sync_non_meta_avocado_kas_refused(runner: CliRunner, tmp_path: Path) -> None:
+    kas = tmp_path / "other" / "my.yml"
+    kas.parent.mkdir()
+    kas.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+
+    result = runner.invoke(app, ["sync", str(kas), "-w", str(tmp_path)])
+
+    assert result.exit_code == 2, result.output
+    assert "supports meta-avocado release workspaces only" in _norm(result.output)
+    assert not (tmp_path / ".bakar").exists()
+
+
+def test_sync_on_missing_workspace_refused(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar.steps import remote_dispatch
+    from bakar.user_config import UserConfig
+
+    lay = meta_avocado_worktree_layout
+    _patch_pins(monkeypatch, "0" * 40)
+    cfg = UserConfig(workspaces_releases={"wrynose": str(lay.ws)})
+    monkeypatch.setattr("bakar.commands._app.load_user_config", lambda *a, **k: cfg)
+
+    def missing(host: str, workspace: str, release: str) -> None:
+        raise remote_dispatch.DispatchError(f"the release workspace {workspace} does not exist on {host}")
+
+    monkeypatch.setattr(remote_dispatch, "check_remote_workspace", missing)
+    ran: list[str] = []
+    monkeypatch.setattr(remote_dispatch, "_ssh_bash_capture", lambda *a, **k: ran.append("ssh"))
+
+    result = runner.invoke(app, ["sync", str(lay.kas_yaml), "--on", "pc2"])
+
+    assert result.exit_code == 2, result.output
+    assert "does not exist on pc2" in _norm(result.output)
+    assert ran == []
+
+
+def test_sync_on_with_workspace_option_refused(
+    runner: CliRunner, meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lay = meta_avocado_worktree_layout
+    _patch_pins(monkeypatch, "0" * 40)
+
+    result = runner.invoke(app, ["sync", str(lay.kas_yaml), "--on", "pc2", "-w", str(lay.ws)])
+
+    assert result.exit_code == 2, result.output
+    assert "-w cannot be combined with --on" in _norm(result.output)
+
+
+def test_sync_on_without_kas_refused(runner: CliRunner) -> None:
+    result = runner.invoke(app, ["sync", "--on", "pc2"])
+
+    assert result.exit_code == 2, result.output
+    assert "--on needs a kas file" in _norm(result.output)

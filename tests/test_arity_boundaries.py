@@ -58,7 +58,7 @@ REPACKED: list[Case] = [
     Case("bakar.commands._app", "_main", "_main_impl", "_GlobalOptions", 12, "opts"),
     Case("bakar.commands.clean_cache", "clean_cache", "_clean_cache_impl", "_CleanCacheCtx", 10, "ctx"),
     Case("bakar.commands.getvar", "getvar", "_getvar_impl", "_GetvarCtx", 10, "ctx"),
-    Case("bakar.commands.sync", "sync", "_sync_impl", "_SyncCtx", 10, "ctx"),
+    Case("bakar.commands.sync", "sync", "_sync_impl", "_SyncCtx", 12, "ctx"),
     Case("bakar.commands.stress_parse", "stress_parse", "_stress_parse_impl", "_StressParseCtx", 11, "ctx"),
     # Private helpers: no shim, no Typer surface, so the signature is free to
     # shrink. ``_render_sstate_lines`` keeps ``console`` positional.

@@ -132,6 +132,13 @@ class _SyncCtx:
 
 @app.command()
 def sync(
+    kas_yaml: Annotated[
+        str | None,
+        typer.Argument(
+            help="A kas file inside a meta-avocado checkout: move the shared clones of its release "
+            "workspace onto their pins instead of running the manifest sync.",
+        ),
+    ] = None,
     machine: Annotated[str | None, typer.Option("--machine", "-m")] = None,
     distro: Annotated[str | None, typer.Option("--distro", "-d")] = None,
     image: Annotated[str | None, typer.Option("--image", "-i")] = None,
@@ -172,8 +179,21 @@ def sync(
             metavar="PATH",
         ),
     ] = None,
+    # Inline rather than the shared OnOption: its help describes dispatching a build.
+    on: Annotated[
+        str | None,
+        typer.Option(
+            "--on",
+            help="With a kas file: run the pin sync in the release workspace on this host "
+            "(ssh alias or user@ip) instead of locally. No bakar install is needed there.",
+        ),
+    ] = None,
 ) -> None:
     """Run the manifest-driven sync without building.
+
+    With a kas file (``bakar sync <meta-avocado kas file>``) it instead moves the
+    shared clones of that release workspace onto the commits the kas file pins;
+    ``--dry-run`` lists what would move, ``--on HOST`` runs it on that host.
 
     Equivalent to the first half of ``bakar build``: doctor, then
     repo init+sync (NXP) or oe-layertool populate (TI), then var-setup-release
@@ -183,6 +203,29 @@ def sync(
     bitbake-setup workspaces are initialized externally via
     ``bitbake-setup init``; ``bakar sync`` fails fast for them.
     """
+    if kas_yaml is not None or on is not None:
+        from bakar.commands._sync_pins import SyncPinsRequest, run_pin_sync
+
+        manifest_flags = {
+            "--machine": machine is not None,
+            "--distro": distro is not None,
+            "--image": image is not None,
+            "--manifest": manifest is not None,
+            "--branch": branch is not None,
+            "--clean": clean,
+            "--show-layers": show_layers,
+            "--dry-run-script": dry_run_script is not None,
+        }
+        code = run_pin_sync(
+            SyncPinsRequest(
+                kas_yaml=kas_yaml,
+                on=on,
+                workspace=workspace,
+                dry_run=dry_run,
+                conflicts=tuple(flag for flag, given in manifest_flags.items() if given),
+            )
+        )
+        raise typer.Exit(code=code)
     _sync_impl(
         _SyncCtx(
             machine=machine,
