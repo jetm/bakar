@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -10,12 +11,15 @@ import yaml
 
 from bakar.steps.repo_reuse import (
     RepoFacts,
+    RepoReuseError,
     RepoState,
     blocking,
     classify,
     classify_facts,
+    ensure_core_bitbake_link,
     gather_local_facts,
     pinned_entries,
+    render_blockers,
     render_pin_table,
     render_refusal,
     reuse_overlay_text,
@@ -92,7 +96,7 @@ def test_slow_git_read_does_not_misclassify_clean_repo(tmp_path: Path, monkeypat
         timeout = kwargs.get("timeout")
         if isinstance(timeout, int | float) and timeout <= 5:
             raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
-        return real_run(*args, **kwargs)  # type: ignore[call-overload]
+        return real_run(*args, **kwargs)  # ty: ignore[no-matching-overload]
 
     monkeypatch.setattr("bakar.gitutil.subprocess.run", slow_run)
     (state,) = classify({"meta-x": _entry(second)}, tmp_path)
@@ -157,7 +161,9 @@ def test_existing_dirty_side_checkout_is_blocking(tmp_path: Path) -> None:
     assert state.state == "side"
     assert state.blocking is not None
     assert str(side) in state.blocking
-    assert state.side_exists is False
+    # The blocking state still names the side checkout it refuses, and that it exists.
+    assert state.side_path == side
+    assert state.side_exists is True
 
 
 def test_existing_side_checkout_at_other_head_is_blocking(tmp_path: Path) -> None:
@@ -188,7 +194,7 @@ def test_single_refusal_names_every_blocker(tmp_path: Path) -> None:
     text = render_refusal(states, repair="bakar sync -f m.yml")
     assert text.splitlines()[0].startswith("3 repositories block")
     for name in ("bitbake", "openembedded-core", "meta-x"):
-        assert f"  {name}: " in text
+        assert f"  {name} ({tmp_path / name}): " in text
     assert "off its pin or has local changes" in text
     assert "has local changes or is not at its pin" in text
     assert f"pin {bb_first[:12]}" in text
@@ -335,3 +341,216 @@ def test_classify_facts_matches_classify(tmp_path: Path) -> None:
     assert states[0].head == second
     assert states[0].clean is True
     assert states[0].pin_present is True
+
+
+def _core_and_bitbake(tmp_path: Path, *, bitbake_frozen: bool) -> dict:
+    """A diverged openembedded-core beside a bitbake that is or is not at its pin."""
+    core_first, _ = _make_repo(tmp_path / "openembedded-core")
+    bb_first, bb_second = _make_repo(tmp_path / "bitbake")
+    return {
+        "bitbake": _entry(bb_second if bitbake_frozen else bb_first),
+        "openembedded-core": _entry(core_first),
+    }
+
+
+def _paired_core(tmp_path: Path) -> RepoState:
+    repos = _core_and_bitbake(tmp_path, bitbake_frozen=True)
+    states = {s.name: s for s in classify(repos, tmp_path, pair_core_with_bitbake=True)}
+    return states["openembedded-core"]
+
+
+def test_core_pairs_with_frozen_bitbake_when_enabled(tmp_path: Path) -> None:
+    repos = _core_and_bitbake(tmp_path, bitbake_frozen=True)
+    states = {s.name: s for s in classify(repos, tmp_path, pair_core_with_bitbake=True)}
+    core = states["openembedded-core"]
+    assert core.state == "side"
+    assert core.blocking is None
+    assert core.side_path is not None
+    assert core.paired_bitbake == tmp_path / "bitbake"
+    assert states["bitbake"].state == "frozen"
+    assert states["bitbake"].paired_bitbake is None
+
+
+def test_core_blocks_when_pairing_disabled(tmp_path: Path) -> None:
+    repos = _core_and_bitbake(tmp_path, bitbake_frozen=True)
+    states = {s.name: s for s in classify(repos, tmp_path)}
+    core = states["openembedded-core"]
+    assert core.blocking == "off its pin or has local changes"
+    assert core.paired_bitbake is None
+
+
+def test_bitbake_diverged_always_blocks(tmp_path: Path) -> None:
+    repos = _core_and_bitbake(tmp_path, bitbake_frozen=False)
+    for pair in (False, True):
+        states = {s.name: s for s in classify(repos, tmp_path, pair_core_with_bitbake=pair)}
+        assert states["bitbake"].blocking == "off its pin or has local changes"
+        assert states["openembedded-core"].blocking is not None
+        assert states["openembedded-core"].paired_bitbake is None
+
+
+def test_ensure_core_bitbake_link_creates_relative_link(tmp_path: Path) -> None:
+    core = _paired_core(tmp_path)
+    assert core.side_path is not None
+    ensure_core_bitbake_link(core)
+    link = core.side_path.parent / "bitbake"
+    assert link.is_symlink()
+    assert not Path(os.readlink(link)).is_absolute()
+    assert link.resolve() == (tmp_path / "bitbake").resolve()
+
+
+def test_ensure_core_bitbake_link_reuses_matching_link(tmp_path: Path) -> None:
+    core = _paired_core(tmp_path)
+    assert core.side_path is not None
+    ensure_core_bitbake_link(core)
+    link = core.side_path.parent / "bitbake"
+    target = os.readlink(link)
+    ensure_core_bitbake_link(core)
+    assert os.readlink(link) == target
+
+
+def test_ensure_core_bitbake_link_refuses_foreign_entry(tmp_path: Path) -> None:
+    core = _paired_core(tmp_path)
+    assert core.side_path is not None
+    link_dir = core.side_path.parent
+    link_dir.mkdir(parents=True)
+    foreign = tmp_path / "elsewhere"
+    foreign.mkdir()
+    (link_dir / "bitbake").symlink_to(foreign)
+    with pytest.raises(RepoReuseError, match="never replaces"):
+        ensure_core_bitbake_link(core)
+    assert os.readlink(link_dir / "bitbake") == str(foreign)
+
+    plain_dir = tmp_path / "plain" / "pins"
+    (plain_dir / "bitbake").mkdir(parents=True)
+    other = RepoState(core.name, core.path, core.pin, "side", plain_dir / "sha", paired_bitbake=tmp_path / "bitbake")
+    with pytest.raises(RepoReuseError, match="never replaces"):
+        ensure_core_bitbake_link(other)
+    assert (plain_dir / "bitbake").is_dir()
+
+
+def test_ensure_core_bitbake_link_through_a_symlinked_pins_dir(tmp_path: Path) -> None:
+    # <ws>/.bakar/pins lives on another disk, at a different depth than the workspace.
+    elsewhere = tmp_path / "otherdisk" / "deep" / "pins"
+    elsewhere.mkdir(parents=True)
+    (tmp_path / ".bakar").mkdir()
+    (tmp_path / ".bakar" / "pins").symlink_to(elsewhere)
+    core = _paired_core(tmp_path)
+    assert core.side_path is not None
+    ensure_core_bitbake_link(core)
+    link = core.side_path.parent / "bitbake"
+    assert os.path.realpath(link) == os.path.realpath(tmp_path / "bitbake")
+    # A later build accepts the link it finds instead of refusing forever.
+    ensure_core_bitbake_link(core)
+
+
+def test_ensure_core_bitbake_link_refuses_a_link_that_resolves_elsewhere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core = _paired_core(tmp_path)
+    assert core.side_path is not None
+    link = core.side_path.parent / "bitbake"
+    real_symlink = os.symlink
+    # Something renames a directory between computing the target and creating the link.
+    monkeypatch.setattr(
+        "bakar.steps.repo_reuse.os.symlink", lambda _target, path: real_symlink(str(tmp_path / "nowhere"), path)
+    )
+    with pytest.raises(RepoReuseError, match=r"nowhere, not .*bakar removed it"):
+        ensure_core_bitbake_link(core)
+    assert not os.path.lexists(link)
+
+
+def test_refusal_with_extra_overlays_does_not_offer_sync() -> None:
+    syncable = _blocker("meta-a", head="f" * 40, clean=True)
+    text = render_refusal([syncable], repair="bakar sync m.yml -w /ws", extra_overlays=["extra.yml"])
+    assert "bakar sync m.yml" not in text
+    assert "extra.yml" in text
+    assert "by hand" in text
+
+
+def test_refusal_offers_sync_when_extra_overlays_keep_the_main_pins() -> None:
+    syncable = _blocker("meta-a", head="f" * 40, clean=True)
+    text = render_refusal(
+        [syncable], repair="bakar sync m.yml -w /ws", extra_overlays=["extra.yml"], main_pins={"meta-a": PIN}
+    )
+    assert "Move the clean clones to their pins with: bakar sync m.yml -w /ws" in text
+    assert "extra.yml" not in text
+
+
+def test_refusal_names_the_pin_an_extra_overlay_sets() -> None:
+    syncable = _blocker("meta-a", head="f" * 40, clean=True)
+    text = render_refusal(
+        [syncable], repair="bakar sync m.yml -w /ws", extra_overlays=["extra.yml"], main_pins={"meta-a": "e" * 40}
+    )
+    assert "bakar sync m.yml" not in text
+    assert f"extra.yml, which bakar sync does not read, and they pin meta-a at {PIN[:12]}" in text
+
+
+def test_paired_link_resolves_like_oe_buildenv(tmp_path: Path) -> None:
+    core = _paired_core(tmp_path)
+    assert core.side_path is not None
+    ensure_core_bitbake_link(core)
+    assert os.path.realpath(core.side_path / ".." / "bitbake") == os.path.realpath(tmp_path / "bitbake")
+
+
+def _blocker(name: str, *, head: str | None, clean: bool | None, kind: str = "side") -> RepoState:
+    return RepoState(name, Path("/ws") / name, PIN, kind, head=head, clean=clean, blocking="because")  # type: ignore[arg-type]
+
+
+def test_refusal_offers_sync_only_for_blockers_it_can_move() -> None:
+    off_pin_clean = _blocker("bitbake", head="a" * 40, clean=True)
+    dirty = _blocker("openembedded-core", head="a" * 40, clean=False)
+    no_pin = _blocker("meta-x", head=None, clean=None, kind="invalid")
+    at_pin_dirty = _blocker("meta-y", head=PIN, clean=False)
+
+    mixed = render_refusal([off_pin_clean, dirty, no_pin, at_pin_dirty], repair="bakar sync m.yml")
+    only_by_hand = render_refusal([dirty, no_pin, at_pin_dirty], repair="bakar sync m.yml")
+
+    assert "Move the clean clones to their pins with: bakar sync m.yml" in mixed
+    assert "fix them by hand: openembedded-core, meta-x, meta-y" in mixed
+    assert "bakar sync m.yml" not in only_by_hand
+    assert "fix them by hand: openembedded-core, meta-x, meta-y" in only_by_hand
+
+
+def _blocker_pinned(name: str, pin: str) -> RepoState:
+    return RepoState(name, Path("/ws") / name, pin, "side", head="b" * 40, clean=True, blocking="because")
+
+
+def test_short_pin_gets_by_hand_line_not_sync() -> None:
+    text = render_refusal([_blocker_pinned("meta-x", "abcdef123456")], repair="bakar sync m.yml")
+    assert "bakar sync m.yml" not in text
+    assert "fix them by hand: meta-x" in text
+
+
+def test_sha256_pin_is_not_invalid(tmp_path: Path) -> None:
+    pin = "c" * 64
+    entries = pinned_entries({"meta-x": _entry(pin)}, tmp_path)
+    at_pin = RepoFacts(
+        exists=True, head=pin, clean=True, pin_present=True, side_exists=False, side_head=None, side_clean=None
+    )
+    off_pin = RepoFacts(
+        exists=True, head="d" * 64, clean=True, pin_present=True, side_exists=False, side_head=None, side_clean=None
+    )
+    assert classify_facts(entries, [at_pin])[0].state == "frozen"
+    (side,) = classify_facts(entries, [off_pin])
+    assert side.state == "side"
+    assert side.blocking is None
+
+
+def test_blocker_line_names_the_clone_path() -> None:
+    (line,) = render_blockers([_blocker("meta-x", head="a" * 40, clean=True)])
+    assert line.startswith("  meta-x (/ws/meta-x): because; HEAD aaaaaaaaaaaa")
+
+
+def test_control_characters_in_names_are_replaced() -> None:
+    evil = "meta-\x1b[2Kx"
+    blocked = RepoState(evil, Path("/ws") / evil, PIN, "side", head="a" * 40, clean=True, blocking="because")
+    side = RepoState("ok\x7f", Path("/ws/ok"), PIN, "side", Path("/ws/side\x1bx"), head="a" * 40, clean=False)
+    text = render_refusal([blocked, side], repair="bakar sync m\x1b.yml")
+    table = "\n".join(render_pin_table([blocked, side]))
+    for out in (text, table):
+        assert "\x1b" not in out
+        assert "\x7f" not in out
+    assert "meta-?[2Kx (/ws/meta-?[2Kx)" in text
+    assert "Using side checkouts: ok?" in text
+    assert "with: bakar sync m?.yml" in text
+    assert table.startswith("meta-?[2Kx: side")

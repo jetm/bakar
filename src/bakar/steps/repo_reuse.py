@@ -17,9 +17,10 @@ from __future__ import annotations
 import fcntl
 import os
 import re
+import subprocess
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -29,16 +30,25 @@ import yaml
 from bakar.gitutil import git_stdout
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping, Sequence
     from typing import IO
 
 RepoStateKind = Literal["frozen", "missing", "side", "invalid"]
 
 # The build puts <workspace>/bitbake/bin first on PATH and oe-core finds bitbake
 # as ../bitbake, so a side checkout of either is never the copy the build runs.
+# One exception: a diverged openembedded-core may take a side checkout when
+# pairing is enabled and bitbake is frozen at its pin, because the side checkout's
+# sibling bitbake link then resolves to that same frozen clone.
 NO_SIDE_CHECKOUT = ("bitbake", "openembedded-core")
 
-_HEX_PIN = re.compile(r"[0-9a-fA-F]{4,40}")
+# kas accepts an abbreviated pin and a SHA-256 commit id as well as a SHA-1 one.
+_HEX_PIN = re.compile(r"[0-9a-fA-F]{4,64}")
+# bakar sync moves a clone only to a full SHA-1 pin, so only those can take its repair line.
+_SYNCABLE_PIN = re.compile(r"[0-9a-fA-F]{40}")
+# A kas repository name or path is untrusted text; an ESC sequence in it could
+# erase or forge earlier report lines.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 _KAS_HEADER_VERSION = 16
 
@@ -69,6 +79,7 @@ class RepoState:
     clean: bool | None = None
     pin_present: bool | None = None
     blocking: str | None = None
+    paired_bitbake: Path | None = None
 
 
 @contextmanager
@@ -162,6 +173,57 @@ def hold_workspace_in_use(workspace: Path, *, wait_limit_s: float = LOCK_WAIT_LI
         fh.close()
         raise
     _IN_USE_HELD[key] = fh
+
+
+def holds_in_use(workspace: Path) -> bool:
+    """Whether this process holds ``workspace``'s whole-run lock."""
+    return workspace.resolve() in _IN_USE_HELD
+
+
+# Takes the lock shared, then sleeps until the process behind the pidfd exits.
+_IN_USE_HOLDER = (
+    "import fcntl, select, sys\n"
+    "fh = open(sys.argv[1], 'a')\n"
+    "fcntl.flock(fh, fcntl.LOCK_SH)\n"
+    "select.select([int(sys.argv[2])], [], [])\n"
+)
+
+
+def keep_in_use_until_exit(workspace: Path, child: subprocess.Popen) -> None:
+    """Keep the whole-run lock shared until ``child`` exits, even if this process dies first.
+
+    The front end's own descriptor is not inherited by the scoped kas and
+    bitbake children, so a front end killed without ``--detach`` would drop the
+    lock while its build still runs. A detached holder in its own session keeps
+    the lock for the life of ``child`` instead. Handing the descriptor to the
+    build itself would also pin the lock to any bitbake server that outlives it.
+
+    ``child`` must not have been waited on yet, so the pidfd opened here names
+    that process and no later one: a holder that polled the PID number instead
+    would keep the lock for whatever process the kernel reuses it for. Best
+    effort: if the pidfd or the holder cannot be had, the front end's own hold
+    is all there is.
+    """
+    if not holds_in_use(workspace):
+        return
+    lock_path = workspace / ".bakar" / IN_USE_LOCK_NAME
+    try:
+        pidfd = os.pidfd_open(child.pid)
+    except OSError:
+        return
+    try:
+        with suppress(OSError):
+            subprocess.Popen(
+                [sys.executable, "-I", "-c", _IN_USE_HOLDER, str(lock_path), str(pidfd)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+                pass_fds=(pidfd,),
+            )
+    finally:
+        os.close(pidfd)
 
 
 @dataclass(frozen=True)
@@ -263,7 +325,17 @@ def _at_pin(head: str | None, pin: str) -> bool:
     return head is not None and head.lower().startswith(pin.lower())
 
 
-def classify_facts(entries: list[PinnedRepo], facts: list[RepoFacts]) -> list[RepoState]:
+def _is_frozen(entry: PinnedRepo, fact: RepoFacts) -> bool:
+    pin = entry.pin
+    return bool(pin and _HEX_PIN.fullmatch(pin) and fact.exists and _at_pin(fact.head, pin) and fact.clean is True)
+
+
+def classify_facts(
+    entries: list[PinnedRepo],
+    facts: list[RepoFacts],
+    *,
+    pair_core_with_bitbake: bool = False,
+) -> list[RepoState]:
     """Apply the reuse rules to already-gathered facts.
 
     Never raises: a repository the reuse policy cannot serve comes back with
@@ -272,7 +344,18 @@ def classify_facts(entries: list[PinnedRepo], facts: list[RepoFacts]) -> list[Re
     clone to a branch tip), an existing side checkout that is not clean at its
     pin, and a side-kind entry named in ``NO_SIDE_CHECKOUT``. The head, clean
     and pin-commit fields always describe the shared clone.
+
+    With ``pair_core_with_bitbake`` a diverged ``openembedded-core`` is not
+    blocking when the ``bitbake`` entry is frozen: it takes a side checkout and
+    records the frozen clone as ``paired_bitbake``. A diverged ``bitbake``
+    always blocks.
     """
+    frozen_bitbake: Path | None = None
+    if pair_core_with_bitbake:
+        for entry, fact in zip(entries, facts, strict=True):
+            if entry.name == "bitbake" and _is_frozen(entry, fact):
+                frozen_bitbake = entry.path
+                break
     states: list[RepoState] = []
     for entry, fact in zip(entries, facts, strict=True):
         pin = entry.pin
@@ -292,21 +375,68 @@ def classify_facts(entries: list[PinnedRepo], facts: list[RepoFacts]) -> list[Re
                 f"side checkout {entry.side_path} has local changes or is not at its pin; "
                 "inspect it by hand, bakar never modifies it"
             )
-            states.append(RepoState(entry.name, entry.path, pin, "side", blocking=reason, **extra))
+            states.append(
+                RepoState(
+                    entry.name, entry.path, pin, "side", entry.side_path, fact.side_exists, blocking=reason, **extra
+                )
+            )
             continue
-        if entry.name in NO_SIDE_CHECKOUT:
+        paired = entry.name == "openembedded-core" and frozen_bitbake is not None
+        if entry.name in NO_SIDE_CHECKOUT and not paired:
             states.append(
                 RepoState(entry.name, entry.path, pin, "side", blocking="off its pin or has local changes", **extra)
             )
             continue
-        states.append(RepoState(entry.name, entry.path, pin, "side", entry.side_path, fact.side_exists, **extra))
+        states.append(
+            RepoState(
+                entry.name,
+                entry.path,
+                pin,
+                "side",
+                entry.side_path,
+                fact.side_exists,
+                **extra,
+                paired_bitbake=frozen_bitbake if paired else None,
+            )
+        )
     return states
 
 
-def classify(repos: dict, workspace: Path) -> list[RepoState]:
+def classify(repos: dict, workspace: Path, *, pair_core_with_bitbake: bool = False) -> list[RepoState]:
     """Classify every pinned repository in a kas ``repos`` mapping."""
     entries = pinned_entries(repos, workspace)
-    return classify_facts(entries, gather_local_facts(entries))
+    return classify_facts(entries, gather_local_facts(entries), pair_core_with_bitbake=pair_core_with_bitbake)
+
+
+def ensure_core_bitbake_link(state: RepoState) -> None:
+    """Make ``<side checkout>/../bitbake`` resolve to the workspace's bitbake clone.
+
+    oe-buildenv-internal finds bitbake at ``$OEROOT/../bitbake`` and resolves it
+    with ``readlink -f``, so the link sits beside the side checkout. An existing
+    entry that resolves anywhere else is never replaced.
+
+    The target is computed between resolved paths: a symlinked ``.bakar/pins``
+    would otherwise make a lexical ``../../../bitbake`` land beside the
+    symlink's target, and every later build would refuse that link. A link that
+    still does not resolve to the clone once created is removed and refused.
+    """
+    if state.side_path is None or state.paired_bitbake is None:
+        raise RepoReuseError(f"{state.name} has no paired bitbake to link")
+    link_dir = state.side_path.parent
+    link = link_dir / "bitbake"
+    want = os.path.realpath(state.paired_bitbake)
+    if os.path.lexists(link):
+        if os.path.realpath(link) == want:
+            return
+        raise RepoReuseError(
+            f"{link} already exists and does not resolve to {state.paired_bitbake}; bakar never replaces it"
+        )
+    link_dir.mkdir(parents=True, exist_ok=True)
+    os.symlink(os.path.relpath(want, os.path.realpath(link_dir)), link)
+    if os.path.realpath(link) != want:
+        got = os.path.realpath(link)
+        link.unlink()
+        raise RepoReuseError(f"{link} resolved to {got}, not {state.paired_bitbake}; bakar removed it")
 
 
 def blocking(states: list[RepoState]) -> list[RepoState]:
@@ -333,14 +463,72 @@ def _facts_text(st: RepoState) -> str:
     )
 
 
-def render_refusal(states: list[RepoState], *, repair: str) -> str:
-    """One message naming every blocking repository and the repair command."""
+def sync_can_fix(st: RepoState) -> bool:
+    """Whether ``bakar sync`` moving the shared clone to its pin clears this blocker.
+
+    Sync moves a clone that exists, has a full 40-hex pin and is clean but off
+    that pin; a dirty clone, an unreadable one and an entry with an abbreviated,
+    SHA-256 or unusable pin are left alone, so those need a hand edit.
+    """
+    return (
+        st.state != "invalid"
+        and st.pin is not None
+        and _SYNCABLE_PIN.fullmatch(st.pin) is not None
+        and st.head is not None
+        and st.clean is True
+        and not _at_pin(st.head, st.pin)
+    )
+
+
+def printable(value: object) -> str:
+    """``value`` as text with every ASCII control character replaced by ``?``."""
+    return _CONTROL_CHARS.sub("?", str(value))
+
+
+def render_blockers(states: list[RepoState]) -> list[str]:
+    """One line per blocking repository: name, clone path, why, then its HEAD, pin, clean state and pin presence."""
+    return [
+        f"  {printable(st.name)} ({printable(st.path)}): {printable(st.blocking)}; {printable(_facts_text(st))}"
+        for st in blocking(states)
+    ]
+
+
+def render_refusal(
+    states: list[RepoState],
+    *,
+    repair: str,
+    extra_overlays: Sequence[str] = (),
+    main_pins: Mapping[str, str | None] | None = None,
+) -> str:
+    """One message naming every blocking repository and what clears it.
+
+    ``extra_overlays`` names the user overlays merged after the main kas file.
+    ``bakar sync`` reads only the main file, so when one of them re-pins a
+    repository the sync moves it to the main file's pin, not the build's.
+    ``main_pins`` maps each repository to the pin the main file alone sets;
+    ``repair`` is withheld only when a blocker sync could move has a different
+    pin there, or when overlays are present and ``main_pins`` is unknown.
+    """
     blockers = blocking(states)
     noun = "repository blocks" if len(blockers) == 1 else "repositories block"
-    lines = [f"{len(blockers)} {noun} this build:"]
-    lines.extend(f"  {st.name}: {st.blocking}; {_facts_text(st)}" for st in blockers)
-    lines.append(f"Move the clean clones to their pins with: {repair}")
-    sides = [st.name for st in states if st.state == "side" and st.blocking is None]
+    lines = [f"{len(blockers)} {noun} this build:", *render_blockers(states)]
+    syncable = [st for st in blockers if sync_can_fix(st)]
+    if syncable:
+        repinned = [] if main_pins is None else [st for st in syncable if main_pins.get(st.name) != st.pin]
+        if extra_overlays and (main_pins is None or repinned):
+            names = ", ".join(printable(name) for name in extra_overlays)
+            pinned = ", ".join(f"{printable(st.name)} at {_short(st.pin)}" for st in repinned)
+            what = f", and they pin {pinned}" if pinned else ""
+            lines.append(
+                f"This build also merges {names}, which bakar sync does not read{what}: fix the pin in the "
+                "overlay that sets it, or move the clean clones to their pins by hand"
+            )
+        else:
+            lines.append(f"Move the clean clones to their pins with: {printable(repair)}")
+    by_hand = [printable(st.name) for st in blockers if not sync_can_fix(st)]
+    if by_hand:
+        lines.append(f"bakar sync leaves these alone, so fix them by hand: {', '.join(by_hand)}")
+    sides = [printable(st.name) for st in states if st.state == "side" and st.blocking is None]
     if sides:
         lines.append(f"Using side checkouts: {', '.join(sides)}")
     return "\n".join(lines)
@@ -348,7 +536,7 @@ def render_refusal(states: list[RepoState], *, repair: str) -> str:
 
 def render_pin_table(states: list[RepoState]) -> list[str]:
     """One line per repository: kind, HEAD, pin, clean state, pin presence."""
-    return [f"{st.name}: {st.state}, {_facts_text(st)}" for st in states]
+    return [f"{printable(st.name)}: {st.state}, {printable(_facts_text(st))}" for st in states]
 
 
 def _kas_path(path: Path, workspace: Path) -> str:
