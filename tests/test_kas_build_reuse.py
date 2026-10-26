@@ -158,7 +158,7 @@ def test_reuse_policy_merges_reuse_overlay_last(
     assert overlay_data["repos"]["meta-bar"] == {"path": "bar-side", "url": None}
     err = capsys.readouterr().err
     assert f"side checkout meta-foo at {PIN[:12]}: {side}" in err
-    assert "meta-bar" not in err
+    assert f"side checkout meta-bar at {PIN[:12]}: {tmp_path / 'bar-side'} (reused)" in err
 
 
 @pytest.mark.parametrize("exc", [RepoReuseError("shared clone is dirty"), ReleaseRoutingError("cannot read pins")])
@@ -178,6 +178,9 @@ def test_reuse_errors_fail_the_build_with_their_message(
     run.assert_not_called()
 
 
+REASON = "off its pin or has local changes"
+
+
 @pytest.mark.parametrize("name", ["bitbake", "openembedded-core"])
 def test_side_checkout_of_bitbake_or_oe_core_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
@@ -187,7 +190,7 @@ def test_side_checkout_of_bitbake_or_oe_core_is_refused(
     side = tmp_path / ".bakar" / "pins" / name / PIN[:12]
     states = [
         RepoState("meta-foo", tmp_path / "meta-foo", PIN, "side", tmp_path / "foo-side", False),
-        RepoState(name, tmp_path / name, PIN, "side", side, False),
+        RepoState(name, tmp_path / name, PIN, "side", side, False, blocking=REASON),
     ]
 
     with (
@@ -199,12 +202,55 @@ def test_side_checkout_of_bitbake_or_oe_core_is_refused(
         _build_kas_arg(cfg, kas_yaml, overlay)
 
     msg = str(exc.value)
-    assert repr(name) in msg
-    assert PIN in msg
-    assert str(tmp_path / name) in msg
-    assert "cannot use a side checkout" in msg
+    assert name in msg
+    assert PIN[:12] in msg
+    assert REASON in msg
+    assert f"bakar sync {kas_yaml}" in msg
     run.assert_not_called()
     assert not (cfg.bsp_root / "avocado-reuse.yml").exists()
+
+
+def test_reuse_refusal_names_all_blockers_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
+    states = [
+        RepoState("bitbake", tmp_path / "bitbake", PIN, "side", tmp_path / "b-side", False, blocking=REASON),
+        RepoState("openembedded-core", tmp_path / "oe", PIN, "side", tmp_path / "oe-side", False, blocking=REASON),
+        RepoState("meta-dirty", tmp_path / "meta-dirty", PIN, "side", tmp_path / "d-side", True, clean=False),
+    ]
+
+    with (
+        patch.object(kas_build.kas_pins, "read_merged_config", return_value={"repos": {}}),
+        patch.object(kas_build.repo_reuse, "classify", return_value=states),
+        patch("bakar.steps.kas_build.subprocess.run") as run,
+        pytest.raises(RuntimeError) as exc,
+    ):
+        _build_kas_arg(cfg, kas_yaml, overlay)
+
+    msg = str(exc.value)
+    for name in ("bitbake", "openembedded-core", "meta-dirty"):
+        assert name in msg
+    assert msg.count(f"bakar sync {kas_yaml}") == 1
+    run.assert_not_called()
+
+
+def test_reuse_only_side_checkouts_builds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
+    side = tmp_path / ".bakar" / "pins" / "meta-foo" / PIN[:12]
+    states = [RepoState("meta-foo", tmp_path / "meta-foo", PIN, "side", side, False)]
+
+    with (
+        patch.object(kas_build.kas_pins, "read_merged_config", return_value={"repos": {}}),
+        patch.object(kas_build.repo_reuse, "classify", return_value=states),
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)) as run,
+    ):
+        _build_kas_arg(cfg, kas_yaml, overlay)
+
+    run.assert_called_once()
+    assert f"side checkout meta-foo at {PIN[:12]}: {side}\n" in capsys.readouterr().err
 
 
 def test_frozen_bitbake_is_not_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
