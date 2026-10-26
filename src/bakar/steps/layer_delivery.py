@@ -19,6 +19,7 @@ import posixpath
 import re
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -111,18 +112,25 @@ def _key_material(paths: list[str]) -> list[str]:
     return [p for p in paths if _looks_like_key(p)]
 
 
-def snapshot_commit(checkout: Path, *, cap_mb: int) -> tuple[str, bool]:
-    """Return ``(commit, is_snapshot)`` for delivering ``checkout``.
+@dataclass(frozen=True)
+class SnapshotPreview:
+    """What a dispatch snapshot would capture, computed without writing anything."""
 
-    A clean checkout yields HEAD. A dirty one yields a snapshot commit holding
-    every tracked change and every untracked non-ignored file, refused when an
-    untracked file looks like key material or the untracked files together
-    exceed ``cap_mb`` MiB.
+    head: str
+    dirty: bool
+    untracked: list[str]
+
+
+def snapshot_preview(checkout: Path, *, cap_mb: int) -> SnapshotPreview:
+    """Run ``snapshot_commit``'s refusal checks without writing any git object.
+
+    Raises the same ``DeliveryError`` for key material and for the untracked-size
+    cap; never runs ``read-tree``, ``add``, ``write-tree`` or ``commit-tree``.
     """
     head = _git(checkout, "rev-parse", "HEAD").stdout.strip()
     status = _git(checkout, "status", "--porcelain", "--untracked-files=all").stdout
     if not status.strip():
-        return head, False
+        return SnapshotPreview(head=head, dirty=False, untracked=[])
 
     untracked_paths = snapshot_untracked_paths(checkout)
     # The snapshot lands in a permanent ref on a shared build host, so key
@@ -140,6 +148,21 @@ def snapshot_commit(checkout: Path, *, cap_mb: int) -> tuple[str, bool]:
             f"untracked files in {checkout} total {untracked / (1024 * 1024):.1f} MiB, "
             f"above the {cap_mb} MiB snapshot cap; commit, ignore or remove them, or raise the cap"
         )
+    return SnapshotPreview(head=head, dirty=True, untracked=list(untracked_paths))
+
+
+def snapshot_commit(checkout: Path, *, cap_mb: int) -> tuple[str, bool]:
+    """Return ``(commit, is_snapshot)`` for delivering ``checkout``.
+
+    A clean checkout yields HEAD. A dirty one yields a snapshot commit holding
+    every tracked change and every untracked non-ignored file, refused when an
+    untracked file looks like key material or the untracked files together
+    exceed ``cap_mb`` MiB.
+    """
+    preview = snapshot_preview(checkout, cap_mb=cap_mb)
+    head = preview.head
+    if not preview.dirty:
+        return head, False
 
     branch = _git(checkout, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     date = _git(checkout, "log", "-1", "--format=%ct %z", "HEAD").stdout.strip()

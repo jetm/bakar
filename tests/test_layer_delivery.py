@@ -12,9 +12,11 @@ from bakar.bsp_detect import LinkedWorktree
 from bakar.release_workspace import ReleaseRoutingError
 from bakar.steps.layer_delivery import (
     DeliveryError,
+    SnapshotPreview,
     delivered_name,
     push_argv,
     snapshot_commit,
+    snapshot_preview,
     snapshot_untracked_paths,
 )
 
@@ -313,3 +315,41 @@ def test_shallow_snapshot_pushes_into_shallow_clone_and_checks_out(tmp_path: Pat
     _git(remote, "worktree", "add", "--detach", str(wt), sha)
     assert _git(wt, "rev-parse", "HEAD") == sha
     assert (wt / "new.txt").read_text() == "untracked\n"
+
+
+def _object_counts(repo: Path) -> str:
+    return _git(repo, "count-objects", "-v")
+
+
+def test_snapshot_preview_writes_no_objects(tmp_path: Path) -> None:
+    repo = tmp_path / "meta-avocado"
+    head = _make_repo(repo)
+    _dirty(repo)
+    before = _object_counts(repo)
+    preview = snapshot_preview(repo, cap_mb=1)
+    assert _object_counts(repo) == before
+    assert preview == SnapshotPreview(head=head, dirty=True, untracked=["new.txt"])
+
+
+def test_snapshot_preview_refuses_key_material(tmp_path: Path) -> None:
+    repo = tmp_path / "meta-avocado"
+    _make_repo(repo)
+    _git(repo, "config", "core.excludesFile", os.devnull)
+    (repo / "id_rsa").write_text("secret\n")
+    with pytest.raises(DeliveryError, match="key material"):
+        snapshot_preview(repo, cap_mb=1)
+
+
+def test_snapshot_preview_refuses_over_cap(tmp_path: Path) -> None:
+    repo = tmp_path / "meta-avocado"
+    _make_repo(repo)
+    (repo / "big.bin").write_bytes(b"\0" * (2 * 1024 * 1024))
+    with pytest.raises(DeliveryError, match=r"2\.0 MiB.*1 MiB"):
+        snapshot_preview(repo, cap_mb=1)
+
+
+def test_snapshot_commit_unchanged_for_clean_checkout(tmp_path: Path) -> None:
+    repo = tmp_path / "meta-avocado"
+    head = _make_repo(repo)
+    assert snapshot_preview(repo, cap_mb=1) == SnapshotPreview(head=head, dirty=False, untracked=[])
+    assert snapshot_commit(repo, cap_mb=1) == (head, False)
