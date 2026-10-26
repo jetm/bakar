@@ -10,17 +10,18 @@ Every kas and git call is mocked.
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 import yaml
 
-from bakar.config import BuildConfig
+from bakar.config import BuildConfig, _overlay_dir
 from bakar.release_workspace import ReleaseRoutingError
 from bakar.steps import kas_build
 from bakar.steps.kas_build import _build_kas_arg, _run_kas_dump, _write_meta_avocado_wrapper
-from bakar.steps.repo_reuse import RepoReuseError, RepoState
+from bakar.steps.repo_reuse import RepoFacts, RepoState
 
 DUMP_YAML = "header:\n  version: 16\nrepos:\n  meta-foo:\n    url: https://example.invalid/foo.git\n    commit: abc\n"
 PIN = "0123456789abcdef0123456789abcdef01234567"
@@ -146,7 +147,7 @@ def test_reuse_policy_merges_reuse_overlay_last(
     assert read.call_args.kwargs["extra_files"] == [cfg.bsp_root / ".bakar" / "overlays" / overlay.name]
     # Beside the build's own wrapper, so the overlays' includes resolve alike.
     assert read.call_args.kwargs["wrap_parent"] == cfg.bsp_root
-    classify.assert_called_once_with(merged["repos"], cfg.workspace)
+    classify.assert_called_once_with(merged["repos"], cfg.workspace, pair_core_with_bitbake=cfg.host_mode)
     argv = run.call_args.args[0]
     assert argv[:2] == ["kas", "dump"]
     assert "--skip" not in argv
@@ -161,12 +162,10 @@ def test_reuse_policy_merges_reuse_overlay_last(
     assert f"side checkout meta-bar at {PIN[:12]}: {tmp_path / 'bar-side'} (reused)" in err
 
 
-@pytest.mark.parametrize("exc", [RepoReuseError("shared clone is dirty"), ReleaseRoutingError("cannot read pins")])
-def test_reuse_errors_fail_the_build_with_their_message(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: Exception
-) -> None:
+def test_reuse_errors_fail_the_build_with_their_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
     cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
+    exc = ReleaseRoutingError("cannot read pins")
 
     with (
         patch.object(kas_build.kas_pins, "read_merged_config", side_effect=exc),
@@ -187,15 +186,20 @@ def test_side_checkout_of_bitbake_or_oe_core_is_refused(
 ) -> None:
     monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
     cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
-    side = tmp_path / ".bakar" / "pins" / name / PIN[:12]
-    states = [
-        RepoState("meta-foo", tmp_path / "meta-foo", PIN, "side", tmp_path / "foo-side", False),
-        RepoState(name, tmp_path / name, PIN, "side", side, False, blocking=REASON),
-    ]
+    merged = {
+        "repos": {
+            "meta-foo": {"url": "https://example.invalid/foo.git", "commit": PIN},
+            name: {"url": f"https://example.invalid/{name}.git", "commit": PIN},
+        }
+    }
+
+    def facts_for(entries: list) -> list[RepoFacts]:
+        # Both clones sit on another commit; meta-foo is dirty so it takes a side checkout.
+        return [RepoFacts(True, OTHER_HEAD, e.name != "meta-foo", True, False, None, None) for e in entries]
 
     with (
-        patch.object(kas_build.kas_pins, "read_merged_config", return_value={"repos": {}}),
-        patch.object(kas_build.repo_reuse, "classify", return_value=states),
+        patch.object(kas_build.kas_pins, "read_merged_config", return_value=merged),
+        patch.object(kas_build.repo_reuse, "gather_local_facts", side_effect=facts_for),
         patch("bakar.steps.kas_build.subprocess.run") as run,
         pytest.raises(RuntimeError) as exc,
     ):
@@ -213,24 +217,65 @@ def test_side_checkout_of_bitbake_or_oe_core_is_refused(
 def test_reuse_refusal_names_all_blockers_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
     cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
-    states = [
-        RepoState("bitbake", tmp_path / "bitbake", PIN, "side", tmp_path / "b-side", False, blocking=REASON),
-        RepoState("openembedded-core", tmp_path / "oe", PIN, "side", tmp_path / "oe-side", False, blocking=REASON),
-        RepoState("meta-dirty", tmp_path / "meta-dirty", PIN, "side", tmp_path / "d-side", True, clean=False),
-    ]
+    names = ("bitbake", "openembedded-core", "meta-dirty", "meta-ok")
+    merged = {"repos": {n: {"url": f"https://example.invalid/{n}.git", "commit": PIN} for n in names}}
+
+    def facts_for(entries: list) -> list[RepoFacts]:
+        by_name = {
+            # clean but off its pin: bakar sync can move it
+            "bitbake": RepoFacts(True, OTHER_HEAD, True, True, False, None, None),
+            # dirty, and it may not take a side checkout: only a hand edit helps
+            "openembedded-core": RepoFacts(True, OTHER_HEAD, False, True, False, None, None),
+            # clean shared clone but a dirty side checkout: moving the clone clears it
+            "meta-dirty": RepoFacts(True, OTHER_HEAD, True, True, True, OTHER_HEAD, False),
+            # dirty shared clone: takes a side checkout, blocks nothing
+            "meta-ok": RepoFacts(True, OTHER_HEAD, False, True, False, None, None),
+        }
+        return [by_name[e.name] for e in entries]
 
     with (
-        patch.object(kas_build.kas_pins, "read_merged_config", return_value={"repos": {}}),
-        patch.object(kas_build.repo_reuse, "classify", return_value=states),
+        patch.object(kas_build.kas_pins, "read_merged_config", return_value=merged),
+        patch.object(kas_build.repo_reuse, "gather_local_facts", side_effect=facts_for),
         patch("bakar.steps.kas_build.subprocess.run") as run,
         pytest.raises(RuntimeError) as exc,
     ):
         _build_kas_arg(cfg, kas_yaml, overlay)
 
     msg = str(exc.value)
+    assert msg.startswith("3 repositories block this build:")
     for name in ("bitbake", "openembedded-core", "meta-dirty"):
-        assert name in msg
+        assert f"  {name} ({tmp_path / name}): " in msg
+    assert "  meta-ok " not in msg
     assert msg.count(f"bakar sync {kas_yaml}") == 1
+    assert "fix them by hand: openembedded-core" in msg
+    assert "Using side checkouts: meta-ok" in msg
+    run.assert_not_called()
+
+
+def test_repair_line_is_quoted_and_names_the_build_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    # The kas file sits in a release checkout routed elsewhere; -w names another workspace.
+    kas_yaml = _kas_file(tmp_path / "release; x" / "meta-avocado")
+    ws = tmp_path / "other ws"
+    ws.mkdir()
+    cfg = _cfg(ws, kas_yaml)
+    overlay = tmp_path / "overlay.yml"
+    overlay.write_text("header:\n  version: 16\n", encoding="utf-8")
+    merged = {"repos": {"bitbake": {"url": "https://example.invalid/bitbake.git", "commit": PIN}}}
+
+    def facts_for(entries: list) -> list[RepoFacts]:
+        return [RepoFacts(True, OTHER_HEAD, True, True, False, None, None) for _ in entries]
+
+    with (
+        patch.object(kas_build.kas_pins, "read_merged_config", return_value=merged),
+        patch.object(kas_build.repo_reuse, "gather_local_facts", side_effect=facts_for),
+        patch("bakar.steps.kas_build.subprocess.run") as run,
+        pytest.raises(RuntimeError) as exc,
+    ):
+        _build_kas_arg(cfg, kas_yaml, overlay)
+
+    msg = str(exc.value)
+    assert f"with: bakar sync '{kas_yaml}' -w '{ws}'" in msg
     run.assert_not_called()
 
 
@@ -251,6 +296,26 @@ def test_reuse_only_side_checkouts_builds(
 
     run.assert_called_once()
     assert f"side checkout meta-foo at {PIN[:12]}: {side}\n" in capsys.readouterr().err
+
+
+def test_side_checkout_line_replaces_control_characters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
+    evil = "meta-\x1b[2Kfoo"
+    states = [RepoState(evil, tmp_path / "meta-foo", PIN, "side", tmp_path / "side\x1bx", False)]
+
+    with (
+        patch.object(kas_build.kas_pins, "read_merged_config", return_value={"repos": {}}),
+        patch.object(kas_build.repo_reuse, "classify", return_value=states),
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)),
+    ):
+        _build_kas_arg(cfg, kas_yaml, overlay)
+
+    err = capsys.readouterr().err
+    assert "\x1b" not in err
+    assert f"side checkout meta-?[2Kfoo at {PIN[:12]}: {tmp_path}/side?x\n" in err
 
 
 def test_frozen_bitbake_is_not_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -468,3 +533,176 @@ def test_avocado_pin_does_not_unlock_skip_retry_under_reuse(tmp_path: Path) -> N
 
     assert run.call_count == 1
     assert "--skip" not in run.call_args.args[0]
+
+
+# ---------------------------------------------------------------------------
+# openembedded-core side checkout paired with the workspace's bitbake
+# ---------------------------------------------------------------------------
+
+BB_PIN = "fedcba9876543210fedcba9876543210fedcba98"
+OTHER_HEAD = "1111111111111111111111111111111111111111"
+PAIR_MERGED = {
+    "repos": {
+        "bitbake": {"url": "https://example.invalid/bb.git", "commit": BB_PIN},
+        "openembedded-core": {"url": "https://example.invalid/oe.git", "commit": PIN},
+    }
+}
+
+
+def _pair_facts(entries: list) -> list[RepoFacts]:
+    facts = []
+    for entry in entries:
+        if entry.name == "bitbake":
+            facts.append(RepoFacts(True, BB_PIN, True, True, False, None, None))
+        else:
+            facts.append(RepoFacts(True, OTHER_HEAD, False, True, False, None, None))
+    return facts
+
+
+def _build_pair(cfg: BuildConfig, kas_yaml: Path, overlay: Path) -> None:
+    with (
+        patch.object(kas_build.kas_pins, "read_merged_config", return_value=PAIR_MERGED),
+        patch.object(kas_build.repo_reuse, "gather_local_facts", side_effect=_pair_facts),
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)),
+    ):
+        _build_kas_arg(cfg, kas_yaml, overlay)
+
+
+def test_host_mode_core_side_pairs_and_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
+    cfg = replace(cfg, host_mode=True)
+    (tmp_path / "bitbake").mkdir()
+
+    _build_pair(cfg, kas_yaml, overlay)
+
+    side_rel = f".bakar/pins/openembedded-core/{PIN[:12]}"
+    overlay_data = yaml.safe_load((cfg.bsp_root / "avocado-reuse.yml").read_text(encoding="utf-8"))
+    assert overlay_data["repos"]["openembedded-core"] == {"path": side_rel}
+    link = tmp_path / ".bakar" / "pins" / "openembedded-core" / "bitbake"
+    assert link.is_symlink()
+    assert link.resolve() == (tmp_path / "bitbake").resolve()
+
+
+def test_container_mode_core_side_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
+    cfg = replace(cfg, host_mode=False)
+    (tmp_path / "bitbake").mkdir()
+
+    with pytest.raises(RuntimeError, match="openembedded-core"):
+        _build_pair(cfg, kas_yaml, overlay)
+
+    assert not (cfg.bsp_root / "avocado-reuse.yml").exists()
+    assert not (tmp_path / ".bakar" / "pins" / "openembedded-core" / "bitbake").exists()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [PermissionError(13, "Permission denied"), FileExistsError(17, "File exists")],
+    ids=["eacces", "eexist-race"],
+)
+def test_link_os_error_is_a_one_line_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: OSError) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
+    cfg = replace(cfg, host_mode=True)
+    (tmp_path / "bitbake").mkdir()
+    link = tmp_path / ".bakar" / "pins" / "openembedded-core" / "bitbake"
+    error.filename = str(link)
+
+    with (
+        patch.object(kas_build.repo_reuse.os, "symlink", side_effect=error),
+        pytest.raises(RuntimeError) as exc,
+    ):
+        _build_pair(cfg, kas_yaml, overlay)
+
+    msg = str(exc.value)
+    assert "\n" not in msg
+    assert str(link) in msg
+    assert str(error.strerror) in msg
+    assert not (cfg.bsp_root / "avocado-reuse.yml").exists()
+
+
+def _syncable_refusal(tmp_path: Path, extra_overlays: list[Path] | None, main_pin: str = PIN) -> str:
+    """The refusal for a clean bitbake clone off the merged pin ``PIN``; the main file alone pins ``main_pin``."""
+    cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
+
+    def read(_kas_yaml: Path, *, checkout: Path, extra_files: list[Path] | None = None, **_kw: object) -> dict:
+        # The build merges its overlay stack; bakar sync reads the main file alone.
+        pin = PIN if extra_files else main_pin
+        return {"repos": {"bitbake": {"url": "https://example.invalid/bitbake.git", "commit": pin}}}
+
+    def facts_for(entries: list) -> list[RepoFacts]:
+        # Clean but off its pin, and bitbake takes no side checkout: bakar sync
+        # could move it, were the pin the main file's own.
+        return [RepoFacts(True, OTHER_HEAD, True, True, False, None, None) for _ in entries]
+
+    with (
+        patch.object(kas_build.kas_pins, "read_merged_config", side_effect=read),
+        patch.object(kas_build.repo_reuse, "gather_local_facts", side_effect=facts_for),
+        patch("bakar.steps.kas_build.subprocess.run") as run,
+        pytest.raises(RuntimeError) as exc,
+    ):
+        _build_kas_arg(cfg, kas_yaml, overlay, extra_overlays)
+    run.assert_not_called()
+    return str(exc.value)
+
+
+def test_refusal_with_a_user_overlay_that_repins_a_blocker_does_not_suggest_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    extra = tmp_path / "repin.yml"
+    extra.write_text(f"header:\n  version: 16\nrepos:\n  bitbake:\n    commit: {PIN}\n", encoding="utf-8")
+
+    msg = _syncable_refusal(tmp_path, [extra], main_pin="a" * 40)
+
+    assert "with: bakar sync" not in msg
+    assert "bakar sync does not read" in msg
+    assert "repin.yml" in msg
+    assert f"bitbake at {PIN[:12]}" in msg
+    assert "by hand" in msg
+
+
+def test_refusal_with_a_user_overlay_that_sets_no_pin_still_suggests_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    extra = tmp_path / "my-localconf.yml"
+    extra.write_text('header:\n  version: 16\nlocal_conf_header:\n  mine: |\n    FOO = "1"\n', encoding="utf-8")
+
+    msg = _syncable_refusal(tmp_path, [extra])
+
+    # The overlay leaves every pin as the main file sets it, so bakar sync moves the clone where the build wants it.
+    assert "with: bakar sync " in msg
+    assert "does not read" not in msg
+
+
+def test_refusal_with_only_bundled_tuning_overlays_still_suggests_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    tuning = _overlay_dir() / "bakar-tuning-cache-classify.yml"
+
+    msg = _syncable_refusal(tmp_path, [tuning])
+
+    assert "with: bakar sync " in msg
+
+
+def test_foreign_link_refuses_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, kas_yaml, overlay = _meta_avocado_setup(tmp_path)
+    cfg = replace(cfg, host_mode=True)
+    (tmp_path / "bitbake").mkdir()
+    foreign = tmp_path / "elsewhere"
+    foreign.mkdir()
+    link = tmp_path / ".bakar" / "pins" / "openembedded-core" / "bitbake"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(foreign)
+
+    with pytest.raises(RuntimeError, match="bakar never replaces it") as exc:
+        _build_pair(cfg, kas_yaml, overlay)
+
+    assert str(link) in str(exc.value)
+    assert link.resolve() == foreign.resolve()
+    assert not (cfg.bsp_root / "avocado-reuse.yml").exists()

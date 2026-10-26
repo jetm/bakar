@@ -68,7 +68,7 @@ from bakar import (
 )
 from bakar.bsp_detect import meta_avocado_checkout, meta_avocado_pin_text, meta_avocado_wrapper_text
 from bakar.buildtools import BUILDTOOLS_DIR_ENV, detect_buildtools, resolve_oe_core_release_key
-from bakar.config import GENERATED_BUILD_YAML, BuildConfig
+from bakar.config import GENERATED_BUILD_YAML, BuildConfig, _overlay_dir
 from bakar.fmt import neutralize
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.observability import RunLogger, run_id_epoch
@@ -126,7 +126,7 @@ from bakar.steps.kas_pty import (
 from bakar.triage import translate_container_path, write_error_report
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from typing import IO
 
     from bakar.bsp_model import BspModel
@@ -300,8 +300,34 @@ def _repo_policy(kas_yaml: Path) -> str:
     return REPO_POLICY_REUSE
 
 
+def _main_file_pins(
+    cfg: BuildConfig, states: list[repo_reuse.RepoState], sync_kas: Path, extras: list[str]
+) -> dict[str, str | None] | None:
+    """The pins ``bakar sync <sync_kas>`` reads, when user overlays could make them differ from the build's.
+
+    None when no user overlay is merged or no blocker is one sync could move,
+    since the refusal then needs no comparison, and when the main file cannot
+    be read alone, which leaves the refusal to withhold the sync advice.
+    """
+    if not extras or not any(repo_reuse.sync_can_fix(st) for st in repo_reuse.blocking(states)):
+        return None
+    checkout = meta_avocado_checkout(sync_kas)
+    if checkout is None:
+        return None
+    try:
+        # The dump probe_pins takes the sync's repositories from, without the release key it also reads.
+        repos = kas_pins.read_merged_config(sync_kas, checkout=checkout).get("repos") or {}
+    except ReleaseRoutingError:
+        return None
+    return {entry.name: entry.pin for entry in repo_reuse.pinned_entries(repos, cfg.workspace)}
+
+
 def _write_reuse_overlay(
-    cfg: BuildConfig, kas_yaml: Path, overlay_rels: list[Path], user_kas: Path | None = None
+    cfg: BuildConfig,
+    kas_yaml: Path,
+    overlay_rels: list[Path],
+    user_kas: Path | None = None,
+    user_extras: Sequence[Path] = (),
 ) -> Path:
     """Write the overlay that keeps kas off the workspace's shared clones.
 
@@ -309,7 +335,10 @@ def _write_reuse_overlay(
     order and relative to ``cfg.bsp_root``. The pins are classified from that
     same merge, since an overlay may add a repository or re-pin one.
     ``user_kas`` is the kas file the user named, which the refusal's repair
-    line cites; ``kas_yaml`` may be the filtered copy of it.
+    line cites; ``kas_yaml`` may be the filtered copy of it. ``user_extras``
+    are the user's own colon-joined overlays among ``overlay_rels``; bakar sync
+    never reads them, so the refusal does not offer it when they re-pin a
+    repository it could move.
 
     Returns its path relative to ``cfg.bsp_root``, ready for the dump's
     overlay list. Repositories that cannot be reused fail the build once, with
@@ -327,15 +356,41 @@ def _write_reuse_overlay(
             extra_files=[cfg.bsp_root / rel for rel in overlay_rels],
             wrap_parent=cfg.bsp_root,
         )
-        states = repo_reuse.classify(merged.get("repos") or {}, cfg.workspace)
-    except (repo_reuse.RepoReuseError, ReleaseRoutingError) as exc:
+        states = repo_reuse.classify(merged.get("repos") or {}, cfg.workspace, pair_core_with_bitbake=cfg.host_mode)
+    except ReleaseRoutingError as exc:
         raise RuntimeError(str(exc)) from exc
     if repo_reuse.blocking(states):
-        raise RuntimeError(repo_reuse.render_refusal(states, repair=f"bakar sync {user_kas or kas_yaml}"))
+        # -w names this build's workspace: bare `bakar sync <kas>` resolves the
+        # routed one, which differs after `bakar build -w /other <kas>`.
+        sync_kas = user_kas or kas_yaml
+        repair = shlex.join(["bakar", "sync", str(sync_kas), "-w", str(cfg.workspace)])
+        extras = [str(p) for p in user_extras]
+        raise RuntimeError(
+            repo_reuse.render_refusal(
+                states, repair=repair, extra_overlays=extras, main_pins=_main_file_pins(cfg, states, sync_kas, extras)
+            )
+        )
+    # Still under the workspace lock _build_kas_arg holds.
+    for st in states:
+        if st.name == "openembedded-core" and st.state == "side" and st.paired_bitbake is not None:
+            try:
+                repo_reuse.ensure_core_bitbake_link(st)
+            except repo_reuse.RepoReuseError as exc:
+                raise RuntimeError(str(exc)) from exc
+            except OSError as exc:
+                # EACCES, or a concurrent build creating the same link (EEXIST).
+                raise RuntimeError(
+                    f"cannot link openembedded-core's side checkout to the workspace's bitbake clone: "
+                    f"{repo_reuse.printable(exc)}"
+                ) from exc
     for st in states:
         if st.state == "side" and st.pin is not None:
             note = " (reused)" if st.side_exists else ""
-            print(f"side checkout {st.name} at {st.pin[:12]}: {st.side_path}{note}", file=sys.stderr)
+            print(
+                f"side checkout {repo_reuse.printable(st.name)} at {st.pin[:12]}: "
+                f"{repo_reuse.printable(st.side_path)}{note}",
+                file=sys.stderr,
+            )
     overlay = cfg.bsp_root / _REUSE_OVERLAY_YAML
     overlay.write_text(repo_reuse.reuse_overlay_text(states, cfg.workspace), encoding="utf-8")
     return Path(_REUSE_OVERLAY_YAML)
@@ -733,7 +788,9 @@ def _build_kas_arg(
                 with repo_reuse.workspace_lock(cfg.workspace):
                     # The probe merges its own pin, so the stack goes in without ours.
                     stack = [overlay_rel, *extra_overlay_rels]
-                    extra_overlay_rels.append(_write_reuse_overlay(cfg, entry, stack, kas_yaml))
+                    bundled = _overlay_dir().resolve()
+                    user_extras = [p for p in extra_overlays or [] if not p.resolve().is_relative_to(bundled)]
+                    extra_overlay_rels.append(_write_reuse_overlay(cfg, entry, stack, kas_yaml, user_extras))
                     dump = _run_kas_dump(cfg, wrapper, overlay_rel, [*extra_overlay_rels, *pin_rels])
             else:
                 dump = _run_kas_dump(cfg, wrapper, overlay_rel, [*extra_overlay_rels, *pin_rels])
@@ -2046,6 +2103,8 @@ def run_shell(
         marker = lock_owner_marker(cfg, log) if take_lock_marker else nullcontext()
         with marker:
             proc = subprocess.Popen(cmd, cwd=cfg.bsp_root, env=env)
+            # A reuse build holds the workspace's whole-run lock; keep it for the child's own life.
+            repo_reuse.keep_in_use_until_exit(cfg.workspace, proc)
             rc = proc.wait()
     except LockHeldByPeerError as exc:
         log.step_fail("kas_shell", reason=peer_lock_reason(exc), exit_code=1)
@@ -2171,6 +2230,7 @@ def run_shell_capture(ctx: KasBuildContext, command: str, capture: ShellCapture)
                 stderr=stderr_target,
                 start_new_session=isolate_process_group,
             )
+            repo_reuse.keep_in_use_until_exit(cfg.workspace, proc)
             try:
                 rc = proc.wait(timeout=timeout)
             except (subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
@@ -2213,6 +2273,30 @@ def run_shell_capture(ctx: KasBuildContext, command: str, capture: ShellCapture)
         raise
     _finish_step(log, step, rc)
     return rc
+
+
+def _run_kas_child(cmd: list[str], cfg: BuildConfig, timeout: float | None, **popen_kwargs: Any) -> int:
+    """``subprocess.run(cmd).returncode``, with a reuse build's whole-run lock kept for the child's life.
+
+    ``subprocess.run`` never exposes the child's pid, so while this process
+    holds the workspace's in-use lock the child is spawned and waited on by hand,
+    with the same kill-on-timeout and kill-on-interrupt ``subprocess.run`` does.
+    """
+    if not repo_reuse.holds_in_use(cfg.workspace):
+        return subprocess.run(  # pragma: no cover
+            cmd, cwd=cfg.bsp_root, check=False, timeout=timeout, **popen_kwargs
+        ).returncode
+    with subprocess.Popen(cmd, cwd=cfg.bsp_root, **popen_kwargs) as proc:
+        repo_reuse.keep_in_use_until_exit(cfg.workspace, proc)
+        try:
+            return proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise
+        except BaseException:
+            proc.kill()
+            raise
 
 
 def run_kas_subcommand(ctx: KasBuildContext, invocation: KasSubcommand) -> int:
@@ -2269,25 +2353,13 @@ def run_kas_subcommand(ctx: KasBuildContext, invocation: KasSubcommand) -> int:
     label_run_id = log.run_id if timeout is not None else None
     cmd = [exe, *_ccache_args(cfg, run_id=label_run_id), subcommand, kas_arg, *extra_args]
     try:
+        env = _build_env(cfg, ensure_hashserv=False, eventlog_path=_container_eventlog_path(cfg, log))
         if capture_to is not None:
             capture_to.parent.mkdir(parents=True, exist_ok=True)
             with capture_to.open("wb") as fh:
-                proc = subprocess.run(  # pragma: no cover
-                    cmd,
-                    cwd=cfg.bsp_root,
-                    env=_build_env(cfg, ensure_hashserv=False, eventlog_path=_container_eventlog_path(cfg, log)),
-                    stdout=fh,
-                    check=False,
-                    timeout=timeout,
-                )
+                rc = _run_kas_child(cmd, cfg, timeout, stdout=fh, env=env)
         else:
-            proc = subprocess.run(  # pragma: no cover
-                cmd,
-                cwd=cfg.bsp_root,
-                env=_build_env(cfg, ensure_hashserv=False, eventlog_path=_container_eventlog_path(cfg, log)),
-                check=False,
-                timeout=timeout,
-            )
+            rc = _run_kas_child(cmd, cfg, timeout, env=env)
     except FileNotFoundError:
         log.step_fail(step, reason=f"{exe} not found")
         raise
@@ -2304,7 +2376,6 @@ def run_kas_subcommand(ctx: KasBuildContext, invocation: KasSubcommand) -> int:
             reason += " (container escalation did not verify the container stopped)"
         log.step_fail(step, reason=reason)
         return 124
-    rc = proc.returncode
     if rc != 0:
         log.step_fail(step, reason=f"{subcommand} exited {rc}")
     else:

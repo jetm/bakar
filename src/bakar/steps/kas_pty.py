@@ -57,6 +57,7 @@ from bakar.eventlog import tail_events
 from bakar.observability import RunLogger  # noqa: TC001 - runtime-required, see the comment above
 from bakar.output_mode import OutputMode
 from bakar.probes import probe_build_daemon, probe_ccache, probe_cluster
+from bakar.steps import repo_reuse
 from bakar.steps.build_ui import BuildUIState, _fmt_stall
 from bakar.steps.build_ui_render import make_renderable, plain_status_line
 
@@ -308,6 +309,8 @@ def _run_pty_with_ui(ctx: _PtyCtx) -> _PtyOutcome:
             )
             os.close(slave_fd)
             slave_fd = -1
+            # A reuse build holds the workspace's whole-run lock; keep it for the build's own life.
+            repo_reuse.keep_in_use_until_exit(cfg.workspace, proc)
             # Persist the build PGID so `bakar stop` can target this run.
             # proc.pid is the PGID because start_new_session=True above makes
             # the child a process-group leader.

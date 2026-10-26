@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
+import shutil
 import subprocess
 import sys
 import threading
+import time
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
+from bakar import build_stop
 from bakar.config import BuildConfig
-from bakar.steps import kas_build, repo_reuse
+from bakar.observability import RunLogger
+from bakar.steps import kas_build, kas_pty, repo_reuse
+from bakar.steps.build_ui import BuildUIState
 from bakar.steps.repo_reuse import RepoState, workspace_lock
 
 if TYPE_CHECKING:
@@ -158,7 +164,7 @@ def test_build_kas_arg_holds_the_lock_from_classify_through_the_dump(
     lock = tmp_path / ".bakar" / "repos.lock"
     seen: dict[str, bool] = {}
 
-    def classify(_repos: dict, _ws: Path) -> list[RepoState]:
+    def classify(_repos: dict, _ws: Path, **_kwargs: object) -> list[RepoState]:
         seen["classify"] = _is_locked(lock)
         return [RepoState("meta-foo", tmp_path / "meta-foo", PIN, "missing")]
 
@@ -203,14 +209,6 @@ def test_kas_policy_takes_no_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         kas_build._build_kas_arg(cfg, kas_yaml, overlay)
 
     assert not (tmp_path / ".bakar" / "repos.lock").exists()
-
-
-@pytest.fixture(autouse=True)
-def _drop_in_use_holds() -> Iterator[None]:
-    yield
-    for fh in repo_reuse._IN_USE_HELD.values():
-        fh.close()
-    repo_reuse._IN_USE_HELD.clear()
 
 
 def _flock_state(lock: Path, mode: int) -> bool:
@@ -297,3 +295,227 @@ def test_in_use_lock_holders_share(tmp_path: Path) -> None:
         fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)
         fcntl.flock(other, fcntl.LOCK_UN)
     assert len(repo_reuse._IN_USE_HELD) == 1
+
+
+def test_keep_in_use_until_exit_outlives_the_front_end(tmp_path: Path) -> None:
+    lock = tmp_path / ".bakar" / repo_reuse.IN_USE_LOCK_NAME
+    repo_reuse.hold_workspace_in_use(tmp_path, wait_limit_s=1)
+    build = subprocess.Popen(["sleep", "30"])
+    try:
+        repo_reuse.keep_in_use_until_exit(tmp_path, build)
+        time.sleep(0.5)  # the detached holder takes its shared hold while the front end still has its own
+        repo_reuse._IN_USE_HELD.pop(tmp_path.resolve()).close()  # the front end dies
+        assert not _flock_state(lock, fcntl.LOCK_EX)
+    finally:
+        build.kill()
+        build.wait()
+    deadline = time.monotonic() + 5
+    while not _flock_state(lock, fcntl.LOCK_EX) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert _flock_state(lock, fcntl.LOCK_EX)
+
+
+def test_keep_in_use_until_exit_is_a_noop_without_a_hold(tmp_path: Path) -> None:
+    with patch("bakar.steps.repo_reuse.subprocess.Popen") as popen:
+        repo_reuse.keep_in_use_until_exit(tmp_path, _FakeProc())
+    popen.assert_not_called()
+
+
+# Inside a fresh user and PID namespace: the build exits, an impostor is forced
+# onto its PID through ns_last_pid, and the lock must still come free.
+_PID_REUSE = (
+    "import fcntl, subprocess, sys, time\n"
+    "from pathlib import Path\n"
+    "from bakar.steps import repo_reuse\n"
+    "ws = Path(sys.argv[1])\n"
+    "lock = ws / '.bakar' / repo_reuse.IN_USE_LOCK_NAME\n"
+    "repo_reuse.hold_workspace_in_use(ws, wait_limit_s=1)\n"
+    "build = subprocess.Popen(['sleep', '30'])\n"
+    "repo_reuse.keep_in_use_until_exit(ws, build)\n"
+    "time.sleep(0.5)\n"
+    "repo_reuse._IN_USE_HELD.pop(ws.resolve()).close()\n"
+    "build.kill()\n"
+    "build.wait()\n"
+    "Path('/proc/sys/kernel/ns_last_pid').write_text(str(build.pid - 1))\n"
+    "impostor = subprocess.Popen(['sleep', '30'])\n"
+    "print('reused' if impostor.pid == build.pid else 'not-reused')\n"
+    "def free():\n"
+    "    with lock.open('a') as fh:\n"
+    "        try:\n"
+    "            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+    "        except BlockingIOError:\n"
+    "            return False\n"
+    "        return True\n"
+    "deadline = time.monotonic() + 4\n"
+    "while not free() and time.monotonic() < deadline:\n"
+    "    time.sleep(0.1)\n"
+    "print('released' if free() else 'held')\n"
+    "impostor.kill()\n"
+)
+
+
+def _can_force_pid_reuse() -> bool:
+    if shutil.which("unshare") is None:
+        return False
+    probe = subprocess.run(
+        ["unshare", "-Urpf", "--mount-proc", "sh", "-c", "echo 1 > /proc/sys/kernel/ns_last_pid"],
+        capture_output=True,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+@pytest.mark.skipif(not _can_force_pid_reuse(), reason="needs an unprivileged user and PID namespace")
+def test_keep_in_use_until_exit_ignores_a_reused_pid(tmp_path: Path) -> None:
+    proc = subprocess.run(
+        ["unshare", "-Urpf", "--mount-proc", sys.executable, "-c", _PID_REUSE, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == ["reused", "released"]
+
+
+# ---------------------------------------------------------------------------
+# Every kas spawn path that took the whole-run lock hands it to a holder
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    pid = 4242
+    returncode: int | None = None
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        self.returncode = 0
+        return 0
+
+    def kill(self) -> None:
+        pass
+
+    def __enter__(self) -> _FakeProc:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        pass
+
+
+@pytest.fixture
+def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[kas_build.KasBuildContext, list]]:
+    """A kas context whose kas arg takes the reuse lock, with every spawn faked."""
+    cfg, kas_yaml, overlay = _cfg(tmp_path)
+
+    def build_kas_arg(cfg: BuildConfig, *_args: object) -> str:
+        repo_reuse.hold_workspace_in_use(cfg.workspace, wait_limit_s=1)
+        return "avocado-bakar.yml"
+
+    @contextlib.contextmanager
+    def no_marker(_cfg: object, _log: object) -> Iterator[None]:
+        yield
+
+    holders: list[tuple[Path, int]] = []
+    monkeypatch.setattr(kas_build, "_build_kas_arg", build_kas_arg)
+    monkeypatch.setattr(kas_build, "_build_env", lambda *_a, **_k: {})
+    monkeypatch.setattr(kas_build, "cache_mount_refusal", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        kas_build, "clear_stale_bitbake_locks", lambda _cfg: build_stop.LockClearOutcome(removed=[], refusal=None)
+    )
+    monkeypatch.setattr(kas_build, "lock_owner_marker", no_marker)
+    monkeypatch.setattr(kas_build.subprocess, "Popen", lambda *_a, **_k: _FakeProc())
+    monkeypatch.setattr(
+        kas_build.repo_reuse, "keep_in_use_until_exit", lambda ws, child: holders.append((ws, child.pid))
+    )
+    log = RunLogger(runs_dir=cfg.runs_dir)
+    with log:
+        yield kas_build.KasBuildContext(cfg=cfg, log=log, kas_yaml=kas_yaml, overlay_source=overlay), holders
+
+
+def test_run_shell_hands_the_lock_to_a_holder(wired: tuple[kas_build.KasBuildContext, list]) -> None:
+    ctx, holders = wired
+    assert kas_build.run_shell(ctx, [], "true") == 0
+    assert holders == [(ctx.cfg.workspace, _FakeProc.pid)]
+
+
+def test_run_shell_capture_hands_the_lock_to_a_holder(
+    wired: tuple[kas_build.KasBuildContext, list], tmp_path: Path
+) -> None:
+    ctx, holders = wired
+    capture = kas_build.ShellCapture(stdout_path=tmp_path / "out.log")
+    assert kas_build.run_shell_capture(ctx, "true", capture) == 0
+    assert holders == [(ctx.cfg.workspace, _FakeProc.pid)]
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_run_kas_subcommand_hands_the_lock_to_a_holder(
+    wired: tuple[kas_build.KasBuildContext, list], tmp_path: Path, *, capture: bool
+) -> None:
+    ctx, holders = wired
+    invocation = kas_build.KasSubcommand(
+        subcommand="dump", extra_args=[], capture_to=tmp_path / "dump.yml" if capture else None
+    )
+    assert kas_build.run_kas_subcommand(ctx, invocation) == 0
+    assert holders == [(ctx.cfg.workspace, _FakeProc.pid)]
+
+
+def test_run_kas_subcommand_timeout_kills_the_held_child(
+    wired: tuple[kas_build.KasBuildContext, list], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _holders = wired
+    killed: list[bool] = []
+
+    class _Hung(_FakeProc):
+        def wait(self, timeout: float | None = None) -> int:
+            if timeout is not None and not killed:
+                raise subprocess.TimeoutExpired(cmd="kas", timeout=timeout)
+            return super().wait()
+
+        def kill(self) -> None:
+            killed.append(True)
+
+    monkeypatch.setattr(kas_build.subprocess, "Popen", lambda *_a, **_k: _Hung())
+    monkeypatch.setattr(kas_build.build_stop, "escalate_container_tree", lambda _run_id: True)
+    invocation = kas_build.KasSubcommand(subcommand="dump", extra_args=[], timeout=5.0)
+    assert kas_build.run_kas_subcommand(ctx, invocation) == 124
+    assert killed == [True]
+
+
+class _StopError(Exception):
+    pass
+
+
+def test_pty_build_hands_the_lock_to_a_holder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, _kas_yaml, _overlay = _cfg(tmp_path)
+    spawned: list[int] = []
+    holders: list[tuple[Path, int]] = []
+    real_popen = subprocess.Popen
+
+    def popen(*args: object, **kwargs: object) -> subprocess.Popen:
+        proc = real_popen(*args, **kwargs)  # ty: ignore[no-matching-overload]
+        spawned.append(proc.pid)
+        return proc
+
+    def keep(ws: Path, child: subprocess.Popen) -> None:
+        holders.append((ws, child.pid))
+        raise _StopError
+
+    def launch_record(*_a: object, **_k: object) -> None:
+        raise _StopError
+
+    monkeypatch.setattr(kas_build, "_build_env", lambda *_a, **_k: {})
+    monkeypatch.setattr(kas_pty.subprocess, "Popen", popen)
+    monkeypatch.setattr(kas_pty.repo_reuse, "keep_in_use_until_exit", keep)
+    monkeypatch.setattr(kas_pty.build_stop, "write_launch_record", launch_record)
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        pty_ctx = kas_pty._PtyCtx(
+            cmd=["true"],
+            cfg=cfg,
+            log=log,
+            ui=BuildUIState(start_monotonic=time.monotonic()),
+            stop_event=threading.Event(),
+        )
+        with pytest.raises(_StopError):
+            kas_pty._run_pty_with_ui(pty_ctx)
+    assert spawned
+    assert holders == [(cfg.workspace, spawned[0])]

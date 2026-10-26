@@ -291,6 +291,28 @@ def _reset_routing_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _release_in_use_holds():
+    """Drop the process-long whole-run locks a test took, before and after it.
+
+    ``hold_workspace_in_use`` keeps its file open in ``repo_reuse._IN_USE_HELD`` for
+    the life of the process, as a build needs. A reuse-policy test that builds
+    without releasing it leaves the entry and an open file behind, so a later test
+    asserting on the held set sees it under ``pytest-randomly`` order, and the
+    interpreter reports the files as unclosed at exit.
+    """
+    from bakar.steps import repo_reuse
+
+    def _drop() -> None:
+        for fh in repo_reuse._IN_USE_HELD.values():
+            fh.close()
+        repo_reuse._IN_USE_HELD.clear()
+
+    _drop()
+    yield
+    _drop()
+
+
+@pytest.fixture(autouse=True)
 def _restore_global_options():
     """Restore the root callback's published module globals after every test.
 
