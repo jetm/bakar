@@ -308,7 +308,7 @@ def test_dispatch_never_prompts(
 
 
 # ---------------------------------------------------------------------------
-# (g) C9: --on + --dry-run/--dry-run-script is refused before any mirror.
+# (g) C9: --on + --dry-run for a build that is not a meta-avocado kas build is refused.
 # ---------------------------------------------------------------------------
 
 
@@ -324,6 +324,7 @@ def test_dry_run_with_on_refused_no_ssh_rsync(
     result = runner.invoke(app, ["build", str(generic_yaml), "--on", HOST, "--dry-run"])
 
     assert result.exit_code == 2
+    assert "the remote dry run supports meta-avocado kas builds only" in " ".join(result.output.split())
     # Refused before the destructive mirror: no ssh, no rsync.
     assert fake_sp.calls == []
 
@@ -435,11 +436,11 @@ def _probe(monkeypatch: pytest.MonkeyPatch, release: str = "wrynose") -> list[Pa
 
     probed: list[Path] = []
 
-    def fake(kas_yaml: Path, checkout: Path) -> str:
+    def fake(kas_yaml: Path, checkout: Path) -> tuple[str, dict]:
         probed.append(checkout)
-        return release
+        return release, {}
 
-    monkeypatch.setattr(kas_pins, "probe_release", fake)
+    monkeypatch.setattr(kas_pins, "probe_pins", fake)
     return probed
 
 
@@ -508,10 +509,10 @@ def test_meta_avocado_routing_error_exits_2(
     lay = meta_avocado_worktree_layout
     _user_config(monkeypatch, workspaces_template="/srv/peridio-{release}")
 
-    def boom(kas_yaml: Path, checkout: Path) -> str:
+    def boom(kas_yaml: Path, checkout: Path) -> tuple[str, dict]:
         raise ReleaseRoutingError("no openembedded-core pin")
 
-    monkeypatch.setattr(kas_pins, "probe_release", boom)
+    monkeypatch.setattr(kas_pins, "probe_pins", boom)
     avocado = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
     monkeypatch.chdir(lay.worktree)
 
@@ -586,6 +587,90 @@ def test_meta_avocado_dispatch_exit_code_propagates(
     result = _invoke_on(runner, monkeypatch, "kas/machine/m.yml")
 
     assert result.exit_code == 17, result.output
+
+
+def test_meta_avocado_on_dry_run_passes_dry_run_flag(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bakar.steps import avocado_dispatch
+
+    lay = meta_avocado_worktree_layout
+    _user_config(monkeypatch, workspaces_template="/srv/peridio-{release}")
+    _probe(monkeypatch)
+    avocado = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
+    monkeypatch.chdir(lay.worktree)
+    argv = ["build", "kas/machine/m.yml", "--dry-run", "--on", HOST]
+    monkeypatch.setattr(sys, "argv", ["bakar", *argv])
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == 0, result.output
+    assert fake_sp.calls == []
+    assert avocado[0][0][2].dry_run is True
+
+
+def test_on_dry_run_script_refused(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lay = meta_avocado_worktree_layout
+    monkeypatch.chdir(lay.worktree)
+    argv = ["build", "kas/machine/m.yml", "--dry-run-script", "-", "--on", HOST]
+    monkeypatch.setattr(sys, "argv", ["bakar", *argv])
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == 2
+    assert "--dry-run-script" in " ".join(result.output.split())
+    assert fake_sp.calls == []
+
+
+def test_on_dry_run_detach_refused(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lay = meta_avocado_worktree_layout
+    monkeypatch.chdir(lay.worktree)
+    argv = ["build", "kas/machine/m.yml", "--dry-run", "--detach", "--on", HOST]
+    monkeypatch.setattr(sys, "argv", ["bakar", *argv])
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == 2
+    assert "--detach cannot be combined with --dry-run" in " ".join(result.output.split())
+    assert fake_sp.calls == []
+
+
+def test_dispatch_request_carries_pinned_repos_and_source(
+    runner: _CliRunner,
+    meta_avocado_worktree_layout,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from bakar.steps import avocado_dispatch, kas_pins
+
+    lay = meta_avocado_worktree_layout
+    pins = {"meta-avocado": {"commit": "a" * 40}}
+    monkeypatch.setattr(kas_pins, "probe_pins", lambda _y, _c: ("wrynose", pins))
+    avocado = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
+    monkeypatch.chdir(lay.worktree)
+
+    _user_config(monkeypatch, workspaces_releases={"wrynose": str(tmp_path / "w")})
+    assert _invoke_on(runner, monkeypatch, "kas/machine/m.yml").exit_code == 0
+    request = avocado[0][0][1]
+    assert request.pinned_repos == pins
+    assert request.workspace_source == "[workspaces.releases] entry for 'wrynose'"
+
+    _user_config(monkeypatch, workspaces_template=str(tmp_path / "t-{release}"))
+    assert _invoke_on(runner, monkeypatch, "kas/machine/m.yml").exit_code == 0
+    assert avocado[1][0][1].workspace_source == "[workspaces] template"
 
 
 def test_nxp_manifest_build_uses_the_additive_mirror(

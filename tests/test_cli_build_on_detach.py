@@ -58,7 +58,7 @@ def _meta_avocado(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, lay: Any) -> 
 
     cfg = UserConfig(workspaces_template=str(tmp_path / "absent-{release}"))
     monkeypatch.setattr("bakar.commands._app.load_user_config", lambda *a, **k: cfg)
-    monkeypatch.setattr(kas_pins, "probe_release", lambda _yaml, _checkout: "wrynose")
+    monkeypatch.setattr(kas_pins, "probe_pins", lambda _yaml, _checkout: ("wrynose", {}))
     monkeypatch.chdir(lay.worktree)
     return _record(monkeypatch, ad, "dispatch_avocado_build")
 

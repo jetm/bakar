@@ -198,6 +198,7 @@ def _dispatch_meta_avocado(
     sccache_dist: bool,
     assume_yes: bool,
     detach: bool = False,
+    dry_run: bool = False,
 ) -> int:
     """Route a meta-avocado ``--on`` build to its release workspace and dispatch it.
 
@@ -224,7 +225,7 @@ def _dispatch_meta_avocado(
         console.print(f"[red]cannot dispatch {main_yaml}[/]: no meta-avocado checkout holds it.")
         return 2
     try:
-        release = kas_pins.probe_release(main_yaml, checkout)
+        release, repos = kas_pins.probe_pins(main_yaml, checkout)
         routed = map_release(release, user_config.workspaces_template, user_config.workspaces_releases)
     except ReleaseRoutingError as exc:
         console.print(f"[red]Cannot route {main_yaml} to a release workspace:[/] {exc}")
@@ -246,6 +247,11 @@ def _dispatch_meta_avocado(
             f"Drop -w (or point it at {routed} if that path exists locally)."
         )
         return 2
+    workspace_source = (
+        f"[workspaces.releases] entry for '{release}'"
+        if release in (user_config.workspaces_releases or {})
+        else "[workspaces] template"
+    )
     worktree_root = user_config.dispatch_worktree_root
     return avocado_dispatch.dispatch_avocado_build(
         host,
@@ -261,12 +267,15 @@ def _dispatch_meta_avocado(
             build_dir_template=config_mod.worktree_build_template(user_config),
             cap_mb=user_config.dispatch_snapshot_untracked_cap_mb,
             invoking_cwd=invoking_cwd,
+            pinned_repos=repos,
+            workspace_source=workspace_source,
         ),
         DispatchFlags(
             sccache_dist=sccache_dist,
             assume_yes=assume_yes,
             detach=detach,
             hint_lines=_detach_hint_lines,
+            dry_run=dry_run,
         ),
     )
 
@@ -374,11 +383,23 @@ def build(
     # so it covers every build form (design A2). When --on is unset the body below
     # is byte-identical to today - no ssh/rsync is spawned.
     if on is not None:
-        if dry_run or dry_run_script is not None:
-            console.print("[red]--on cannot be combined with --dry-run/--dry-run-script[/]; run the dry run locally.")
+        if dry_run_script is not None:
+            console.print("[red]--on cannot be combined with --dry-run-script[/]; run the dry run locally.")
             raise typer.Exit(code=2)
+        if dry_run and detach:
+            console.print(
+                "[red]--detach cannot be combined with --dry-run/--dry-run-script[/]; run it in the foreground."
+            )
+            raise typer.Exit(code=2)
+        if dry_run:
+            _dry_main_yaml = split_kas_yaml_arg(kas_yaml)[0] if kas_yaml is not None else None
+            if _dry_main_yaml is None or not is_meta_avocado_yaml(_dry_main_yaml):
+                console.print(
+                    "[red]the remote dry run supports meta-avocado kas builds only[/]; run the dry run locally."
+                )
+                raise typer.Exit(code=2)
         # A foreground --on build is the case a tool-call timeout actually hits.
-        if not detach and _hints.agent_mode():
+        if not detach and not dry_run and _hints.agent_mode():
             _hints.emit(_hints.foreground_nudge())
         from bakar.commands._helpers import invoking_cwd as _invoking_cwd
 
@@ -409,6 +430,7 @@ def build(
                     sccache_dist=sccache_dist,
                     assume_yes=yes,
                     detach=detach,
+                    dry_run=dry_run,
                 )
                 raise typer.Exit(code=rc)
             # Mirror the workspace the local build would resolve, so a generic BYO
