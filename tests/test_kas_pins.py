@@ -85,6 +85,24 @@ def test_probe_release_strips_avocado_suffix(tmp_path: Path) -> None:
         assert kas_pins.probe_release(kas_yaml, checkout) == "scarthgap"
 
 
+def test_probe_pins_returns_release_and_repos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {"openembedded-core": {"branch": "scarthgap-avocado"}}
+    calls: list[tuple[Path, Path]] = []
+
+    def fake(kas_yaml: Path, checkout: Path) -> dict:
+        calls.append((kas_yaml, checkout))
+        return {"repos": repos}
+
+    monkeypatch.setattr(kas_pins, "read_merged_config", fake)
+    assert kas_pins.probe_pins(tmp_path / "a.yml", tmp_path) == ("scarthgap", repos)
+    assert len(calls) == 1
+
+
+def test_probe_release_delegates_to_probe_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kas_pins, "probe_pins", lambda kas_yaml, checkout: ("wrynose", {}))
+    assert kas_pins.probe_release(tmp_path / "a.yml", tmp_path) == "wrynose"
+
+
 def test_missing_include_repos_are_named(tmp_path: Path) -> None:
     checkout, kas_yaml = _layout(tmp_path)
     stderr = (

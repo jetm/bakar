@@ -249,6 +249,12 @@ def read_merged_config(
     return config
 
 
+def probe_pins(kas_yaml: Path, checkout: Path) -> tuple[str, dict]:
+    """Return ``(release key, pinned repos)`` from a single kas dump of ``kas_yaml``."""
+    merged = read_merged_config(kas_yaml, checkout=checkout)
+    return release_key_from_merged(merged), merged.get("repos") or {}
+
+
 def probe_release(kas_yaml: Path, checkout: Path) -> str:
     """Return the release key (``wrynose``) pinned by ``kas_yaml``."""
-    return release_key_from_merged(read_merged_config(kas_yaml, checkout=checkout))
+    return probe_pins(kas_yaml, checkout)[0]
