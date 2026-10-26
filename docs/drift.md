@@ -54,7 +54,7 @@ meta-imx                          abc12345    def67890        +7  DRIFTED
 poky                              11223344    55667788        +2  DRIFTED
 ```
 
-Columns: source name, pinned SHA (8 chars), actual HEAD SHA (8 chars), commit distance ahead of the pin, and a status (`DRIFTED` or `clean`).
+Columns: source name, pinned SHA (8 chars), actual HEAD SHA (8 chars), commit distance ahead of the pin, and a status (`DRIFTED` or `clean`). The text and markdown output print names and SHAs literally: they are never read as markup, and a control character in them is shown as `?`.
 
 With `--all`, clean sources are included with an empty distance and a `clean` status:
 
@@ -84,6 +84,7 @@ With `--json`, output is a JSON array. Each object contains:
 
 - **NXP/TI**: pin SHAs are read from the manifest XML (`--manifest/-f`) via `parse_manifest_pins`. Each `<project>` element's `revision` attribute is the pinned commit.
 - **BYO/bbsetup**: pin SHAs are read from the kas lockfile (`kas.lock` or the output of `kas lock --format json`). The lockfile must contain a top-level `repos` key with per-repo `commit` fields. When no lockfile is present, bakar falls back to the git HEAD of each source directory, which means drift reports zero distance for every source - the output is accurate but uninformative without a lockfile.
+- **meta-avocado kas files**: when the kas file sits inside a meta-avocado checkout, pins come from the commit fields of that kas file's merged kas configuration (the file plus everything it includes), not from a lockfile. Each pinned repository is compared with the clone in the workspace, which is the release-routed workspace unless `-w` names one. A pinned repository with no clone is reported as `missing` and counts as drift. A clone the build would refuse also counts as drift even when it sits at its pin: a dirty `bitbake`, or an entry with no usable commit pin (its `pinned` is null). Drift pairs a diverged `openembedded-core` with a frozen `bitbake` only in host mode, as the build does, and resolves the mode the build's way, so the global `--host` and `--container` options (`bakar --container drift ...`) apply; in container mode a diverged `openembedded-core` counts as drift the build would refuse. A clone with commits the pin lacks shows `+N`; a clone that is an ancestor of its pin, the usual stale workspace, shows `-N` (behind). When the clone lacks the pinned commit, the distance is unknown (`?`), never zero. With `--json`, each object additionally carries `drifted` and `missing` booleans; other families keep the four keys above. A release that cannot be routed exits `2` with its message.
 
 **Drift computation:** for each source, bakar runs `git rev-parse HEAD` in the checked-out directory and `git rev-list <pinned>..<actual> --count` to measure how many commits the workspace has advanced past the pin. Only sources that have moved forward are reported by default.
 

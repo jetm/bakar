@@ -318,3 +318,206 @@ def test_drift_exits_nonzero_when_drift_detected(runner: CliRunner, tmp_path: Pa
     result = runner.invoke(app, ["drift", str(kas_yaml), "-w", str(tmp_path)])
 
     assert result.exit_code != 0, result.output
+
+
+# ---------------------------------------------------------------------------
+# meta-avocado kas files (pins from the merged kas configuration)
+# ---------------------------------------------------------------------------
+
+
+def _meta_avocado_kas(tmp_path: Path) -> Path:
+    kas_dir = tmp_path / "meta-avocado" / "kas" / "machine"
+    kas_dir.mkdir(parents=True)
+    path = kas_dir / "qemux86-64.yml"
+    path.write_text("header:\n  version: 14\nmachine: qemux86-64\n")
+    return path
+
+
+def _patch_merged(repos: dict) -> object:
+    return patch("bakar.commands.drift.kas_pins.read_merged_config", return_value={"repos": repos})
+
+
+def test_drift_meta_avocado_reports_off_pin_clone(runner: CliRunner, tmp_path: Path) -> None:
+    """A clone whose HEAD is not the merged-config pin is DRIFTED with a known distance."""
+    ws = tmp_path / "ws"
+    _make_git_repo(ws / "oe-core")
+    first = _git_head(ws / "oe-core")
+    (ws / "oe-core" / "README").write_text("y")
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    subprocess.run(
+        ["git", "-C", str(ws / "oe-core"), "commit", "-qam", "second"], capture_output=True, check=True, env=env
+    )
+    head = _git_head(ws / "oe-core")
+    kas = _meta_avocado_kas(tmp_path)
+
+    with _patch_merged({"oe-core": {"url": "https://example.invalid/oe", "commit": first}}):
+        result = runner.invoke(app, ["drift", str(kas), "-w", str(ws), "--json"])
+
+    assert result.exit_code == 1, result.output
+    parsed = json.loads(result.stdout)
+    assert parsed == [
+        {"source": "oe-core", "pinned": first, "actual": head, "distance": 1, "drifted": True, "missing": False}
+    ]
+
+
+def test_drift_meta_avocado_reports_missing_clone(runner: CliRunner, tmp_path: Path) -> None:
+    """A pinned repository with no clone is missing and counts as drift."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    kas = _meta_avocado_kas(tmp_path)
+
+    with _patch_merged({"oe-core": {"url": "https://example.invalid/oe", "commit": "a" * 40}}):
+        result = runner.invoke(app, ["drift", str(kas), "-w", str(ws)])
+        as_json = runner.invoke(app, ["drift", str(kas), "-w", str(ws), "--json"])
+
+    assert result.exit_code == 1, result.output
+    assert "missing" in result.output
+    assert "DRIFTED" in result.output
+    entry = json.loads(as_json.stdout)[0]
+    assert entry["missing"] is True
+    assert entry["actual"] is None
+    assert entry["drifted"] is True
+
+
+def test_drift_meta_avocado_unknown_distance_when_pin_absent(runner: CliRunner, tmp_path: Path) -> None:
+    """A drifted clone lacking the pinned commit reports distance None, never zero."""
+    ws = tmp_path / "ws"
+    _make_git_repo(ws / "oe-core")
+    kas = _meta_avocado_kas(tmp_path)
+
+    with _patch_merged({"oe-core": {"url": "https://example.invalid/oe", "commit": "b" * 40}}):
+        result = runner.invoke(app, ["drift", str(kas), "-w", str(ws), "--json"])
+
+    assert result.exit_code == 1, result.output
+    entry = json.loads(result.stdout)[0]
+    assert entry["drifted"] is True
+    assert entry["missing"] is False
+    assert entry["distance"] is None
+
+
+def test_drift_meta_avocado_counts_a_clone_behind_its_pin_negative(runner: CliRunner, tmp_path: Path) -> None:
+    """A clone that is an ancestor of its pin is behind by N, not unknown."""
+    ws = tmp_path / "ws"
+    _make_git_repo(ws / "oe-core")
+    behind_head = _git_head(ws / "oe-core")
+    (ws / "oe-core" / "README").write_text("y")
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    subprocess.run(
+        ["git", "-C", str(ws / "oe-core"), "commit", "-qam", "second"], capture_output=True, check=True, env=env
+    )
+    pin = _git_head(ws / "oe-core")
+    subprocess.run(
+        ["git", "-C", str(ws / "oe-core"), "checkout", "-q", "--detach", behind_head],
+        capture_output=True,
+        check=True,
+        env=env,
+    )
+    kas = _meta_avocado_kas(tmp_path)
+
+    with _patch_merged({"oe-core": {"url": "https://example.invalid/oe", "commit": pin}}):
+        as_json = runner.invoke(app, ["drift", str(kas), "-w", str(ws), "--json"])
+        as_text = runner.invoke(app, ["drift", str(kas), "-w", str(ws)])
+
+    assert json.loads(as_json.stdout)[0]["distance"] == -1
+    assert "-1" in as_text.output
+
+
+def test_drift_meta_avocado_flags_a_dirty_bitbake_at_its_pin(runner: CliRunner, tmp_path: Path) -> None:
+    """The build refuses a dirty bitbake even at its pin, so drift reports it instead of 'clean'."""
+    ws = tmp_path / "ws"
+    _make_git_repo(ws / "bitbake")
+    pin = _git_head(ws / "bitbake")
+    (ws / "bitbake" / "README").write_text("local edit")
+    kas = _meta_avocado_kas(tmp_path)
+
+    with _patch_merged({"bitbake": {"url": "https://example.invalid/bb", "commit": pin}}):
+        result = runner.invoke(app, ["drift", str(kas), "-w", str(ws), "--json"])
+
+    assert result.exit_code == 1, result.output
+    entry = json.loads(result.stdout)[0]
+    assert entry["drifted"] is True
+    assert entry["pinned"] == pin
+    assert entry["actual"] == pin
+    assert entry["distance"] == 0
+
+
+def test_drift_meta_avocado_flags_an_entry_without_a_pin(runner: CliRunner, tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _make_git_repo(ws / "meta-x")
+    kas = _meta_avocado_kas(tmp_path)
+
+    with _patch_merged({"meta-x": {"url": "https://example.invalid/x"}}):
+        result = runner.invoke(app, ["drift", str(kas), "-w", str(ws), "--json"])
+
+    assert result.exit_code == 1, result.output
+    entry = json.loads(result.stdout)[0]
+    assert entry["drifted"] is True
+    assert entry["pinned"] is None
+
+
+def _frozen_bitbake_and_dirty_core(ws: Path) -> dict:
+    """A clean bitbake at its pin and an openembedded-core at its pin with a local edit."""
+    _make_git_repo(ws / "bitbake")
+    _make_git_repo(ws / "openembedded-core")
+    (ws / "openembedded-core" / "README").write_text("local edit")
+    return {
+        "bitbake": {"url": "https://example.invalid/bb", "commit": _git_head(ws / "bitbake")},
+        "openembedded-core": {"url": "https://example.invalid/oe", "commit": _git_head(ws / "openembedded-core")},
+    }
+
+
+@pytest.mark.parametrize(("container", "core_drifted"), [("1", True), ("0", False)])
+def test_drift_meta_avocado_pairs_core_with_bitbake_only_in_host_mode(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, container: str, core_drifted: bool
+) -> None:
+    """A container build refuses a dirty openembedded-core a host build pairs, so drift follows the mode."""
+    ws = tmp_path / "ws"
+    repos = _frozen_bitbake_and_dirty_core(ws)
+    kas = _meta_avocado_kas(tmp_path)
+    monkeypatch.setenv("BAKAR_CONTAINER", container)
+
+    with _patch_merged(repos):
+        result = runner.invoke(app, ["drift", str(kas), "-w", str(ws), "--json", "--all"])
+
+    by_name = {e["source"]: e for e in json.loads(result.stdout)}
+    assert by_name["openembedded-core"]["drifted"] is core_drifted
+    assert by_name["bitbake"]["drifted"] is False
+    assert result.exit_code == (1 if core_drifted else 0), result.output
+
+
+def test_drift_meta_avocado_global_container_flag_reports_dirty_core(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "ws"
+    repos = _frozen_bitbake_and_dirty_core(ws)
+    kas = _meta_avocado_kas(tmp_path)
+    monkeypatch.delenv("BAKAR_CONTAINER", raising=False)
+
+    with _patch_merged(repos):
+        result = runner.invoke(app, ["--container", "drift", str(kas), "-w", str(ws), "--json"])
+
+    assert result.exit_code == 1, result.output
+    assert [e["source"] for e in json.loads(result.stdout)] == ["openembedded-core"]
+
+
+@pytest.mark.parametrize("fmt", ["text", "md"])
+def test_drift_meta_avocado_prints_names_without_markup_or_control_characters(
+    runner: CliRunner, tmp_path: Path, fmt: str
+) -> None:
+    """A kas key is printed literally: Rich markup is not parsed and control characters become '?'."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    kas = _meta_avocado_kas(tmp_path)
+    repos = {
+        "meta-x[/]": {"url": "https://example.invalid/x"},
+        "meta-\x1b[2Ky": {"url": "https://example.invalid/y", "commit": "\x1b[1A" + "a" * 36},
+    }
+
+    with _patch_merged(repos):
+        result = runner.invoke(app, ["drift", str(kas), "-w", str(ws), "--format", fmt])
+
+    assert result.exit_code == 1, (result.output, result.exception)
+    assert "meta-x[/]" in result.output
+    assert "meta-?[2Ky" in result.output
+    assert "?[1Aaaaa" in result.output
+    assert "\x1b" not in result.output

@@ -22,10 +22,20 @@ import typer
 
 import bakar.commands._app as _state
 from bakar import pin_state
+from bakar.bsp_detect import is_meta_avocado_yaml, meta_avocado_checkout
 from bakar.commands._app import app, console
-from bakar.commands._helpers import WorkspaceOption, _normalize_dispatch, _resolve_workspace
+from bakar.commands._helpers import (
+    WorkspaceOption,
+    _normalize_dispatch,
+    _resolve_workspace,
+    global_container_mode,
+    global_host_mode,
+)
+from bakar.commands._sync_pins import printable
 from bakar.config import BSPSpec, ResolveRequest, resolve
 from bakar.layers import discover_source_repos
+from bakar.release_workspace import ReleaseRoutingError
+from bakar.steps import kas_pins, repo_reuse
 
 # Reuse the authoritative constant from pin_state so the two modules stay in sync.
 _MANIFEST_FAMILIES = pin_state._MANIFEST_FAMILIES
@@ -92,11 +102,19 @@ def drift(
         ResolveRequest(
             workspace=ws,
             bsp_family=family,
-            spec=BSPSpec(manifest=manifest),
+            # The global --host/--container flags decide host_mode as they do for a build.
+            spec=BSPSpec(manifest=manifest, host_mode=global_host_mode(), container_mode=global_container_mode()),
             kas_yaml=kas_yaml,
             user_config=_state._USER_CONFIG,
         )
     )
+
+    # -- meta-avocado: pins come from the kas file's merged configuration ----
+    if kas_yaml is not None and family not in _MANIFEST_FAMILIES and is_meta_avocado_yaml(kas_yaml):
+        checkout = meta_avocado_checkout(kas_yaml)
+        if checkout is not None:
+            rows = _meta_avocado_rows(kas_yaml, checkout, ws, show_all, host_mode=cfg.host_mode)
+            _emit(rows, show_json, fmt, show_all, meta_avocado=True)
 
     # -- Resolve pin source -----------------------------------------------
     raw_pins: dict[str, str]
@@ -166,9 +184,61 @@ def drift(
                 }
             )
 
-    # -- Render output ----------------------------------------------------
+    _emit(rows, show_json, fmt, show_all, meta_avocado=False)
+
+
+def _meta_avocado_rows(
+    kas_yaml: Path, checkout: Path, ws: Path, show_all: bool, *, host_mode: bool
+) -> list[dict[str, object]]:
+    """Build drift rows from the merged kas configuration of a meta-avocado kas file.
+
+    ``host_mode`` is the build's mode: only a host-mode build pairs a diverged
+    openembedded-core with a frozen bitbake, so a container build refuses it.
+    """
+    try:
+        merged = kas_pins.read_merged_config(kas_yaml, checkout=checkout)
+    except ReleaseRoutingError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from None
+    entries = repo_reuse.pinned_entries(merged.get("repos") or {}, ws)
+    facts = repo_reuse.gather_local_facts(entries)
+    # A clone the build refuses (dirty bitbake, a missing or malformed pin) drifts even at its pin.
+    states = repo_reuse.classify_facts(entries, facts, pair_core_with_bitbake=host_mode)
+    rows: list[dict[str, object]] = []
+    for entry, fact, state in zip(entries, facts, states, strict=True):
+        missing = not fact.exists
+        pinned = entry.pin
+        actual = fact.head if fact.exists else None
+        distance: int | None = None
+        if pinned is not None and fact.pin_present and actual is not None:
+            distance = pin_state.commit_distance(entry.path, pinned, actual)
+        at_pin = pinned is not None and (actual or "").lower().startswith(pinned.lower())
+        drifted = missing or (pinned is not None and not at_pin) or state.blocking is not None
+        if drifted and distance == 0 and not at_pin and pinned is not None and actual is not None:
+            # pinned..actual is empty when the clone sits behind its pin: count the other way, negative.
+            behind = pin_state.commit_distance(entry.path, actual, pinned)
+            distance = -behind if behind else None
+        if drifted or show_all:
+            rows.append(
+                {
+                    "source": entry.name,
+                    "pinned": pinned,
+                    "actual": actual,
+                    "distance": distance,
+                    "drifted": drifted,
+                    "missing": missing,
+                }
+            )
+    return rows
+
+
+def _emit(rows: list[dict[str, object]], show_json: bool, fmt: str, show_all: bool, *, meta_avocado: bool) -> None:
+    """Render ``rows`` and exit 1 when any drifted, else 0."""
     if show_json:
-        out = [{k: r[k] for k in ("source", "pinned", "actual", "distance")} for r in rows]
+        keys = ("source", "pinned", "actual", "distance")
+        if meta_avocado:
+            keys += ("drifted", "missing")
+        out = [{k: r[k] for k in keys} for r in rows]
         typer.echo(json.dumps(out, indent=2))
         raise typer.Exit(code=1 if any(r["drifted"] for r in rows) else 0)
 
@@ -188,16 +258,28 @@ def drift(
     raise typer.Exit(code=1 if has_drift else 0)
 
 
+def _columns(r: dict[str, object]) -> tuple[str, str, str, str, str]:
+    """``(source, pinned, actual, distance, status)`` for one row, safe to print.
+
+    Names and pins come from kas files, so control characters are replaced before
+    they reach the terminal; the caller prints with markup off.
+    """
+    pinned_col = printable(str(r["pinned"])[:8]) if r["pinned"] else "-"
+    actual_col = "missing" if r.get("missing") else (printable(str(r["actual"])[:8]) if r["actual"] else "-")
+    dist_col = f"{r['distance']:+d}" if r["distance"] is not None else ("?" if r["drifted"] else "")
+    status = "DRIFTED" if r["drifted"] else "clean"
+    return printable(str(r["source"])), pinned_col, actual_col, dist_col, status
+
+
 def _render_text(rows: list[dict[str, object]]) -> None:
     """Print a plain-text table to the console."""
     console.print(f"{'Source':<30}  {'Pinned':>10}  {'Actual':>10}  {'Distance':>8}  Status")
     console.print("-" * 75)
     for r in rows:
-        pinned_col = str(r["pinned"])[:8] if r["pinned"] else "-"
-        actual_col = str(r["actual"])[:8] if r["actual"] else "-"
-        dist_col = f"+{r['distance']}" if r["distance"] is not None else ("?" if r["drifted"] else "")
-        status = "DRIFTED" if r["drifted"] else "clean"
-        console.print(f"{r['source']:<30}  {pinned_col:>10}  {actual_col:>10}  {dist_col:>8}  {status}")
+        source, pinned_col, actual_col, dist_col, status = _columns(r)
+        console.print(
+            f"{source:<30}  {pinned_col:>10}  {actual_col:>10}  {dist_col:>8}  {status}", markup=False, highlight=False
+        )
 
 
 def _render_markdown(rows: list[dict[str, object]]) -> None:
@@ -205,8 +287,7 @@ def _render_markdown(rows: list[dict[str, object]]) -> None:
     console.print("| Source | Pinned | Actual | Distance | Status |")
     console.print("|--------|--------|--------|----------|--------|")
     for r in rows:
-        pinned_col = str(r["pinned"])[:8] if r["pinned"] else "-"
-        actual_col = str(r["actual"])[:8] if r["actual"] else "-"
-        dist_col = f"+{r['distance']}" if r["distance"] is not None else ("?" if r["drifted"] else "")
-        status = "DRIFTED" if r["drifted"] else "clean"
-        console.print(f"| {r['source']} | {pinned_col} | {actual_col} | {dist_col} | {status} |")
+        source, pinned_col, actual_col, dist_col, status = _columns(r)
+        console.print(
+            f"| {source} | {pinned_col} | {actual_col} | {dist_col} | {status} |", markup=False, highlight=False
+        )
