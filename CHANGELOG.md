@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-10-26
+
 ### Added
 
 - `bakar build --detach` (also with `--on HOST`) starts the build in a user systemd unit and returns a handle, so a build survives the calling shell or tool call.
@@ -25,18 +27,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bakar ps --on HOST` lists the builds on a host, and `bakar ps` lists a detached or dispatched build that has not started bitbake yet as a `unit` row.
 - `bakar log --on HOST` follows a run's log on a build host, and `bakar log --run ID` outside a workspace finds a run a detached or dispatched unit registered.
 - `bakar log --lines N` and `--no-follow` print the last N lines of a log and exit, also with `--on HOST`. The read window grows up to 8 MiB and a stderr note says when that limit cut the output short. A host on an older bakar rejects both flags.
+- `bakar bitbake --detach` and `bakar rebuild --detach` start the command in a transient systemd unit and return a JSON handle. `--detach` is refused for the interactive `devshell` task.
+- `bakar triage` resolves a registered run from any directory, including a detached or dispatched run outside a BSP workspace, and `bakar triage --on HOST` triages a run on a build host.
+- `bakar sync KAS_FILE` for a meta-avocado kas file moves the clean, off-pin shared clones of the release workspace onto their pinned commits, and `--on HOST` does the same on a remote host without needing bakar installed there. Dirty clones are left alone, missing clones are left for kas to create, `--dry-run` reports without changing anything, and a running build refuses the whole run. The previous HEAD of each moved clone is written to a revert record.
+- `bakar sync --revert FILE` (also with `--on HOST`) puts each clone back on its recorded HEAD and branch. It only accepts records under `<workspace>/.bakar/sync-revert/`.
+- `bakar build --on HOST --dry-run` for meta-avocado kas builds previews the dispatch without writing anything on the host or in the local checkout. It prints the plan and a pin state table, exits 1 with the refusal when a clone blocks the dispatch, and exits 0 otherwise.
+- `bakar drift` now works for meta-avocado kas files, comparing the pins in the merged kas configuration with the clones in the release workspace. A missing clone counts as drift, an unreachable pin reports an unknown distance, and the JSON output adds `drifted` and `missing` flags for this form. An unroutable release exits 2 with its message.
+- The remote dispatch plan names the workspace on the host and where its path came from.
+- Remote dispatch of a meta-avocado build probes the host's shared clones before writing anything and refuses the dispatch when a clone is stale, dirty or cannot be probed, pointing at `bakar sync`. `--yes` does not skip this check.
+- Reuse builds hold a shared lock for the whole run, so `bakar sync` can no longer move a clone under a live build. A build that meets a running sync waits and says which lock it waits on.
 
 ### Changed
 
 - The detached-launch wait hint says to run `bakar wait` in the background and to re-run it on exit 124.
 - `bakar triage` reports the same failure reason as `bakar status`, including `stopped by bakar stop` for a stopped run.
 - The error for a failed release or pins dump names the overlays merged and the checkout's HEAD revision.
+- Foreground `bakar build` (including `--on HOST` without `--detach`) under an agent now warns that a long build can outlive the tool call and points at `--detach`.
+- Warnings raised by bakar itself print as a single `bakar: warning:` line without the source file and line.
+- The build and bitbake failure and success lines name the run ID.
+- A build the reuse policy cannot serve now reports every blocking repository in one refusal, with each repository's HEAD, pin, clean state and pin availability and one repair command. Previously it stopped at the first blocker.
+- The reuse policy refuses a commit pin that is not a hexadecimal id, and refuses a bitbake or openembedded-core side checkout it cannot pair. In host mode a diverged openembedded-core gets a side checkout with a bitbake link beside it when bitbake is frozen at its pin, and a build stops rather than replace a conflicting entry at the link location. In container mode a diverged openembedded-core is still refused.
+- Reused side checkouts are now listed in the build output, not only newly created ones.
 
 ### Fixed
 
 - `bakar log` stops following within about 3 s once its reader is gone, locally or on the host, instead of lingering until its next output.
 - The local side of a forwarded `--on` stream ends its ssh child on every exit, including a closed local stdout.
 - A finished run reports a fixed `elapsed_seconds`, ending at its terminal record, instead of one that keeps growing.
+- A run that is not live and has no timestamped record reports a null `elapsed_seconds` instead of one that keeps growing.
 - `bakar ps` names the machine the build recorded and never `generic`.
 - Container path translation works for meta-avocado builds and for nxp and ti runs found through a workspace, in the build UI and in `bakar triage`.
 - Workspace detection applies the origin rule: a `meta-avocado` directory whose origin names another repository is no longer taken for the meta-avocado workspace.
@@ -51,10 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bakar triage --json` for a failed bitbake task now returns the last lines of the task log as `recipe_log_tail`, the host path of that log as `recipe_log`, and the suggestions matched against it, so an agent no longer reads `log.do_*` on the build host. `fail_reason` stays null for a task failure, as `error` does in `bakar status`.
 - `bakar status` and `bakar wait` without a handle read the newest detached unit when run outside a workspace, so `--on HOST` without a handle no longer prints nothing.
 - A repository under a directory named `meta-avocado` whose `origin` is another repository, such as `meta-avocado-nonpublic`, is no longer taken for meta-avocado, and a worktree of a bare `meta-avocado.git` is now recognised.
-
-### Changed
-
-- Foreground `bakar build` (including `--on HOST` without `--detach`) under an agent now warns that a long build can outlive the tool call and points at `--detach`.
+- `bakar status` no longer reports an earlier release of a multi-release detached unit as finished while the unit is still building the next one.
+- `bakar status --on` and `bakar wait --on` distinguish an unreachable host (exit 2 for status, 3 for wait) from a refused host or a missing or mismatched bakar (exit 2 for both). `bakar wait` refuses non-finite `--interval` and `--timeout` values, and `status`, `wait` and `triage` refuse `--workspace` together with `--on`.
 
 ## [0.39.0] - 2026-10-19
 
@@ -1067,7 +1083,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.39.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.40.0...HEAD
+[0.40.0]: https://github.com/jetm/bakar/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/jetm/bakar/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/jetm/bakar/compare/v0.37.1...v0.38.0
 [0.37.1]: https://github.com/jetm/bakar/compare/v0.37.0...v0.37.1
