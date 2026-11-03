@@ -985,3 +985,195 @@ def test_plain_build_requests_with_on_are_dispatched(  # noqa: PLR0913 - pytest 
 
     assert result.exit_code == 0, result.output
     assert len(mirror) == 1
+
+
+# ---------------------------------------------------------------------------
+# (n) A layer-repository entry routes to the layer dispatch, never the mirror.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def layer_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A kas file the build command recognises as a layer entry (recognition faked)."""
+    from bakar.bsp_detect import LayerRepo
+
+    checkout = tmp_path / "meta-peridio"
+    kas_yaml = checkout / "kas" / "x.yml"
+    kas_yaml.parent.mkdir(parents=True)
+    kas_yaml.write_text("header:\n  version: 16\n")
+    repo = LayerRepo(
+        checkout=checkout,
+        name="meta-peridio",
+        dependency={"url": "https://example.test/meta-avocado", "commit": "a" * 40, "branch": "wrynose"},
+        is_linked_worktree=False,
+        checkout_name="meta-peridio",
+        branch="main",
+        entry=kas_yaml,
+    )
+    monkeypatch.setattr(build_cmd, "layer_repo_of", lambda _p: repo)
+    monkeypatch.chdir(tmp_path)
+    return kas_yaml, repo
+
+
+def test_layer_entry_dispatches_to_the_routed_workspace(
+    runner: _CliRunner,
+    layer_entry,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from bakar.steps import avocado_dispatch
+
+    kas_yaml, repo = layer_entry
+    _user_config(monkeypatch, workspaces_template=str(tmp_path / "absent-{release}"), dispatch_layer_repo_dir="/srv/l")
+    layer = _record(monkeypatch, avocado_dispatch, "dispatch_layer_build")
+    meta = _record(monkeypatch, avocado_dispatch, "dispatch_avocado_build")
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+
+    result = _invoke_on(runner, monkeypatch, str(kas_yaml))
+
+    assert result.exit_code == 0, result.output
+    assert mirror == [] and meta == [] and fake_sp.calls == []
+    (args, kwargs) = layer[0]
+    assert kwargs == {}
+    host, request, got_layer, layer_repo_dir, flags = args
+    assert host == HOST
+    assert got_layer is repo
+    assert request.workspace == tmp_path / "absent-wrynose"
+    assert request.checkout == repo.checkout
+    assert request.kas_yaml == kas_yaml
+    assert request.release == "wrynose"
+    assert layer_repo_dir == Path("/srv/l")
+    assert flags.assume_yes is True
+
+
+def test_layer_entry_without_mapping_exits_2_before_any_ssh(
+    runner: _CliRunner,
+    layer_entry,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bakar.steps import avocado_dispatch
+
+    kas_yaml, _repo = layer_entry
+    _user_config(monkeypatch)
+    layer = _record(monkeypatch, avocado_dispatch, "dispatch_layer_build")
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+
+    result = _invoke_on(runner, monkeypatch, str(kas_yaml))
+
+    assert result.exit_code == 2, result.output
+    assert "[workspaces] template" in " ".join(result.output.split())
+    assert fake_sp.calls == [] and layer == [] and mirror == []
+
+
+def test_layer_entry_with_a_different_workspace_exits_2_naming_both(
+    runner: _CliRunner,
+    layer_entry,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from bakar.steps import avocado_dispatch
+
+    kas_yaml, _repo = layer_entry
+    other = tmp_path / "peridio-test"
+    other.mkdir()
+    _user_config(monkeypatch, workspaces_template=str(tmp_path / "peridio-{release}"))
+    layer = _record(monkeypatch, avocado_dispatch, "dispatch_layer_build")
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+
+    result = _invoke_on(runner, monkeypatch, "-w", str(other), str(kas_yaml))
+
+    assert result.exit_code == 2, result.output
+    out = _squash(result.output)
+    routed = tmp_path / "peridio-wrynose"
+    assert _squash(f"-w {other} does not match the release workspace {routed}") in out
+    assert fake_sp.calls == [] and layer == [] and mirror == []
+
+
+def test_layer_entry_with_the_routed_workspace_dispatches(
+    runner: _CliRunner,
+    layer_entry,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from bakar.steps import avocado_dispatch
+
+    kas_yaml, _repo = layer_entry
+    routed = tmp_path / "peridio-wrynose"
+    routed.mkdir()
+    _user_config(monkeypatch, workspaces_template=str(tmp_path / "peridio-{release}"))
+    layer = _record(monkeypatch, avocado_dispatch, "dispatch_layer_build")
+
+    result = _invoke_on(runner, monkeypatch, "-w", str(routed), str(kas_yaml))
+
+    assert result.exit_code == 0, result.output
+    assert layer[0][0][1].workspace == routed
+
+
+def test_layer_entry_on_dry_run_passes_the_flag(
+    runner: _CliRunner,
+    layer_entry,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from bakar.steps import avocado_dispatch
+
+    kas_yaml, _repo = layer_entry
+    _user_config(monkeypatch, workspaces_template=str(tmp_path / "peridio-{release}"))
+    layer = _record(monkeypatch, avocado_dispatch, "dispatch_layer_build")
+    argv = ["build", str(kas_yaml), "--dry-run", "--on", HOST]
+    monkeypatch.setattr(sys, "argv", ["bakar", *argv])
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == 0, result.output
+    assert fake_sp.calls == []
+    assert layer[0][0][4].dry_run is True
+
+
+def test_dry_run_with_on_still_refused_for_a_non_layer_file(
+    runner: _CliRunner,
+    workspace: Path,
+    generic_yaml: Path,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(build_cmd, "layer_repo_of", lambda _p: None)
+    _user_config(monkeypatch)
+    argv = ["build", str(generic_yaml), "--dry-run", "--on", HOST]
+    monkeypatch.setattr(sys, "argv", ["bakar", *argv])
+
+    result = runner.invoke(app, argv)
+
+    assert result.exit_code == 2, result.output
+    assert "supports meta-avocado" in " ".join(result.output.split())
+    assert fake_sp.calls == []
+
+
+def test_preset_resolving_to_a_layer_entry_dispatches_through_the_layer_path(
+    runner: _CliRunner,
+    layer_entry,
+    fake_sp: FakeSubprocess,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from bakar.preset_config import PresetEntry
+    from bakar.steps import avocado_dispatch
+
+    kas_yaml, repo = layer_entry
+    monkeypatch.setattr(
+        build_cmd._state, "_PRESETS", [PresetEntry(name="lay", family="generic", kas_yaml=str(kas_yaml))]
+    )
+    _user_config(monkeypatch, workspaces_template=str(tmp_path / "absent-{release}"), dispatch_layer_repo_dir="/srv/l")
+    layer = _record(monkeypatch, avocado_dispatch, "dispatch_layer_build")
+    mirror = _record(monkeypatch, rd, "dispatch_remote_build")
+
+    result = _invoke_on(runner, monkeypatch, "--preset", "lay")
+
+    assert result.exit_code == 0, result.output
+    assert mirror == [] and fake_sp.calls == []
+    assert len(layer) == 1
+    assert layer[0][0][2] is repo

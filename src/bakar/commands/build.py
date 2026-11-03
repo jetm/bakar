@@ -15,7 +15,13 @@ from rich.table import Table
 
 import bakar.commands._app as _state
 from bakar import feed as feed_mod
-from bakar.bsp_detect import is_meta_avocado_yaml, machine_from_yaml, meta_avocado_checkout, meta_avocado_worktree
+from bakar.bsp_detect import (
+    is_meta_avocado_yaml,
+    layer_repo_of,
+    machine_from_yaml,
+    meta_avocado_checkout,
+    meta_avocado_worktree,
+)
 from bakar.commands import _detach_cmd, _helpers, _hints
 from bakar.commands._app import app, console
 
@@ -280,6 +286,114 @@ def _dispatch_meta_avocado(
     )
 
 
+def _layer_of_on_entry(main_yaml: Path):
+    """The layer repository ``main_yaml`` is an entry of, else None; exits 2 when it cannot be read."""
+    from bakar.release_workspace import ReleaseRoutingError
+
+    try:
+        return layer_repo_of(main_yaml)
+    except ReleaseRoutingError as exc:
+        console.print(f"[red]Cannot dispatch {main_yaml}:[/] {exc}")
+        raise typer.Exit(code=2) from exc
+
+
+def _preset_kas_yaml(preset: str) -> str | None:
+    """The kas file the named bbsetup/generic preset resolves to, else None (unknown preset, other family)."""
+    startup_presets = getattr(_state, "_PRESETS", None)
+    loaded = startup_presets if startup_presets is not None else load_presets()
+    for entry in loaded:
+        if entry.name == preset:
+            if entry.family not in {"bbsetup", "generic"}:
+                return None
+            return entry.kas_yaml or (entry.kas_yamls[0] if entry.kas_yamls else None)
+    return None
+
+
+def _dispatch_layer(
+    host: str,
+    *,
+    layer,
+    kas_arg: str,
+    main_yaml: Path,
+    invoking_cwd: Path,
+    workspace: Path | None,
+    sccache_dist: bool,
+    assume_yes: bool,
+    detach: bool = False,
+    dry_run: bool = False,
+) -> int:
+    """Route a layer-repository ``--on`` build to its release workspace and dispatch it.
+
+    The release comes from the layer's meta-avocado dependency, and the routed
+    workspace need not exist locally. A ``-w`` naming another workspace is
+    refused. Every refusal here returns before any ssh, rsync or git command runs.
+    """
+    from bakar import config as config_mod
+    from bakar.commands._helpers import logical_path
+    from bakar.release_workspace import ReleaseRoutingError, map_release, release_key_from_dependency
+    from bakar.steps import avocado_dispatch
+    from bakar.steps.remote_dispatch import DispatchFlags
+
+    user_config = _dispatch_user_config()
+    if user_config is None:
+        return 2
+    if not (user_config.workspaces_template or user_config.workspaces_releases):
+        console.print(f"[red]{_NO_ROUTING_MSG}[/]: it names the release workspace on {host}.")
+        return 2
+    try:
+        release = release_key_from_dependency(layer.dependency)
+        routed = map_release(release, user_config.workspaces_template, user_config.workspaces_releases)
+    except ReleaseRoutingError as exc:
+        console.print(f"[red]Cannot route {main_yaml} to a release workspace:[/] {exc}")
+        return 2
+    if routed is None:
+        console.print(
+            f"[red]{_NO_ROUTING_MSG}[/] "
+            f"(or a \\[workspaces.releases] entry for {release!r}): it names the release workspace on {host}."
+        )
+        return 2
+    if workspace is not None and not _same_path(workspace, routed):
+        console.print(
+            f"[red]-w {workspace} does not match the release workspace {routed}[/] that the {release!r} "
+            f"build is routed to on {host}: --on builds in the workspace the release maps to on {host}. "
+            f"Drop -w (or point it at {routed} if that path exists locally)."
+        )
+        return 2
+    workspace_source = (
+        f"[workspaces.releases] entry for '{release}'"
+        if release in (user_config.workspaces_releases or {})
+        else "[workspaces] template"
+    )
+    worktree_root = user_config.dispatch_worktree_root
+    layer_repo_dir = user_config.dispatch_layer_repo_dir
+    return avocado_dispatch.dispatch_layer_build(
+        host,
+        avocado_dispatch.AvocadoDispatchRequest(
+            workspace=routed,
+            checkout=logical_path(layer.checkout),
+            worktree=None,
+            kas_yaml=main_yaml,
+            kas_arg=kas_arg,
+            local_args=sys.argv[1:],
+            release=release,
+            worktree_root=Path(worktree_root) if worktree_root else None,
+            build_dir_template=config_mod.worktree_build_template(user_config),
+            cap_mb=user_config.dispatch_snapshot_untracked_cap_mb,
+            invoking_cwd=invoking_cwd,
+            workspace_source=workspace_source,
+        ),
+        layer,
+        Path(layer_repo_dir) if layer_repo_dir else None,
+        DispatchFlags(
+            sccache_dist=sccache_dist,
+            assume_yes=assume_yes,
+            detach=detach,
+            hint_lines=_detach_hint_lines,
+            dry_run=dry_run,
+        ),
+    )
+
+
 @app.command()
 def build(
     kas_yaml: KasYamlArgument = None,
@@ -386,6 +500,13 @@ def build(
         if dry_run_script is not None:
             console.print("[red]--on cannot be combined with --dry-run-script[/]; run the dry run locally.")
             raise typer.Exit(code=2)
+        # A preset resolves its kas file only after this block, so a layer entry
+        # named by a preset is recognised here and takes the layer path like an
+        # explicit kas file; any other preset keeps reaching the mirror.
+        if kas_yaml is None and manifest is None and preset is not None:
+            _preset_yaml = _preset_kas_yaml(preset)
+            if _preset_yaml is not None and _layer_of_on_entry(split_kas_yaml_arg(_preset_yaml)[0]) is not None:
+                kas_yaml = _preset_yaml
         if dry_run and detach:
             console.print(
                 "[red]--detach cannot be combined with --dry-run/--dry-run-script[/]; run it in the foreground."
@@ -393,7 +514,9 @@ def build(
             raise typer.Exit(code=2)
         if dry_run:
             _dry_main_yaml = split_kas_yaml_arg(kas_yaml)[0] if kas_yaml is not None else None
-            if _dry_main_yaml is None or not is_meta_avocado_yaml(_dry_main_yaml):
+            if _dry_main_yaml is None or (
+                not is_meta_avocado_yaml(_dry_main_yaml) and _layer_of_on_entry(_dry_main_yaml) is None
+            ):
                 console.print(
                     "[red]the remote dry run supports meta-avocado kas builds only[/]; run the dry run locally."
                 )
@@ -423,6 +546,21 @@ def build(
             if is_meta_avocado_yaml(_on_main_yaml):
                 rc = _dispatch_meta_avocado(
                     on,
+                    kas_arg=kas_yaml,
+                    main_yaml=_on_main_yaml,
+                    invoking_cwd=invoking_cwd,
+                    workspace=workspace,
+                    sccache_dist=sccache_dist,
+                    assume_yes=yes,
+                    detach=detach,
+                    dry_run=dry_run,
+                )
+                raise typer.Exit(code=rc)
+            _on_layer = _layer_of_on_entry(_on_main_yaml)
+            if _on_layer is not None:
+                rc = _dispatch_layer(
+                    on,
+                    layer=_on_layer,
                     kas_arg=kas_yaml,
                     main_yaml=_on_main_yaml,
                     invoking_cwd=invoking_cwd,
