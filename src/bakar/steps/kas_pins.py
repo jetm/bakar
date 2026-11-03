@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tarfile
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,6 +39,7 @@ _SKIPS = ("repos_checkout", "finish_setup_repos", "repos_apply_patches")
 _MISSING_MARKER = "Could not fetch all repos needed by includes"
 _MISSING_PREFIX = "Missing repos:"
 _DUMP_TIMEOUT_S = 120
+_GIT_READ_TIMEOUT_S = 60
 # The repository name meta_avocado_wrapper_text gives the checkout.
 _OWN_REPO = "meta-avocado"
 # Name prefix of the throwaway wrapper written into a build's bsp_root.
@@ -190,6 +192,23 @@ def read_merged_config(
         )
     text = bsp_detect.meta_avocado_wrapper_text(checkout, kas_yaml)
     pin_text = bsp_detect.meta_avocado_pin_text(checkout) if extra_files else None
+    out, wrapper, work_dir_names = _dump_wrapped(kas_yaml, text, pin_text, extra_files, wrap_parent)
+    return _parse_dump(
+        out, kas_yaml, wrapper, work_dir_names, _failure_context(checkout, extra_files) if out.returncode != 0 else ""
+    )
+
+
+def _dump_wrapped(
+    kas_yaml: Path,
+    text: str,
+    pin_text: str | None,
+    extra_files: Sequence[Path],
+    wrap_parent: Path | None,
+) -> tuple[subprocess.CompletedProcess[str], Path, set[str]]:
+    """Run the three-skip dump of ``text`` (the wrapper) plus extras and pin, in a throwaway work dir.
+
+    Returns the process, the wrapper path and the names the work dir goes by.
+    """
     with tempfile.TemporaryDirectory(prefix="bakar-kas-pins-work-") as work_dir:
         work_dir_names = {work_dir, os.path.realpath(work_dir)}
         if wrap_parent is None:
@@ -228,6 +247,12 @@ def read_merged_config(
                 if pin_path is not None:
                     pin_path.unlink(missing_ok=True)
 
+    return out, wrapper, work_dir_names
+
+
+def _parse_dump(
+    out: subprocess.CompletedProcess[str], kas_yaml: Path, wrapper: Path, work_dir_names: set[str], context: str
+) -> dict:
     if out.returncode != 0:
         if _MISSING_MARKER in out.stderr:
             missing = _missing_repos(out.stderr) or "(kas did not name them)"
@@ -236,7 +261,6 @@ def read_merged_config(
                 "the release cannot be read without fetching them"
             )
         line = _first_error_line(out.stderr).replace(str(wrapper), str(kas_yaml))
-        context = _failure_context(checkout, extra_files)
         hint = _WORK_DIR_HINT if any(w in line for w in work_dir_names) else ""
         raise ReleaseRoutingError(f"kas dump of {kas_yaml}{context} failed: {line}{hint}")
 
@@ -247,6 +271,150 @@ def read_merged_config(
     if not isinstance(config, dict):
         raise ReleaseRoutingError(f"kas dump of {kas_yaml} did not print a mapping")
     return config
+
+
+def _layer_foreign_repos(layer: bsp_detect.LayerRepo, export_dir: Path) -> list[str]:
+    """Return every repository other than the layer repository and meta-avocado that the stack includes."""
+    assert layer.entry is not None
+    roots = {layer.name: layer.layer_root, _OWN_REPO: export_dir.resolve()}
+    seen: set[Path] = set()
+    foreign: list[str] = []
+    pending = [layer.entry.resolve()]
+    while pending:
+        path = pending.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except OSError, yaml.YAMLError:
+            continue  # kas reads the same file and reports the problem in its own words
+        header = data.get("header") if isinstance(data, dict) else None
+        includes = header.get("includes") if isinstance(header, dict) else None
+        files: list[Path] = []
+        for inc in includes if isinstance(includes, list) else []:
+            rel = inc
+            root = path.parent
+            if isinstance(inc, dict):
+                repo = inc.get("repo")
+                rel = inc.get("file")
+                if repo is not None:
+                    if str(repo) not in roots:
+                        if str(repo) not in foreign:
+                            foreign.append(str(repo))
+                        continue
+                    root = roots[str(repo)]
+            if isinstance(rel, str):
+                files.append((root / rel).resolve())
+        pending += reversed(files)
+    return foreign
+
+
+def _git_read(clone: Path, *args: str, stdout: Path | None = None) -> tuple[int, str]:
+    """Run a read-only git command in ``clone`` in its own session; return (exit code, stderr).
+
+    Raises :class:`ReleaseRoutingError` naming the command and the clone when git
+    does not finish in time.
+    """
+    with tempfile.TemporaryFile() as err, tempfile.TemporaryFile() as scratch:
+        try:
+            if stdout is None:
+                proc = subprocess.run(
+                    ["git", "-C", str(clone), *args],
+                    stdout=scratch,
+                    stderr=err,
+                    timeout=_GIT_READ_TIMEOUT_S,
+                    check=False,
+                    start_new_session=True,
+                )
+            else:
+                with stdout.open("wb") as out:
+                    proc = subprocess.run(
+                        ["git", "-C", str(clone), *args],
+                        stdout=out,
+                        stderr=err,
+                        timeout=_GIT_READ_TIMEOUT_S,
+                        check=False,
+                        start_new_session=True,
+                    )
+        except subprocess.TimeoutExpired as exc:
+            raise ReleaseRoutingError(
+                f"git {args[0]} in {clone} did not finish within {_GIT_READ_TIMEOUT_S}s; "
+                "the meta-avocado clone could not be read"
+            ) from exc
+        err.seek(0)
+        return proc.returncode, err.read().decode(errors="replace").strip()
+
+
+def _export_dependency(layer: bsp_detect.LayerRepo, clone: Path, export_dir: Path) -> None:
+    """Export the dependency's ``kas`` tree at the entry's pinned commit into ``export_dir``.
+
+    Only reads objects the clone already holds (``cat-file``, ``archive``): HEAD,
+    index, refs and working tree are never touched, and nothing is fetched.
+    """
+    commit = layer.dependency.get("commit")
+    if not commit:
+        raise ReleaseRoutingError(
+            f"{layer.entry} declares {_OWN_REPO} without a commit, so its kas files cannot be read from a pin"
+        )
+    if not clone.is_dir():
+        raise ReleaseRoutingError(
+            f"the workspace has no {_OWN_REPO} clone at {clone}, so the pin {commit} of {_OWN_REPO} cannot be read; "
+            "bakar does not clone into a shared workspace"
+        )
+    if _git_read(clone, "cat-file", "-e", f"{commit}^{{commit}}")[0] != 0:
+        raise ReleaseRoutingError(
+            f"commit {commit} of {_OWN_REPO} is not in {clone}; bakar does not fetch into a shared clone - "
+            f"run: git -C {clone} fetch origin {commit}"
+        )
+    tar_path = export_dir.parent / "kas-export.tar"
+    code, detail = _git_read(clone, "archive", "--format=tar", str(commit), "kas", stdout=tar_path)
+    if code != 0:
+        raise ReleaseRoutingError(
+            f"cannot export the kas files of commit {commit} from {clone}: {detail or '(no stderr)'}"
+        )
+    export_dir.mkdir()
+    with tarfile.open(tar_path) as tar:
+        tar.extractall(export_dir, filter="data")
+
+
+def read_merged_config_layer(
+    layer: bsp_detect.LayerRepo,
+    clone: Path,
+    *,
+    extra_files: Sequence[Path] = (),
+    wrap_parent: Path | None = None,
+) -> dict:
+    """Return the merged kas config of a layer entry, its dependency read from the entry's pinned commit.
+
+    ``clone`` is the workspace's meta-avocado clone. Its ``kas`` tree at the
+    pinned commit is exported with ``git archive`` into a throwaway directory
+    and declared there, without a url, in the probe wrapper; the layer
+    repository is declared by its absolute path only. The clone is only read.
+
+    Raises ReleaseRoutingError, before kas runs, when the pin is absent from
+    ``clone`` (naming the commit, the clone and the fetch command) or when an
+    include in the stack names a repository other than the layer repository
+    and meta-avocado.
+    """
+    if layer.entry is None:
+        raise ValueError("the layer repository carries no entry file")
+    with tempfile.TemporaryDirectory(prefix="bakar-kas-layer-export-") as tmp:
+        export_dir = Path(tmp) / "meta-avocado"
+        _export_dependency(layer, clone, export_dir)
+        foreign = _layer_foreign_repos(layer, export_dir)
+        if foreign:
+            raise ReleaseRoutingError(
+                f"{layer.entry} includes files from repositories other than {layer.name} and {_OWN_REPO} "
+                f"({', '.join(foreign)}); the release cannot be read without fetching them"
+            )
+        text = bsp_detect.layer_probe_wrapper_text(layer, export_dir)
+        pin_text = bsp_detect.layer_pin_text(layer) if extra_files else None
+        out, wrapper, work_dir_names = _dump_wrapped(layer.entry, text, pin_text, extra_files, wrap_parent)
+    context = ""
+    if out.returncode != 0:
+        context = _failure_context(layer.checkout, extra_files)
+    return _parse_dump(out, layer.entry, wrapper, work_dir_names, context)
 
 
 def probe_pins(kas_yaml: Path, checkout: Path) -> tuple[str, dict]:

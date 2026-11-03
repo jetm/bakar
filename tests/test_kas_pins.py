@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import shutil
 import subprocess
@@ -687,3 +688,225 @@ def test_failure_context_real_kas_names_overlay_and_revision(tmp_path: Path, mon
     assert overlay.name in message
     assert f"checkout at {head[:12]}" in message
     assert "Configuration file not found" in message
+
+
+# ---------------------------------------------------------------------------
+# Layer entry reader: the dependency is read from its pin, read-only
+# ---------------------------------------------------------------------------
+
+
+def _git_out(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout
+
+
+def _clone_state(clone: Path) -> tuple[str, str, str, str]:
+    return (
+        _git_out(clone, "rev-parse", "HEAD"),
+        _git_out(clone, "show-ref"),
+        _git_out(clone, "status", "--porcelain"),
+        _git_out(clone, "ls-files", "-s"),
+    )
+
+
+def _layer_fixture(tmp_path: Path, entry_body: str | None = None) -> tuple[bsp_detect.LayerRepo, Path, str, str]:
+    """Return (layer, dependency clone, pinned commit, later commit); the clone sits on the later commit."""
+    clone = tmp_path / "ws" / "meta-avocado"
+    (clone / "kas").mkdir(parents=True)
+    _git(clone, "init", "-q", "-b", "main")
+    (clone / "kas" / "base.yml").write_text("header:\n  version: 16\ndistro: pinned\n")
+    _git(clone, "add", ".")
+    _git(clone, "commit", "-q", "-m", "pinned")
+    pin = _git_out(clone, "rev-parse", "HEAD").strip()
+    (clone / "kas" / "base.yml").write_text("header:\n  version: 16\ndistro: later\n")
+    _git(clone, "commit", "-q", "-am", "later")
+    later = _git_out(clone, "rev-parse", "HEAD").strip()
+
+    checkout = tmp_path / "meta-board"
+    (checkout / "kas").mkdir(parents=True)
+    entry = checkout / "kas" / "m.yml"
+    entry.write_text(
+        entry_body
+        or (
+            "header:\n  version: 16\n  includes:\n    - repo: meta-avocado\n      file: kas/base.yml\n"
+            f"machine: m\nrepos:\n  meta-board:\n  meta-avocado:\n    url: file://{clone}\n"
+            f"    branch: main\n    commit: {pin}\n"
+        )
+    )
+    _git(checkout, "init", "-q", "-b", "main")
+    layer = bsp_detect.LayerRepo(
+        checkout=checkout.resolve(),
+        name="meta-board",
+        dependency={"url": f"file://{clone}", "branch": "main", "commit": pin},
+        is_linked_worktree=False,
+        checkout_name="meta-board",
+        branch="main",
+        entry=entry.resolve(),
+    )
+    return layer, clone, pin, later
+
+
+def _with_commit(layer: bsp_detect.LayerRepo, commit: str) -> bsp_detect.LayerRepo:
+    return dataclasses.replace(layer, dependency={**layer.dependency, "commit": commit})
+
+
+def test_layer_renderers_pin_by_path_only(tmp_path: Path) -> None:
+    layer, _clone, _pin, _later = _layer_fixture(tmp_path)
+    export = tmp_path / "export"
+
+    probe = yaml.safe_load(bsp_detect.layer_probe_wrapper_text(layer, export))
+    assert probe["header"]["includes"] == [{"repo": "meta-board", "file": "kas/m.yml"}]
+    assert probe["repos"] == {
+        "meta-board": {"path": str(layer.checkout)},
+        "meta-avocado": {"path": str(export.resolve()), "url": None},
+    }
+    build = yaml.safe_load(bsp_detect.layer_wrapper_text(layer, export))
+    assert build["repos"]["meta-avocado"] == {"path": str(export.resolve())}
+    assert "layers" not in bsp_detect.layer_wrapper_text(layer, export)
+    pin = yaml.safe_load(bsp_detect.layer_pin_text(layer))
+    assert pin["repos"] == {"meta-board": {"path": str(layer.checkout)}}
+
+
+def test_layer_read_exports_the_pin_without_touching_the_clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    layer, clone, _pin, _later = _layer_fixture(tmp_path)
+    before = _clone_state(clone)
+    seen: dict = {}
+
+    def fake_dump(kas_yaml, wrapper, extras, *, cwd, work_dir):
+        wrapped = yaml.safe_load(wrapper.read_text())
+        export = Path(wrapped["repos"]["meta-avocado"]["path"])
+        seen["base"] = (export / "kas" / "base.yml").read_text()
+        seen["export"] = export
+        seen["work"] = Path(work_dir)
+        seen["extras"] = list(extras)
+        seen["url"] = wrapped["repos"]["meta-avocado"].get("url")
+        return subprocess.CompletedProcess([], 0, "machine: m\n", "")
+
+    monkeypatch.setattr(kas_pins, "_run_dump", fake_dump)
+    assert kas_pins.read_merged_config_layer(layer, clone) == {"machine": "m"}
+
+    assert "distro: pinned" in seen["base"]
+    assert seen["url"] is None
+    assert seen["extras"] == []
+    assert seen["work"] != tmp_path / "ws"
+    assert not seen["export"].exists()
+    assert _clone_state(clone) == before
+
+
+def test_layer_read_merges_the_layer_pin_after_extras_beside_wrap_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layer, clone, _pin, _later = _layer_fixture(tmp_path)
+    overlay = tmp_path / "overlay.yml"
+    overlay.write_text("header:\n  version: 16\n")
+    build = tmp_path / "build"
+    build.mkdir()
+    seen: dict = {}
+
+    def fake_dump(kas_yaml, wrapper, extras, *, cwd, work_dir):
+        seen.update(wrapper=wrapper, extras=list(extras), pin=yaml.safe_load(extras[-1].read_text()))
+        return subprocess.CompletedProcess([], 0, "machine: m\n", "")
+
+    monkeypatch.setattr(kas_pins, "_run_dump", fake_dump)
+    kas_pins.read_merged_config_layer(layer, clone, extra_files=[overlay], wrap_parent=build)
+
+    assert seen["wrapper"].parent == build.absolute()
+    assert seen["extras"][0] == overlay.absolute()
+    assert seen["pin"]["repos"] == {"meta-board": {"path": str(layer.checkout)}}
+    assert list(build.iterdir()) == []
+
+
+def test_layer_read_refuses_a_missing_pin_without_fetching(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    layer, clone, _pin, _later = _layer_fixture(tmp_path)
+    missing = "f" * 40
+    layer = _with_commit(layer, missing)
+    before = _clone_state(clone)
+    monkeypatch.setattr(kas_pins, "_run_dump", _no_kas)
+
+    with pytest.raises(ReleaseRoutingError) as exc:
+        kas_pins.read_merged_config_layer(layer, clone)
+
+    text = str(exc.value)
+    assert missing in text
+    assert str(clone) in text
+    assert f"git -C {clone} fetch" in text
+    assert _clone_state(clone) == before
+
+
+def test_layer_read_names_an_absent_clone_without_a_fetch_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    layer, clone, pin, _later = _layer_fixture(tmp_path)
+    shutil.rmtree(clone)
+    monkeypatch.setattr(kas_pins, "_run_dump", _no_kas)
+
+    with pytest.raises(ReleaseRoutingError) as exc:
+        kas_pins.read_merged_config_layer(layer, clone)
+
+    text = str(exc.value)
+    assert str(clone) in text
+    assert pin in text
+    assert "no meta-avocado clone" in text
+    assert "fetch" not in text
+
+
+def test_a_git_read_that_times_out_is_a_routing_error_naming_the_command_and_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def hang(argv, **_kw):
+        raise subprocess.TimeoutExpired(argv, 60)
+
+    monkeypatch.setattr(kas_pins.subprocess, "run", hang)
+
+    with pytest.raises(ReleaseRoutingError) as exc:
+        kas_pins._git_read(tmp_path, "cat-file", "-e", "abc")
+
+    assert "cat-file" in str(exc.value)
+    assert str(tmp_path) in str(exc.value)
+    assert "did not finish" in str(exc.value)
+
+
+def test_layer_read_refuses_a_third_repository_before_kas(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    layer, clone, _pin, _later = _layer_fixture(
+        tmp_path,
+        entry_body=(
+            "header:\n  version: 16\n  includes:\n    - repo: meta-avocado\n      file: kas/base.yml\n"
+            "    - repo: meta-other\n      file: kas/x.yml\n"
+            f"repos:\n  meta-board:\n  meta-avocado:\n    url: file://x\n    commit: {'0' * 40}\n"
+        ),
+    )
+    monkeypatch.setattr(kas_pins, "_run_dump", _no_kas)
+
+    with pytest.raises(ReleaseRoutingError, match="meta-other"):
+        kas_pins.read_merged_config_layer(layer, clone)
+
+
+def test_layer_read_refuses_a_third_repository_in_the_dependency_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layer, clone, _pin, _later = _layer_fixture(tmp_path)
+    (clone / "kas" / "base.yml").write_text(
+        "header:\n  version: 16\n  includes:\n    - repo: meta-third\n      file: kas/y.yml\n"
+    )
+    _git(clone, "commit", "-q", "-am", "third")
+    third = _git_out(clone, "rev-parse", "HEAD").strip()
+    monkeypatch.setattr(kas_pins, "_run_dump", _no_kas)
+
+    with pytest.raises(ReleaseRoutingError, match="meta-third"):
+        kas_pins.read_merged_config_layer(_with_commit(layer, third), clone)
+
+
+def _require_kas() -> None:
+    if shutil.which("kas") is None:
+        if os.environ.get("BAKAR_REQUIRE_KAS"):
+            pytest.fail("kas is not on PATH but BAKAR_REQUIRE_KAS is set")
+        pytest.skip("kas is not on PATH")
+
+
+def test_real_kas_layer_read_uses_the_pinned_content(tmp_path: Path) -> None:
+    _require_kas()
+    layer, clone, _pin, _later = _layer_fixture(tmp_path)
+    before = _clone_state(clone)
+
+    merged = kas_pins.read_merged_config_layer(layer, clone)
+
+    assert merged["distro"] == "pinned"
+    assert merged["machine"] == "m"
+    assert _clone_state(clone) == before

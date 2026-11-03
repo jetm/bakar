@@ -526,6 +526,18 @@ class LayerRepo:
     is_linked_worktree: bool
     checkout_name: str
     branch: str | None
+    # The entry file; the wrappers include it by its path inside the checkout.
+    entry: Path | None = None
+    # The resolved directory the entry's declaration of the layer repository
+    # names: the checkout root when its path is absent or resolves to it, else a
+    # subdirectory (kas places a ``path:`` repository relative to the build
+    # directory's parent). None means the checkout root, for hand-built values.
+    repo_path: Path | None = None
+
+    @property
+    def layer_root(self) -> Path:
+        """The directory kas treats as the layer repository."""
+        return self.checkout.resolve() if self.repo_path is None else self.repo_path
 
 
 def _git_root_of(path: Path) -> Path | None:
@@ -597,18 +609,79 @@ def _read_kas_repos(kas_yaml: Path, checkout: Path, depth: int = 0) -> dict[str,
     return merged
 
 
-def layer_repo_of(kas_yaml: Path) -> LayerRepo | None:
+def _checkout_entry_path(entry: dict, kas_yaml: Path, checkout: Path) -> Path | None:
+    """Return the resolved directory ``entry`` declares inside ``checkout``, else None.
+
+    None when ``entry`` names a url or a directory outside the checkout. See
+    :func:`_is_checkout_root_entry` for which entries count.
+    """
+    if not _is_checkout_root_entry(entry, kas_yaml, checkout):
+        return None
+    root = checkout.resolve()
+    raw = entry.get("path")
+    if not isinstance(raw, str):
+        return root
+    if Path(raw).is_absolute() or ".." in Path(raw).parts:
+        return root  # only reachable when it resolves to the checkout itself
+    resolved = (root / raw).resolve()
+    return resolved if resolved.is_relative_to(root) else root
+
+
+def _is_checkout_root_entry(entry: dict, kas_yaml: Path, checkout: Path) -> bool:
+    """Whether a repository ``entry`` without a url declares the checkout holding ``kas_yaml``.
+
+    One whose ``path`` is absent, or stays inside the checkout: kas places a
+    ``path:`` repository relative to the build directory's parent, so a layer
+    repository is commonly declared by the name of the layer directory it holds
+    (``meta-board: {path: meta-board}``, a subdirectory of the checkout). A
+    ``path`` that climbs out with ``..``, or is absolute and not the checkout
+    itself, names a directory elsewhere: a local layer, not the layer repository.
+    """
+    if entry.get("url"):
+        return False
+    raw = entry.get("path")
+    if raw is None:
+        return True
+    if not isinstance(raw, str):
+        return False
+    if not (Path(raw).is_absolute() or ".." in Path(raw).parts):
+        return True
+    root = checkout.resolve()
+    try:
+        return any((base / raw).resolve() == root for base in (kas_yaml.resolve().parent, root))
+    except OSError:
+        return False
+
+
+def layer_repo_of(kas_yaml: Path, *, strict: bool = True) -> LayerRepo | None:
     """Return the layer repository ``kas_yaml`` is an entry of, else None.
 
     A layer entry lies in a git checkout whose origin does not name meta-avocado
-    and declares exactly one repository without a ``url`` (the layer repository,
-    named by its declaration, not by the directory) plus ``meta-avocado`` with a
-    ``url``. Main checkouts, linked worktrees and worktrees of bare repositories
-    resolve alike. Never runs kas and never touches the network.
+    and declares exactly one repository without a ``url`` that is the checkout
+    itself (the layer repository, named by its declaration, not by the
+    directory; an entry whose ``path`` is absent or resolves to the checkout
+    root) plus ``meta-avocado`` with a ``url``. Url-less entries whose ``path``
+    points elsewhere are local layers and are ignored. Main checkouts, linked
+    worktrees and worktrees of bare repositories resolve alike. Never runs kas
+    and never touches the network. A path that is not an existing file is not an
+    entry and returns None.
 
-    Raises :class:`ReleaseRoutingError` when two or more repositories carry no
-    ``url`` (naming each) or the entry cannot be read as YAML.
+    With ``strict`` (the default) raises :class:`ReleaseRoutingError` when two or
+    more repositories resolve to the checkout root (naming each) or the entry
+    cannot be read as YAML. ``strict=False`` turns every such refusal into
+    None, for read-only paths that must keep working on a file mid-edit.
     """
+    try:
+        return _layer_repo_of(kas_yaml)
+    except ReleaseRoutingError:
+        if strict:
+            raise
+        return None
+
+
+def _layer_repo_of(kas_yaml: Path) -> LayerRepo | None:
+    if not kas_yaml.is_file():
+        return None
     if is_meta_avocado_yaml(kas_yaml) or _origin_repo_name(kas_yaml) == _META_AVOCADO:
         return None
     checkout = _git_root_of(kas_yaml)
@@ -618,7 +691,7 @@ def layer_repo_of(kas_yaml: Path) -> LayerRepo | None:
     dependency = repos.get(_META_AVOCADO)
     if dependency is None or not dependency.get("url"):
         return None
-    url_less = [name for name, entry in repos.items() if not entry.get("url")]
+    url_less = [name for name, entry in repos.items() if _is_checkout_root_entry(entry, kas_yaml, checkout)]
     if len(url_less) >= 2:
         raise ReleaseRoutingError(
             f"{kas_yaml} declares {len(url_less)} repositories without a url ({', '.join(url_less)}); "
@@ -633,4 +706,88 @@ def layer_repo_of(kas_yaml: Path) -> LayerRepo | None:
         is_linked_worktree=linked_worktree_common_dir(checkout) is not None,
         checkout_name=checkout.name,
         branch=_head_branch(checkout),
+        entry=kas_yaml.resolve(),
+        repo_path=_checkout_entry_path(repos[url_less[0]], kas_yaml, checkout),
     )
+
+
+def _layer_entry_rel(layer: LayerRepo) -> str:
+    if layer.entry is None:
+        raise ValueError("the layer repository carries no entry file")
+    return layer.entry.resolve().relative_to(layer.checkout.resolve()).as_posix()
+
+
+# Declares the checkout root in the wrappers when the layer repository is a
+# subdirectory of it, so the entry file can be included from the root without
+# the root (not a bitbake layer) joining bblayers.
+LAYER_CHECKOUT_REPO = "bakar-layer-checkout"
+
+
+_PLAIN_YAML_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9._-]*")
+_YAML_RESERVED_WORDS = frozenset({"y", "n", "yes", "no", "on", "off", "true", "false", "null"})
+
+
+def _yaml_key(name: str) -> str:
+    """Render ``name`` as a YAML key; ordinary names stay bare, anything YAML would read as another type is quoted.
+
+    A repository name comes from a file in the user's checkout. Bare, ``on``
+    would load as a boolean and ``a:b`` or ``a #b`` would change the mapping, so
+    anything outside plain identifier characters, or one of the YAML 1.1 words,
+    goes out as a JSON string, which is a valid YAML flow scalar.
+    """
+    if _PLAIN_YAML_KEY_RE.fullmatch(name) and name.lower() not in _YAML_RESERVED_WORDS:
+        return name
+    return json.dumps(name, ensure_ascii=False)
+
+
+def _layer_pin_block(layer: LayerRepo) -> str:
+    """Render the ``repos`` block declaring the layer repository by absolute path only.
+
+    No ``layers`` key: kas then applies the entry's own layers, or its default
+    (the repository root) when the entry declares none.
+    """
+    path = json.dumps(str(layer.layer_root), ensure_ascii=False)
+    return f"repos:\n  {_yaml_key(layer.name)}:\n    path: {path}\n"
+
+
+def _layer_include_repo(layer: LayerRepo) -> tuple[str, str]:
+    """Return ``(repo key to include the entry through, extra repos block declaring it)``."""
+    if layer.layer_root == layer.checkout.resolve():
+        return _yaml_key(layer.name), ""
+    path = json.dumps(str(layer.checkout.resolve()), ensure_ascii=False)
+    block = f'  {LAYER_CHECKOUT_REPO}:\n    path: {path}\n    layers:\n      "": excluded\n'
+    return LAYER_CHECKOUT_REPO, block
+
+
+def layer_wrapper_text(layer: LayerRepo, dependency_path: Path, *, drop_url: bool = False) -> str:
+    """Render a kas wrapper that includes the layer entry with both repositories pinned by path.
+
+    ``dependency_path`` is where ``meta-avocado`` is declared, so the entry's
+    ``repo: meta-avocado`` includes resolve against that content. The entry's
+    own ``url`` for it survives the merge, and kas runs ``git remote set-url``
+    in the declared directory for a repository that has one even with the
+    checkout skipped; ``drop_url`` blanks it for a directory that is not a
+    repository (the read-only export).
+    """
+    include_repo, checkout_block = _layer_include_repo(layer)
+    text = (
+        "header:\n"
+        "  version: 16\n"
+        "  includes:\n"
+        f"    - repo: {include_repo}\n"
+        f"      file: {json.dumps(_layer_entry_rel(layer), ensure_ascii=False)}\n"
+        + _layer_pin_block(layer)
+        + checkout_block
+        + f"  meta-avocado:\n    path: {json.dumps(str(Path(dependency_path).resolve()), ensure_ascii=False)}\n"
+    )
+    return text + "    url: null\n" if drop_url else text
+
+
+def layer_probe_wrapper_text(layer: LayerRepo, export_dir: Path) -> str:
+    """Render the read-only probe wrapper: the dependency is the exported tree, declared without a url."""
+    return layer_wrapper_text(layer, export_dir, drop_url=True)
+
+
+def layer_pin_text(layer: LayerRepo) -> str:
+    """Render the kas file merged after every overlay to keep the layer repository on its checkout."""
+    return "header:\n  version: 16\n" + _layer_pin_block(layer)
