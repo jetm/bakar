@@ -28,6 +28,7 @@ def test_defaults_when_absent(tmp_path: Path) -> None:
     assert cfg.workspaces_template is None
     assert cfg.workspaces_releases is None
     assert cfg.dispatch_worktree_root is None
+    assert cfg.dispatch_layer_repo_dir is None
     assert cfg.dispatch_snapshot_untracked_cap_mb == 50
     assert cfg.build_worktree_build_dir is None
 
@@ -118,6 +119,7 @@ def test_settings_schema_recognises_new_keys() -> None:
     for key in (
         "workspaces.template",
         "dispatch.worktree_root",
+        "dispatch.layer_repo_dir",
         "dispatch.snapshot_untracked_cap_mb",
         "build.worktree_build_dir",
     ):
@@ -128,13 +130,16 @@ def test_settings_schema_recognises_new_keys() -> None:
 def test_set_setting_round_trips(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     set_setting("dispatch.worktree_root", "/x", path)
+    set_setting("dispatch.layer_repo_dir", "/layers", path)
     set_setting("dispatch.snapshot_untracked_cap_mb", "75", path)
     set_setting("workspaces.template", "/ws/{release}", path)
     set_setting("build.worktree_build_dir", "build-{stem}", path)
     assert get_setting("dispatch.worktree_root", path) == "/x"
+    assert get_setting("dispatch.layer_repo_dir", path) == "/layers"
     assert get_setting("dispatch.snapshot_untracked_cap_mb", path) == 75
     cfg = load_user_config(path)
     assert cfg.dispatch_worktree_root == "/x"
+    assert cfg.dispatch_layer_repo_dir == "/layers"
     assert cfg.dispatch_snapshot_untracked_cap_mb == 75
     assert cfg.workspaces_template == "/ws/{release}"
     assert cfg.build_worktree_build_dir == "build-{stem}"
@@ -163,6 +168,8 @@ def test_set_setting_validates(tmp_path: Path, key: str, value: str, match: str)
         ('[workspaces.releases]\nwrynose = "ws/wrynose"\n', r"workspaces\.releases\.wrynose.*absolute"),
         ('[dispatch]\nworktree_root = ".bakar/worktrees"\n', r"dispatch\.worktree_root.*absolute"),
         ('[dispatch]\nworktree_root = "~/wt"\n', r"dispatch\.worktree_root.*absolute"),
+        ('[dispatch]\nlayer_repo_dir = "layers"\n', r"dispatch\.layer_repo_dir.*absolute"),
+        ('[dispatch]\nlayer_repo_dir = "~/layers"\n', r"dispatch\.layer_repo_dir.*absolute"),
         ('[build]\nworktree_build_dir = "build-{stem:>8}"\n', r"build\.worktree_build_dir.*format spec"),
         ('[build]\nworktree_build_dir = "build-{stem"\n', r"build\.worktree_build_dir"),
         ('[workspaces]\ntemplate = "/w/{release!r}"\n', r"workspaces\.template.*format spec"),
@@ -183,6 +190,8 @@ def test_loader_accepts_a_tilde_workspace_but_not_a_tilde_remote_root(tmp_path: 
     [
         ("dispatch.worktree_root", "relative/dir", "absolute"),
         ("dispatch.worktree_root", "~/wt", "absolute"),
+        ("dispatch.layer_repo_dir", "relative/dir", "absolute"),
+        ("dispatch.layer_repo_dir", "~/layers", "absolute"),
         ("workspaces.template", "peridio-{release}", "absolute"),
         ("build.worktree_build_dir", "build-{stem:>8}", "format spec"),
     ],

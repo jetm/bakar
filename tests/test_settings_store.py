@@ -94,6 +94,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.worktree_build_dir": "build-{stem}",
         "workspaces.template": "/ws/{release}",
         "dispatch.worktree_root": "/wt",
+        "dispatch.layer_repo_dir": "/layers",
         "dispatch.snapshot_untracked_cap_mb": "80",
     }
     # Every dotted key in the schema is exercised here.
@@ -134,6 +135,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
     assert cfg.build_worktree_build_dir == "build-{stem}"
     assert cfg.workspaces_template == "/ws/{release}"
     assert cfg.dispatch_worktree_root == "/wt"
+    assert cfg.dispatch_layer_repo_dir == "/layers"
     assert cfg.dispatch_snapshot_untracked_cap_mb == 80
     assert cfg.scope_memory_high == 0.75
     assert cfg.scope_memory_max == 0.88

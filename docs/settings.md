@@ -88,6 +88,7 @@ Per-release overrides live in the `[workspaces.releases]` table (`wrynose = "/ab
 | Key | Type | Description |
 |-----|------|-------------|
 | `dispatch.worktree_root` | string | Absolute path ON THE REMOTE host where `--on` places delivered worktrees (default: `<workspace>/.bakar/worktrees`). `~` is refused because it would expand to the local home. |
+| `dispatch.layer_repo_dir` | string | Absolute path on the host where the layer repositories live (default: `<routed workspace>/.bakar/layers`). `~` and relative paths are refused. |
 | `dispatch.snapshot_untracked_cap_mb` | int | Largest amount of untracked content, in MiB, a dispatch snapshot may carry before it is refused (default: `50`; must be `> 0`) |
 
 ### Host thresholds (`host.*`)

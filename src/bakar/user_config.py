@@ -40,6 +40,7 @@ _STR_FIELDS = {
     "mold_extra_excluded_pn",
     "workspaces_template",
     "dispatch_worktree_root",
+    "dispatch_layer_repo_dir",
     "build_worktree_build_dir",
 }
 _BOOL_FIELDS = {
@@ -286,6 +287,9 @@ class UserConfig:
     workspaces_releases: dict[str, str] | None = None
     # [dispatch] remote worktree dispatch.
     dispatch_worktree_root: str | None = None
+    # Absolute host path of the layer repositories; None keeps
+    # <routed workspace>/.bakar/layers.
+    dispatch_layer_repo_dir: str | None = None
     dispatch_snapshot_untracked_cap_mb: int = 50
     # [layers]
     show_hashes: bool = False
@@ -374,6 +378,7 @@ _WORKSPACES_KEYS = {
 }
 _DISPATCH_KEYS = {
     "worktree_root": "dispatch_worktree_root",
+    "layer_repo_dir": "dispatch_layer_repo_dir",
     "snapshot_untracked_cap_mb": "dispatch_snapshot_untracked_cap_mb",
 }
 _LAYERS_KEYS = {
@@ -485,6 +490,8 @@ def _check_path_setting(field: str, value: str) -> None:
             release_workspace.map_release("x", value, None)
         elif field == "dispatch_worktree_root":
             release_workspace.check_absolute_path("dispatch.worktree_root", value)
+        elif field == "dispatch_layer_repo_dir":
+            release_workspace.check_absolute_path("dispatch.layer_repo_dir", value)
     except release_workspace.ReleaseRoutingError as exc:
         raise ValueError(str(exc)) from None
 
@@ -498,7 +505,7 @@ def _check_type(field: str, value: object, path: Path) -> None:
             _check_placeholders(label, value, allowed)
         except ValueError as exc:
             raise ValueError(f"{path}: {exc}") from None
-    if field in {"workspaces_template", "dispatch_worktree_root"} and isinstance(value, str):
+    if field in {"workspaces_template", "dispatch_worktree_root", "dispatch_layer_repo_dir"} and isinstance(value, str):
         try:
             _check_path_setting(field, value)
         except ValueError as exc:
@@ -774,6 +781,8 @@ def _coerce(spec: _SettingSpec, raw_value: str) -> str | bool | int | float:
         _check_path_setting("workspaces_template", raw_value)
     elif dotted == "dispatch.worktree_root":
         _check_path_setting("dispatch_worktree_root", raw_value)
+    elif dotted == "dispatch.layer_repo_dir":
+        _check_path_setting("dispatch_layer_repo_dir", raw_value)
     return raw_value
 
 

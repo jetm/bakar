@@ -131,6 +131,7 @@ error. `bakar settings` does not list this table; edit `config.toml` directly.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `worktree_root` | string | `<workspace>/.bakar/worktrees` | Absolute path on the REMOTE host where the delivered worktrees are placed. `~` and relative paths are refused: `~` would expand to the local home, and a relative path would place the worktree inside the shared `meta-avocado` clone. |
+| `layer_repo_dir` | string | `<routed workspace>/.bakar/layers` | Absolute path on the host where the layer repositories live. `~` and relative paths are refused. An older bakar rejects the key with "unrecognized setting key", which the capability probe relies on. |
 | `snapshot_untracked_cap_mb` | int | `50` | Largest amount of untracked content, in MiB, a dispatch snapshot may carry. Must be `> 0`. |
 
 ### `[host]` - doctor host-environment thresholds
@@ -194,6 +195,7 @@ template = "/home/me/repos/work/peridio-{release}"
 
 [dispatch]
 # worktree_root = "/home/me/repos/work/peridio-wrynose/.bakar/worktrees"
+# layer_repo_dir = "/home/me/repos/work/peridio-wrynose/.bakar/layers"
 snapshot_untracked_cap_mb = 50
 
 [host]
