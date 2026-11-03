@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import datetime
+import hashlib
+import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -12,7 +16,7 @@ from hypothesis import strategies as st
 
 from bakar.release_workspace import sanitize_delivered_name
 from bakar.steps import avocado_dispatch as ad
-from bakar.steps import layer_delivery, remote_dispatch
+from bakar.steps import layer_delivery, layer_delivery_remote, remote_dispatch
 
 pytestmark = pytest.mark.unit
 
@@ -962,3 +966,80 @@ def test_plan_side_checkout_line_replaces_control_characters(
     out = capsys.readouterr().err
     assert "\x1b[2K" not in out
     assert "meta-?[2Ka" in out
+
+
+# Golden outputs of a meta-avocado dispatch, recorded before the dispatch core was split from its
+# target description. They pin the rendered plan, the push argv and the remote scripts byte for byte.
+# The plan is compared with whitespace collapsed because rich wraps it at the terminal width.
+GOLDEN_PLAN = (
+    "dispatch plan -> pc2 workspace: /srv/ws/scarthgap (release routing) "
+    "+ worktree /srv/ws/scarthgap/.bakar/worktrees/feature-x (created, or moved to the delivered commit), "
+    "with its git admin directory /srv/ws/scarthgap/meta-avocado/.git/worktrees/feature-x "
+    "holding the delivery marker bakar-delivered.json "
+    "+ bookkeeping files in /srv/ws/scarthgap/.bakar/worktrees (created if missing): "
+    ".feature-x.lock, .feature-x.pending, .feature-x.build.lock "
+    "+ ref refs/bakar/feature-x/aaaaaaaaaaaa in /srv/ws/scarthgap/meta-avocado "
+    "+ build directory /srv/ws/scarthgap/build-m-feature-x "
+    "nothing is deleted on the host "
+    "snapshot of uncommitted changes: yes "
+    "untracked paths the snapshot carries: notes.txt kas/new.yml"
+)
+GOLDEN_PUSH = [
+    "git",
+    "-C",
+    "<CO>",
+    "push",
+    "--receive-pack=git -c receive.autogc=false receive-pack",
+    "ssh://pc2/srv/ws/scarthgap/meta-avocado",
+    f"{COMMIT}:refs/bakar/feature-x/{COMMIT[:12]}",
+]
+GOLDEN_SHA = {
+    "capability": "1c78548f9ee41f8131ce5f7d1753a22388d8874806cb0e633c1fd132873e38c6",
+    "ensure": "f43a538ad293cc1da6ed56ed8770493bcd9f995fadddb8be56dfcc07af181bc3",
+    "remote": "dd1ac22896db8050565df2fb12d2b71dfd9e9aff424c16d68df3e5ea29e0d002",
+}
+
+
+class _FrozenDatetime:
+    @staticmethod
+    def now(_tz: object = None) -> datetime.datetime:
+        return datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)
+
+
+def _golden_run(
+    rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> tuple[str, list[str], dict[str, str]]:
+    for key in [k for k in os.environ if k.startswith(("BAKAR_", "KAS_"))]:
+        monkeypatch.delenv(key)
+    monkeypatch.setattr(layer_delivery_remote, "datetime", _FrozenDatetime)
+    rec.snapshot = True
+    rec.untracked = ["notes.txt", "kas/new.yml"]
+    kas = "kas/machine/m.yml"
+    assert _dispatch(checkout, kas, ["build", kas, "--on", HOST], pinned_repos={}) == 0
+    co = str(checkout)
+
+    def norm(text: str) -> str:
+        return text.replace(os.path.realpath(co), "<CO>").replace(co, "<CO>")
+
+    def sha(text: str) -> str:
+        # A detached run names its systemd unit after the wall clock and a random suffix.
+        stable = re.sub(r"bakar-dispatch-\d{8}-\d{6}-[0-9a-f]{6}", "bakar-dispatch-<ID>", norm(text))
+        return hashlib.sha256(stable.encode()).hexdigest()
+
+    push = [norm(a) for a in next(a for n, a in rec.calls if n == "push")]
+    plan = " ".join(norm(capsys.readouterr().err).split())
+    shas = {
+        "capability": sha(rec.capability_script),
+        "ensure": sha(rec.ensure_script),
+        "remote": sha(rec.remote_script),
+    }
+    return plan, push, shas
+
+
+def test_golden_meta_avocado_dispatch_outputs(
+    rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan, push, shas = _golden_run(rec, checkout, monkeypatch, capsys)
+    assert plan == GOLDEN_PLAN
+    assert push == GOLDEN_PUSH
+    assert shas == GOLDEN_SHA
