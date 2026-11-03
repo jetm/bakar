@@ -11,7 +11,7 @@ from typing import Annotated
 import typer
 
 from bakar import detach_records
-from bakar.bsp_detect import is_meta_avocado_yaml
+from bakar.bsp_detect import is_meta_avocado_yaml, layer_repo_of
 from bakar.commands._app import app, console
 from bakar.commands._helpers import (
     RunFamily,
@@ -23,7 +23,7 @@ from bakar.commands._helpers import (
     _workspace_from_cwd,
     candidate_runs_dirs,
 )
-from bakar.config import meta_avocado_build_dir_name, worktree_build_template
+from bakar.config import layer_reuse_applies, meta_avocado_build_dir_name, worktree_build_template
 from bakar.diagnostics import markup_safe
 from bakar.log_text import clean_line
 from bakar.observability import STOPPED_STEP, last_build_config, last_run_event
@@ -134,14 +134,21 @@ def _resolve_triage_dirs(
     """
     if kas_yaml is not None:
         resolved = kas_yaml.resolve()
-        if is_meta_avocado_yaml(resolved):
+        try:
+            shared_dir = is_meta_avocado_yaml(resolved) or (
+                layer_reuse_applies(resolved) and layer_repo_of(resolved, strict=False) is not None
+            )
             # Same build root the build used: the routed release workspace
             # (when [workspaces] maps this release) and the per-worktree dir.
-            try:
-                build_dir = meta_avocado_build_dir_name(resolved, worktree_build_template(load_user_config()))
-            except ReleaseRoutingError as exc:
-                console.print(f"[red]{exc}[/]")
-                raise typer.Exit(code=2) from exc
+            build_dir = (
+                meta_avocado_build_dir_name(resolved, worktree_build_template(load_user_config()), strict=False)
+                if shared_dir
+                else None
+            )
+        except ReleaseRoutingError as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(code=2) from exc
+        if build_dir is not None:
             build_root = _resolve_workspace(None, kas_yaml=resolved, family="generic", strict_routing=False) / build_dir
             translation_workspace = build_root.parent
         else:

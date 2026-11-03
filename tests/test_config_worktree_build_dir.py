@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.config import ResolveRequest, resolve, worktree_build_template
+from bakar.config import ResolveRequest, meta_avocado_build_dir_name, resolve, worktree_build_template
 from bakar.user_config import UserConfig
 from bakar.workspace_config import WorkspaceConfig
 
@@ -122,3 +122,58 @@ def test_two_worktrees_get_distinct_roots_and_tmpdirs(
     assert tmp1.parent == tmp2.parent == tmp_path / "local-tmp"
     assert tmp1 != tmp2
     assert tmp1.name.rsplit("-", 1)[1] != tmp2.name.rsplit("-", 1)[1]
+
+
+def _make_layer_repo(root: Path, name: str = "meta-acme") -> Path:
+    """A git repo holding one layer entry: the layer repo (no url) plus a pinned meta-avocado."""
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    ident = ["-c", "user.email=t@example.invalid", "-c", "user.name=t"]
+    (root / "kas").mkdir(parents=True)
+    (root / "kas" / "m.yml").write_text(
+        "header:\n  version: 16\nrepos:\n"
+        f"  {name}:\n    path: .\n"
+        "  meta-avocado:\n    url: https://example.invalid/meta-avocado.git\n    branch: main\n"
+    )
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True, capture_output=True, env=env)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True, env=env)
+    subprocess.run(
+        ["git", *ident, "-C", str(root), "commit", "-q", "-m", "i"], check=True, capture_output=True, env=env
+    )
+    return root / "kas" / "m.yml"
+
+
+@pytest.mark.unit
+def test_layer_main_checkout_names_dir_after_layer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(_ENV, raising=False)
+    entry = _make_layer_repo(tmp_path / "checkout")
+    assert meta_avocado_build_dir_name(entry, None) == "build-m-meta-acme"
+
+
+@pytest.mark.unit
+def test_layer_worktrees_get_distinct_dirs_and_bsp_root_agrees(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(_ENV, raising=False)
+    main_entry = _make_layer_repo(tmp_path / "main")
+    main = main_entry.parent.parent
+    wt1, wt2 = tmp_path / "wt1", tmp_path / "wt2"
+    _add_worktree(main, wt1, "b1")
+    _add_worktree(main, wt2, "b2")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    names = {meta_avocado_build_dir_name(p / "kas" / "m.yml", None) for p in (main, wt1, wt2)}
+    assert names == {"build-m-meta-acme", "build-m-meta-acme-wt1", "build-m-meta-acme-wt2"}
+    # Without the reuse policy a layer entry builds beside its own kas file.
+    assert _resolve(ws, wt1 / "kas" / "m.yml").bsp_root == (wt1 / "kas").resolve()
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg = _resolve(ws, wt1 / "kas" / "m.yml")
+    assert cfg.bsp_root == ws / "build-m-meta-acme-wt1"
+
+
+@pytest.mark.unit
+def test_layer_stem_never_collides_with_meta_avocado_machine_file(
+    meta_avocado_worktree_layout: MetaAvocadoWorktreeLayout, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(_ENV, raising=False)
+    layer_entry = _make_layer_repo(tmp_path / "layer")
+    meta_main = meta_avocado_worktree_layout.main / "kas" / "machine" / "m.yml"
+    assert meta_avocado_build_dir_name(layer_entry, None) != meta_avocado_build_dir_name(meta_main, None)
+    assert meta_avocado_build_dir_name(meta_main, None) == "build-m"

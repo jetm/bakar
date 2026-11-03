@@ -56,6 +56,24 @@ def _overlay_dir() -> Path:
 # every source YAML.
 GENERATED_BUILD_YAML = "avocado-bakar.yml"
 
+
+def layer_reuse_applies(kas_yaml: Path) -> bool:
+    """True when ``kas_yaml`` is built as a layer entry of a release workspace.
+
+    One predicate for every site that must agree on it: the build step, the
+    build-directory choice (``BuildConfig.bsp_root``), triage and doctor. It
+    holds only under the ``reuse`` policy, which routing sets for a release
+    workspace; the default and an explicit ``kas`` policy keep the entry's own
+    directory as the build directory. An unparsable policy is left to the
+    existing flow, which refuses it.
+    """
+    try:
+        policy = release_workspace.parse_repo_policy(os.environ.get(release_workspace.REPO_POLICY_ENV))
+    except release_workspace.ReleaseRoutingError:
+        return False
+    return policy == release_workspace.REPO_POLICY_REUSE and kas_yaml.name != GENERATED_BUILD_YAML
+
+
 # Workspace-relative directory names a per-workspace feed occupies. Named here
 # rather than spelled at each use because two modules need them to agree:
 # ``effective_feed_dir`` builds the default feed path from the first, and remote
@@ -828,6 +846,15 @@ class BuildConfig:
                 return self.workspace / meta_avocado_build_dir_name(
                     self.kas_yaml_override, self.worktree_build_dir_template
                 )
+            # Non-strict: a property read by read-only commands must not raise on
+            # a file that is mid-edit; the build path refuses it where it routes.
+            if (
+                layer_reuse_applies(self.kas_yaml_override)
+                and bsp_detect.layer_repo_of(self.kas_yaml_override, strict=False) is not None
+            ):
+                return self.workspace / meta_avocado_build_dir_name(
+                    self.kas_yaml_override, self.worktree_build_dir_template, strict=False
+                )
             return self.kas_yaml_override.parent
         if self.bsp_family == "bbsetup":
             return self.workspace
@@ -1072,15 +1099,40 @@ def worktree_build_template(user_config: UserConfig | None) -> str | None:
     return user_config.build_worktree_build_dir if user_config is not None else None
 
 
-def meta_avocado_build_dir_name(kas_yaml: Path, template: str | None) -> str:
+def layer_build_dir_name(layer: bsp_detect.LayerRepo, kas_yaml: Path, template: str | None) -> str:
+    """Return the build directory name for an entry of the layer repository ``layer``.
+
+    Always renders the template, with a worktree value of
+    ``<layer name>-<checkout directory>`` in a linked worktree and
+    ``<layer name>`` in a main checkout. A dispatch does not rely on this on the
+    host: it sends the template with ``{worktree}`` already filled in.
+    """
+    worktree = f"{layer.name}-{layer.checkout_name}" if layer.is_linked_worktree else layer.name
+    return release_workspace.worktree_build_dir_name(
+        kas_yaml.stem,
+        worktree,
+        template,
+        source="BAKAR_WORKTREE_BUILD_DIR or build.worktree_build_dir",
+    )
+
+
+def meta_avocado_build_dir_name(kas_yaml: Path, template: str | None, *, strict: bool = True) -> str:
     """Return the build directory name for a meta-avocado kas file.
 
     ``build-<stem>`` for a main checkout, the worktree template for a linked
     worktree. The one place that decides it: ``BuildConfig.bsp_root`` and
     ``bakar triage`` both call it, so triage looks where the build wrote.
+
+    A layer-repository entry always renders the template, with a worktree value
+    of ``<layer name>-<checkout directory>`` in a linked worktree and
+    ``<layer name>`` in a main checkout, so two worktrees of one repository and a
+    layer file sharing a stem with a meta-avocado file never share a directory.
     Raises ``ReleaseRoutingError`` for a template that does not render one
     directory name.
     """
+    layer = bsp_detect.layer_repo_of(kas_yaml, strict=strict)
+    if layer is not None:
+        return layer_build_dir_name(layer, kas_yaml, template)
     wt = bsp_detect.meta_avocado_worktree(kas_yaml)
     return release_workspace.worktree_build_dir_name(
         kas_yaml.stem,
