@@ -93,6 +93,17 @@ _GUARD_SCRIPT = (
 )
 
 
+# The checkout directory is always this name: the layer's BBMASK entries match
+# `meta-avocado/<layer>/...` by path, so a worktree directory named after the
+# branch makes them miss and the build fails at parse on dangling bbappends.
+CHECKOUT_DIRNAME = "meta-avocado"
+
+
+def delivered_path(worktree_root: str, name: str) -> str:
+    """Return where the delivered checkout lives: ``<root>/<name>/meta-avocado``."""
+    return f"{worktree_root}/{name}/{CHECKOUT_DIRNAME}"
+
+
 def build_lock_path(worktree_root: str, name: str) -> str:
     """Return the lock a delivered build holds shared and a move takes exclusively."""
     return f"{worktree_root}/.{name}.build.lock"
@@ -111,7 +122,7 @@ def build_guard(*, worktree_root: str, name: str, commit: str) -> str:
     """
     if not is_valid_delivered_name(name):
         raise ReleaseRoutingError(f"delivered name {name!r} must match [A-Za-z0-9._-]+")
-    dest = f"{worktree_root}/{name}"
+    dest = delivered_path(worktree_root, name)
     return shlex.join(["bash", "-c", _GUARD_SCRIPT, build_lock_path(worktree_root, name), dest, commit])
 
 
@@ -162,7 +173,7 @@ def ensure_worktree_script(
     *,
     source_path_aliases: tuple[str, ...] = (),
 ) -> str:
-    """Return the bash script that places ``fields.commit`` at ``<worktree_root>/<name>``.
+    """Return the bash script that places ``fields.commit`` at ``<worktree_root>/<name>/meta-avocado``.
 
     ``fields.source_path`` is written into new markers; a marker naming it or any
     of ``source_path_aliases`` (other spellings of the same checkout, such as one
@@ -190,7 +201,7 @@ commit={q(commit)}
 src_host={q(source_host)}
 src_paths={q(accepted_paths)}
 marker={q(marker)}
-dest="$root/$name"
+dest="$root/$name/{CHECKOUT_DIRNAME}"
 pending="$root/.$name.pending"
 build_lock_file={q(build_lock_path(worktree_root, name))}
 
@@ -213,6 +224,14 @@ exec 9>>"$root/.$name.lock"
 if ! flock -n 9; then
     echo "bakar: another dispatch of $name holds $root/.$name.lock" >&2
     exit {EXIT_LOCKED}
+fi
+
+# A worktree delivered before the checkout directory was fixed sits at
+# $root/$name itself; adding below it would nest one worktree in another.
+if [ -e "$root/$name/.git" ]; then
+    echo "bakar: $root/$name is a worktree from an older bakar layout; bakar never" \\
+        "deletes one, so retire it yourself, then dispatch again" >&2
+    exit {EXIT_NO_MARKER}
 fi
 
 if [ ! -e "$dest" ]; then

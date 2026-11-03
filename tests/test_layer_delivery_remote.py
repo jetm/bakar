@@ -29,6 +29,7 @@ from bakar.steps.layer_delivery_remote import (
     MarkerFields,
     build_guard,
     build_lock_path,
+    delivered_path,
     describe_exit,
     ensure_worktree_script,
     marker_json,
@@ -146,7 +147,7 @@ def test_fresh_add_creates_root_worktree_and_marker(workspace: Path, tmp_path: P
     commit = _head(workspace / "meta-avocado")
     res = _run(workspace, root, commit)
     assert res.returncode == 0, res.stderr
-    dest = root / "wt1"
+    dest = root / "wt1" / "meta-avocado"
     assert _head(dest) == commit
     marker = _marker(dest)
     assert marker["source_host"] == HOST
@@ -162,11 +163,11 @@ def test_same_commit_is_noop(workspace: Path, tmp_path: Path):
     root = tmp_path / "wts"
     commit = _head(workspace / "meta-avocado")
     assert _run(workspace, root, commit).returncode == 0
-    before = _marker(root / "wt1")
+    before = _marker(root / "wt1" / "meta-avocado")
     res = _run(workspace, root, commit)
     assert res.returncode == 0, res.stderr
     assert "already at" in res.stdout
-    assert _marker(root / "wt1") == before
+    assert _marker(root / "wt1" / "meta-avocado") == before
 
 
 def test_new_commit_moves_worktree_without_build_dir(workspace: Path, tmp_path: Path):
@@ -177,14 +178,14 @@ def test_new_commit_moves_worktree_without_build_dir(workspace: Path, tmp_path: 
     second = _commit(repo, "b.txt", "b\n")
     res = _run(workspace, root, second)
     assert res.returncode == 0, res.stderr
-    assert _head(root / "wt1") == second
-    assert _marker(root / "wt1")["commit"] == second
+    assert _head(root / "wt1" / "meta-avocado") == second
+    assert _marker(root / "wt1" / "meta-avocado")["commit"] == second
     assert not (workspace / BUILD_DIR).exists()
 
 
 def test_directory_without_marker_is_refused_untouched(workspace: Path, tmp_path: Path):
     root = tmp_path / "wts"
-    dest = root / "wt1"
+    dest = root / "wt1" / "meta-avocado"
     dest.mkdir(parents=True)
     (dest / "keep.txt").write_text("mine\n")
     res = _run(workspace, root, _head(workspace / "meta-avocado"))
@@ -197,12 +198,12 @@ def test_unowned_git_checkout_without_marker_is_refused(workspace: Path, tmp_pat
     repo = workspace / "meta-avocado"
     root = tmp_path / "wts"
     first = _head(repo)
-    _git("-C", repo, "worktree", "add", "-q", "--detach", root / "wt1", first)
+    _git("-C", repo, "worktree", "add", "-q", "--detach", root / "wt1" / "meta-avocado", first)
     second = _commit(repo, "b.txt", "b\n")
     res = _run(workspace, root, second)
     assert res.returncode == EXIT_NO_MARKER
     assert MARKER_FILENAME in res.stderr
-    assert _head(root / "wt1") == first
+    assert _head(root / "wt1" / "meta-avocado") == first
 
 
 def test_marker_from_another_host_is_refused(workspace: Path, tmp_path: Path):
@@ -215,7 +216,7 @@ def test_marker_from_another_host_is_refused(workspace: Path, tmp_path: Path):
     assert res.returncode == EXIT_FOREIGN_MARKER
     assert "other-host" in res.stderr
     assert HOST in res.stderr
-    assert _head(root / "wt1") == first
+    assert _head(root / "wt1" / "meta-avocado") == first
 
 
 def test_marker_from_another_path_is_refused(workspace: Path, tmp_path: Path):
@@ -226,7 +227,7 @@ def test_marker_from_another_path_is_refused(workspace: Path, tmp_path: Path):
     second = _commit(repo, "b.txt", "b\n")
     res = _run(workspace, root, second)
     assert res.returncode == EXIT_FOREIGN_MARKER
-    assert _head(root / "wt1") == first
+    assert _head(root / "wt1" / "meta-avocado") == first
 
 
 def test_dirty_tree_is_refused(workspace: Path, tmp_path: Path):
@@ -234,13 +235,13 @@ def test_dirty_tree_is_refused(workspace: Path, tmp_path: Path):
     root = tmp_path / "wts"
     first = _head(repo)
     assert _run(workspace, root, first).returncode == 0
-    (root / "wt1" / "a.txt").write_text("edited\n")
+    (root / "wt1" / "meta-avocado" / "a.txt").write_text("edited\n")
     second = _commit(repo, "b.txt", "b\n")
     res = _run(workspace, root, second)
     assert res.returncode == EXIT_DIRTY
     assert "a.txt" in res.stderr
-    assert _head(root / "wt1") == first
-    assert (root / "wt1" / "a.txt").read_text() == "edited\n"
+    assert _head(root / "wt1" / "meta-avocado") == first
+    assert (root / "wt1" / "meta-avocado" / "a.txt").read_text() == "edited\n"
 
 
 def test_held_bitbake_lock_is_refused(workspace: Path, tmp_path: Path):
@@ -255,7 +256,7 @@ def test_held_bitbake_lock_is_refused(workspace: Path, tmp_path: Path):
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         res = _run(workspace, root, second)
     assert res.returncode == EXIT_BUILD_RUNNING
-    assert _head(root / "wt1") == first
+    assert _head(root / "wt1" / "meta-avocado") == first
 
 
 def test_free_bitbake_lock_allows_move(workspace: Path, tmp_path: Path):
@@ -268,7 +269,7 @@ def test_free_bitbake_lock_allows_move(workspace: Path, tmp_path: Path):
     second = _commit(repo, "b.txt", "b\n")
     res = _run(workspace, root, second)
     assert res.returncode == 0, res.stderr
-    assert _head(root / "wt1") == second
+    assert _head(root / "wt1" / "meta-avocado") == second
 
 
 def test_held_delivery_lock_is_refused(workspace: Path, tmp_path: Path):
@@ -278,7 +279,7 @@ def test_held_delivery_lock_is_refused(workspace: Path, tmp_path: Path):
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         res = _run(workspace, root, _head(workspace / "meta-avocado"))
     assert res.returncode == EXIT_LOCKED
-    assert not (root / "wt1").exists()
+    assert not (root / "wt1" / "meta-avocado").exists()
 
 
 def test_workspace_path_with_space_works(workspace: Path, tmp_path: Path):
@@ -287,7 +288,7 @@ def test_workspace_path_with_space_works(workspace: Path, tmp_path: Path):
     commit = _head(workspace / "meta-avocado")
     res = _run(workspace, root, commit)
     assert res.returncode == 0, res.stderr
-    assert _head(root / "wt1") == commit
+    assert _head(root / "wt1" / "meta-avocado") == commit
 
 
 @pytest.mark.parametrize("name", ["", "a/b", "x y", "$(id)", "../up"])
@@ -408,10 +409,10 @@ def test_same_commit_with_hand_edits_is_refused(workspace: Path, tmp_path: Path)
     root = tmp_path / "wts"
     first = _head(repo)
     assert _run(workspace, root, first).returncode == 0
-    (root / "wt1" / "a.txt").write_text("edited\n")
+    (root / "wt1" / "meta-avocado" / "a.txt").write_text("edited\n")
     res = _run(workspace, root, first)
     assert res.returncode == EXIT_DIRTY
-    assert (root / "wt1" / "a.txt").read_text() == "edited\n"
+    assert (root / "wt1" / "meta-avocado" / "a.txt").read_text() == "edited\n"
 
 
 def test_bitbake_lock_of_another_build_dir_is_refused(workspace: Path, tmp_path: Path):
@@ -426,7 +427,7 @@ def test_bitbake_lock_of_another_build_dir_is_refused(workspace: Path, tmp_path:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         res = _run(workspace, root, second)
     assert res.returncode == EXIT_BUILD_RUNNING
-    assert _head(root / "wt1") == first
+    assert _head(root / "wt1" / "meta-avocado") == first
 
 
 def _interrupt_after_add(root: Path, commit: str, *, host: str = HOST, head_commit: str | None = None) -> Path:
@@ -435,7 +436,7 @@ def _interrupt_after_add(root: Path, commit: str, *, host: str = HOST, head_comm
     The marker is removed and the pending record holds the text the script wrote
     before the add. ``head_commit`` is the commit the pending record names.
     """
-    gitdir = Path(_git("-C", root / "wt1", "rev-parse", "--absolute-git-dir"))
+    gitdir = Path(_git("-C", root / "wt1" / "meta-avocado", "rev-parse", "--absolute-git-dir"))
     (gitdir / MARKER_FILENAME).unlink()
     (root / ".wt1.pending").write_text(
         marker_json(
@@ -476,7 +477,7 @@ def test_consumed_pending_record_does_not_vouch_for_a_worktree_without_a_marker(
     root = tmp_path / "wts"
     first = _head(workspace / "meta-avocado")
     assert _run(workspace, root, first).returncode == 0
-    gitdir = Path(_git("-C", root / "wt1", "rev-parse", "--absolute-git-dir"))
+    gitdir = Path(_git("-C", root / "wt1" / "meta-avocado", "rev-parse", "--absolute-git-dir"))
     (gitdir / MARKER_FILENAME).unlink()
     res = _run(workspace, root, first)
     assert res.returncode == EXIT_NO_MARKER
@@ -505,7 +506,7 @@ def test_shared_build_lock_blocks_a_move(workspace: Path, tmp_path: Path):
         fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
         res = _run(workspace, root, second)
     assert res.returncode == EXIT_BUILD_RUNNING
-    assert _head(root / "wt1") == first
+    assert _head(root / "wt1" / "meta-avocado") == first
 
 
 def test_build_guard_runs_only_at_the_delivered_commit(workspace: Path, tmp_path: Path):
@@ -589,7 +590,7 @@ def test_move_holds_the_build_lock_through_the_checkout(workspace: Path, tmp_pat
     assert proc.returncode == 0, err
     assert held != 0
     assert _flock_probe(lock, "-s") == 0
-    assert _head(root / "wt1") == second
+    assert _head(root / "wt1" / "meta-avocado") == second
 
 
 def test_build_started_during_a_move_refuses_the_moved_tree(workspace: Path, tmp_path: Path):
@@ -605,7 +606,7 @@ def test_build_started_during_a_move_refuses_the_moved_tree(workspace: Path, tmp
     _, err = proc.communicate(timeout=30)
     assert proc.returncode == 0, err
     assert guarded.returncode == EXIT_MOVED, guarded.stderr
-    assert _head(root / "wt1") == second
+    assert _head(root / "wt1" / "meta-avocado") == second
 
 
 def test_build_guard_holds_the_lock_while_the_build_runs(workspace: Path, tmp_path: Path):
@@ -676,7 +677,7 @@ def test_sigint_to_the_unit_lets_a_guarded_build_drain(workspace: Path, tmp_path
 def test_failed_add_empties_the_pending_record(workspace: Path, tmp_path: Path):
     repo = workspace / "meta-avocado"
     root = tmp_path / "wts"
-    dest = root / "wt1"
+    dest = root / "wt1" / "meta-avocado"
     first = _head(repo)
     assert _run(workspace, root, first).returncode == 0
     # git still has the moved-aside worktree registered, so the add fails.
@@ -696,7 +697,7 @@ def test_failed_add_empties_the_pending_record(workspace: Path, tmp_path: Path):
 @pytest.mark.parametrize("pending", ["", "record"])
 def test_unborn_head_without_marker_is_refused(workspace: Path, tmp_path: Path, pending: str):
     root = tmp_path / "wts"
-    dest = root / "wt1"
+    dest = root / "wt1" / "meta-avocado"
     _git("init", "-q", dest)
     commit = _head(workspace / "meta-avocado")
     if pending:
@@ -715,11 +716,11 @@ def test_marker_with_the_canonical_spelling_is_accepted(workspace: Path, tmp_pat
     repo = workspace / "meta-avocado"
     root = tmp_path / "wts"
     assert _exec(_script(workspace, root, _head(repo), src=CANON, aliases=(SRC,))).returncode == 0
-    assert _marker(root / "wt1")["source_path"] == CANON
+    assert _marker(root / "wt1" / "meta-avocado")["source_path"] == CANON
     second = _commit(repo, "b.txt", "b\n")
     res = _exec(_script(workspace, root, second, src=CANON, aliases=(SRC,)))
     assert res.returncode == 0, res.stderr
-    assert _head(root / "wt1") == second
+    assert _head(root / "wt1" / "meta-avocado") == second
 
 
 def test_marker_with_an_alias_spelling_is_accepted(workspace: Path, tmp_path: Path):
@@ -730,8 +731,8 @@ def test_marker_with_an_alias_spelling_is_accepted(workspace: Path, tmp_path: Pa
     second = _commit(repo, "b.txt", "b\n")
     res = _exec(_script(workspace, root, second, src=CANON, aliases=(SRC,)))
     assert res.returncode == 0, res.stderr
-    assert _head(root / "wt1") == second
-    assert _marker(root / "wt1")["source_path"] == CANON
+    assert _head(root / "wt1" / "meta-avocado") == second
+    assert _marker(root / "wt1" / "meta-avocado")["source_path"] == CANON
 
 
 def test_marker_from_a_third_path_is_refused_despite_aliases(workspace: Path, tmp_path: Path):
@@ -743,7 +744,7 @@ def test_marker_from_a_third_path_is_refused_despite_aliases(workspace: Path, tm
     res = _exec(_script(workspace, root, second, src=CANON, aliases=(SRC,)))
     assert res.returncode == EXIT_FOREIGN_MARKER
     assert "/elsewhere" in res.stderr
-    assert _head(root / "wt1") == first
+    assert _head(root / "wt1" / "meta-avocado") == first
 
 
 def test_old_style_pending_record_is_accepted_via_alias(workspace: Path, tmp_path: Path):
@@ -858,3 +859,21 @@ def test_hook_children_do_not_inherit_the_locks(workspace: Path, tmp_path: Path)
         assert ran.exists()
     finally:
         _kill_pids(pids)
+
+
+def test_checkout_directory_is_named_meta_avocado(workspace: Path, tmp_path: Path):
+    root = tmp_path / "wts"
+    assert _run(workspace, root, _head(workspace / "meta-avocado")).returncode == 0
+    assert delivered_path(str(root), "wt1") == str(root / "wt1" / "meta-avocado")
+    assert (root / "wt1" / "meta-avocado" / ".git").exists()
+
+
+def test_worktree_from_older_layout_is_refused_not_nested(workspace: Path, tmp_path: Path):
+    repo = workspace / "meta-avocado"
+    root = tmp_path / "wts"
+    first = _head(repo)
+    _git("-C", repo, "worktree", "add", "-q", "--detach", root / "wt1", first)
+    res = _run(workspace, root, first)
+    assert res.returncode == EXIT_NO_MARKER
+    assert "older bakar layout" in res.stderr
+    assert not (root / "wt1" / "meta-avocado").exists()

@@ -429,7 +429,7 @@ def test_remote_argv_cwd_and_env(rec: Recorder, checkout: Path, monkeypatch: pyt
     )
     assert rc == 0
     script = rec.remote_script
-    assert "cd /srv/wt/feature-x" in script
+    assert "cd /srv/wt/feature-x/meta-avocado" in script
     assert "BAKAR_REPO_POLICY=reuse" in script
     assert "BAKAR_WORKTREE_BUILD_DIR=b-{worktree}-{stem}" in script
     assert "BAKAR_FOO=bar" in script
@@ -466,8 +466,8 @@ def test_plan_printed_without_prompt(rec: Recorder, checkout: Path, capsys: pyte
     err = " ".join(capsys.readouterr().err.split())
     root = f"{WORKSPACE}/.bakar/worktrees"
     assert "dispatch plan" in err
-    assert f"{root}/feature-x" in err
-    assert f"{WORKSPACE}/meta-avocado/.git/worktrees/feature-x" in err
+    assert f"{root}/feature-x/meta-avocado" in err
+    assert f"{WORKSPACE}/meta-avocado/.git/worktrees" in err
     assert "bakar-delivered.json" in err
     assert f"bookkeeping files in {root} (created if missing)" in err
     assert ".feature-x.lock, .feature-x.pending, .feature-x.build.lock" in err

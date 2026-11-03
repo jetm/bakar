@@ -4,7 +4,7 @@ The general ``--on`` path mirrors a whole workspace with rsync. A meta-avocado
 build does not: the remote host already holds a workspace for the build's
 release, so only the meta-avocado checkout's state travels - as a commit pushed
 to ``refs/bakar/<name>/<commit12>`` of the remote clone and checked out as a
-linked worktree at ``<worktree_root>/<name>``. The remote build then runs from
+linked worktree at ``<worktree_root>/<name>/meta-avocado``. The remote build then runs from
 that worktree with ``BAKAR_REPO_POLICY=reuse``, so the shared side checkouts in
 the workspace are classified and reused rather than moved.
 
@@ -330,13 +330,13 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
     side_repos = [st for st in states if st.state == "side" and st.blocking is None]
 
     root = worktree_root if worktree_root is not None else workspace / ".bakar" / "worktrees"
-    target = root / name
+    target = root / name / layer_delivery_remote.CHECKOUT_DIRNAME
     remote_repo = f"{workspace}/meta-avocado"
     plan = rd.DispatchPlan(
         workspace=f"{workspace} ({request.workspace_source or 'release routing'})",
         writes=[
             f"worktree {target} (created, or moved to the delivered commit), with its git admin directory "
-            f"{remote_repo}/.git/worktrees/{name} holding the delivery marker "
+            f"an entry under {remote_repo}/.git/worktrees holding the delivery marker "
             f"{layer_delivery_remote.MARKER_FILENAME}",
             f"bookkeeping files in {root} (created if missing): .{name}.lock, .{name}.pending, .{name}.build.lock",
             f"ref {ref_name} in {remote_repo}",

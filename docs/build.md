@@ -718,7 +718,7 @@ Every check runs before the first remote write:
 
    ```text
    dispatch plan -> pc3
-     + worktree <workspace>/.bakar/worktrees/<name> (created, or moved to the delivered commit)
+     + worktree <workspace>/.bakar/worktrees/<name>/meta-avocado (created, or moved to the delivered commit)
      + ref refs/bakar/<name>/<commit12> in <workspace>/meta-avocado
      + build directory <workspace>/build-<stem>-<name>
      nothing is deleted on the host
@@ -738,8 +738,9 @@ Every check runs before the first remote write:
    stay off, so a push from a shallow checkout whose boundary commit the host
    lacks is rejected, and bakar prints the `git -C <workspace>/meta-avocado
    fetch` to run on the host before retrying.
-8. **Delivered worktree** - a remote script takes a per-name lock on
-   `<worktree_root>/.<name>.lock`. When `<worktree_root>/<name>` does not exist
+8. **Delivered worktree** - the checkout directory is always named `meta-avocado`,
+   because the layers' `BBMASK` paths assume it. A remote script takes a per-name lock on
+   `<worktree_root>/.<name>.lock`. When `<worktree_root>/<name>/meta-avocado` does not exist
    it first writes the marker text to `<worktree_root>/.<name>.pending`, runs
    `git worktree add --detach` for the commit and writes the marker
    `bakar-delivered.json` (source host, source path, name, commit, snapshot
@@ -990,7 +991,7 @@ release workspace's own kas file.
 | `BAKAR_REPO_POLICY='x' is not a repository policy` | the variable holds a value other than `kas` or `reuse`; the build and the doctor refuse it rather than fall back to `kas` | unset it, or set `kas` or `reuse` |
 | `git push failed (exit N); remote build not started.` | git's own message is printed above it | act on git's message |
 | `could not place the worktree <path> on <host>: another dispatch of the same name holds the delivery lock` | a dispatch of the same name is still delivering (script exit 3) | wait for it |
-| `...: the delivery path exists but carries no readable bakar marker` | bakar did not create `<worktree_root>/<name>` (script exit 4) | move that directory aside by hand, or dispatch from a worktree with another name |
+| `...: the delivery path exists but carries no readable bakar marker` | bakar did not create `<worktree_root>/<name>/meta-avocado`, or a worktree from before the checkout directory was fixed sits at `<worktree_root>/<name>` (script exit 4) | move that directory aside by hand, or dispatch from a worktree with another name |
 | `...: the delivered worktree belongs to another host or checkout` | the marker names another dispatching host or checkout path (script exit 5) | dispatch under another name, or remove that worktree by hand |
 | `...: the delivered worktree has uncommitted changes` | the delivered tree was edited on the remote; the changed paths are listed (script exit 6) | inspect and clean it by hand; bakar never discards changes |
 | `--clean cannot be combined with --on` | `--clean` would delete a build directory on the remote (exit 2) | build with `--on`, or run `bakar build --clean` on that host |
@@ -1022,7 +1023,7 @@ git -C "$ws/meta-avocado" for-each-ref refs/bakar/
 ls "$ws/.bakar/worktrees" "$ws/.bakar/pins"
 
 # A delivered worktree (git refuses if it has changes) and its lock file
-git -C "$ws/meta-avocado" worktree remove "$ws/.bakar/worktrees/$name"
+git -C "$ws/meta-avocado" worktree remove "$ws/.bakar/worktrees/$name/meta-avocado" && rmdir "$ws/.bakar/worktrees/$name"
 rm "$ws/.bakar/worktrees/.$name.lock"
 
 # Its refs, one per delivered commit
