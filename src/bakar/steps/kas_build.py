@@ -66,7 +66,14 @@ from bakar import (
     stop_container,
     task_timings,
 )
-from bakar.bsp_detect import meta_avocado_checkout, meta_avocado_pin_text, meta_avocado_wrapper_text
+from bakar.bsp_detect import (
+    LayerRepo,
+    layer_pin_text,
+    layer_wrapper_text,
+    meta_avocado_checkout,
+    meta_avocado_pin_text,
+    meta_avocado_wrapper_text,
+)
 from bakar.buildtools import BUILDTOOLS_DIR_ENV, detect_buildtools, resolve_oe_core_release_key
 from bakar.config import GENERATED_BUILD_YAML, BuildConfig, _overlay_dir
 from bakar.fmt import neutralize
@@ -275,6 +282,27 @@ def _write_meta_avocado_pin(cfg: BuildConfig, kas_yaml: Path) -> Path | None:
     if checkout is None:
         return None
     (cfg.bsp_root / _PIN_YAML).write_text(meta_avocado_pin_text(checkout), encoding="utf-8")
+    return Path(_PIN_YAML)
+
+
+def _write_layer_wrapper(cfg: BuildConfig, layer: LayerRepo, dependency_path: Path) -> Path:
+    """Write the wrapper ``kas dump`` starts from for a layer repository entry.
+
+    ``dependency_path`` is the meta-avocado directory the classification chose
+    (the workspace clone when frozen or missing, the side checkout when side).
+    Returns ``bsp_root/avocado-wrapper.yml``.
+    """
+    wrapper = cfg.bsp_root / "avocado-wrapper.yml"
+    wrapper.write_text(layer_wrapper_text(layer, dependency_path), encoding="utf-8")
+    return wrapper
+
+
+def _write_layer_pin(cfg: BuildConfig, layer: LayerRepo) -> Path:
+    """Write the file merged after every overlay that keeps the layer repository on its checkout.
+
+    Returns its path relative to ``cfg.bsp_root``.
+    """
+    (cfg.bsp_root / _PIN_YAML).write_text(layer_pin_text(layer), encoding="utf-8")
     return Path(_PIN_YAML)
 
 

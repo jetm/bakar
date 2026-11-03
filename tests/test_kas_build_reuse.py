@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from bakar.bsp_detect import LayerRepo
 from bakar.config import BuildConfig, _overlay_dir
 from bakar.release_workspace import ReleaseRoutingError
 from bakar.steps import kas_build
@@ -706,3 +707,60 @@ def test_foreign_link_refuses_build(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert str(link) in str(exc.value)
     assert link.resolve() == foreign.resolve()
     assert not (cfg.bsp_root / "avocado-reuse.yml").exists()
+
+
+# ---------------------------------------------------------------------------
+# layer repository wrapper and pin
+# ---------------------------------------------------------------------------
+
+
+def _layer_setup(tmp_path: Path) -> tuple[BuildConfig, LayerRepo, Path]:
+    checkout = tmp_path / "layers" / "meta-zedx"
+    entry = _kas_file(checkout)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    cfg = _cfg(ws, entry)
+    layer = LayerRepo(
+        checkout=checkout,
+        name="meta-zedx",
+        dependency={"url": "https://example.invalid/meta-avocado.git", "branch": "main"},
+        is_linked_worktree=False,
+        checkout_name="meta-zedx",
+        branch="main",
+        entry=entry.resolve(),
+    )
+    return cfg, layer, ws / "meta-avocado"
+
+
+@pytest.mark.parametrize("dep_name", ["workspace", "side"])
+def test_layer_wrapper_declares_both_repos_by_path(tmp_path: Path, dep_name: str) -> None:
+    cfg, layer, workspace_clone = _layer_setup(tmp_path)
+    dependency = workspace_clone if dep_name == "workspace" else tmp_path / "side" / "meta-avocado"
+
+    wrapper = kas_build._write_layer_wrapper(cfg, layer, dependency)
+
+    assert wrapper == cfg.bsp_root / "avocado-wrapper.yml"
+    data = yaml.safe_load(wrapper.read_text(encoding="utf-8"))
+    assert data["header"]["includes"] == [{"repo": "meta-zedx", "file": "kas/machine/m.yml"}]
+    assert data["repos"]["meta-zedx"] == {"path": str(layer.checkout.resolve())}
+    assert "layers" not in data["repos"]["meta-zedx"]
+    assert data["repos"]["meta-avocado"]["path"] == str(dependency.resolve())
+
+
+def test_layer_pin_redeclares_layer_repo_by_absolute_path_only(tmp_path: Path) -> None:
+    cfg, layer, _dep = _layer_setup(tmp_path)
+
+    rel = kas_build._write_layer_pin(cfg, layer)
+
+    assert rel == Path("avocado-pin.yml")
+    data = yaml.safe_load((cfg.bsp_root / rel).read_text(encoding="utf-8"))
+    assert data == {"header": {"version": 16}, "repos": {"meta-zedx": {"path": str(layer.checkout.resolve())}}}
+
+
+def test_meta_avocado_pin_stays_byte_identical(tmp_path: Path) -> None:
+    cfg, kas_yaml, _overlay, checkout = _outside_setup(tmp_path)
+
+    kas_build._write_meta_avocado_pin(cfg, kas_yaml)
+
+    expected = f'header:\n  version: 16\nrepos:\n  meta-avocado:\n    path: "{checkout.resolve()}"\n'
+    assert (cfg.bsp_root / "avocado-pin.yml").read_text(encoding="utf-8") == expected
