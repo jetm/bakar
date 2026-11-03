@@ -291,3 +291,101 @@ def test_unknown_repo_policy_is_ignored_for_a_plain_kas_file(
     else:
         assert result.status is Status.SKIP
         assert rec.calls == []
+
+
+_LAYER_ENTRY = (
+    "header:\n  version: 16\n"
+    "repos:\n"
+    "  zedx-layer:\n"
+    "  meta-avocado:\n"
+    "    url: https://example.invalid/meta-avocado.git\n"
+    "    branch: wrynose\n"
+    "    commit: " + "a" * 40 + "\n"
+    "machine: qemux86-64\n"
+)
+
+
+@pytest.fixture
+def layer_entry(tmp_path: Path) -> tuple[Path, Path]:
+    """A workspace plus a layer-repository checkout holding a layer entry."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    checkout = tmp_path / "layers" / "zedx-layer"
+    (checkout / ".git").mkdir(parents=True)
+    entry = checkout / "kas" / "zedx.yml"
+    entry.parent.mkdir()
+    entry.write_text(_LAYER_ENTRY)
+    return ws, entry
+
+
+def test_layer_entry_is_read_through_the_layer_reader_not_kas_dump(
+    monkeypatch: pytest.MonkeyPatch, layer_entry: tuple[Path, Path]
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    ws, entry = layer_entry
+    rec = _Recorder()
+    _install(monkeypatch, rec)
+    seen: dict[str, Any] = {}
+
+    def fake_reader(layer: Any, clone: Path, **kwargs: Any) -> dict:
+        seen["layer"] = layer
+        seen["clone"] = clone
+        return {}
+
+    monkeypatch.setattr("bakar.steps.kas_pins.read_merged_config_layer", fake_reader)
+
+    result = check_kas_yaml_syntax(_cfg(ws, entry))
+
+    assert result.status is Status.PASS
+    assert [c for c in rec.calls if c["argv"][0] == "kas"] == []
+    assert seen["clone"] == ws / "meta-avocado"
+    assert seen["layer"].name == "zedx-layer"
+    assert str(entry) in result.message
+
+
+def test_layer_entry_parse_error_fails_naming_the_file_and_first_error_line(
+    monkeypatch: pytest.MonkeyPatch, layer_entry: tuple[Path, Path]
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    from bakar.release_workspace import ReleaseRoutingError
+
+    ws, entry = layer_entry
+    rec = _Recorder()
+    _install(monkeypatch, rec)
+
+    def failing_reader(layer: Any, clone: Path, **kwargs: Any) -> dict:
+        raise ReleaseRoutingError(f"{entry}: ERROR - could not parse the header\nsecond line")
+
+    monkeypatch.setattr("bakar.steps.kas_pins.read_merged_config_layer", failing_reader)
+
+    result = check_kas_yaml_syntax(_cfg(ws, entry))
+
+    assert result.status is Status.FAIL
+    assert result.severity is Severity.BLOCK
+    assert str(entry) in result.message
+    assert "could not parse the header" in result.message
+    assert [c for c in rec.calls if c["argv"][0] == "kas"] == []
+
+
+@pytest.mark.parametrize("policy", ["kas", None])
+def test_layer_entry_under_the_kas_policy_skips_the_layer_reader(
+    monkeypatch: pytest.MonkeyPatch, layer_entry: tuple[Path, Path], policy: str | None
+) -> None:
+    # A fresh or private workspace has no meta-avocado clone, which the layer
+    # reader needs; under the kas policy the check must not demand one.
+    if policy is None:
+        monkeypatch.delenv("BAKAR_REPO_POLICY", raising=False)
+    else:
+        monkeypatch.setenv("BAKAR_REPO_POLICY", policy)
+    ws, entry = layer_entry
+    rec = _Recorder()
+    _install(monkeypatch, rec)
+
+    def failing_reader(layer: Any, clone: Path, **kwargs: Any) -> dict:
+        raise AssertionError("the layer reader ran under the kas policy")
+
+    monkeypatch.setattr("bakar.steps.kas_pins.read_merged_config_layer", failing_reader)
+
+    result = check_kas_yaml_syntax(_cfg(ws, entry))
+
+    assert result.status is not Status.FAIL, result.message

@@ -57,7 +57,7 @@ from bakar.buildtools import (
     resolve_buildtools_dir,  # noqa: F401
     resolve_oe_core_release_key,
 )
-from bakar.config import BuildConfig
+from bakar.config import BuildConfig, layer_reuse_applies
 
 # Only the names the staying ``check_uninative_leak`` reads as bare names.
 # ``_read_elf`` and ``_HOST_LIB_DIRS`` are deliberately absent: a leak-scan stub
@@ -2523,6 +2523,22 @@ def check_kas_yaml_syntax(cfg: BuildConfig) -> CheckResult:
             Severity.BLOCK,
             "kas binary not on host PATH; container-mode workspace, deferring to in-container parse",
         )
+    # A layer entry lives in a layer repository, not in a meta-avocado checkout.
+    # A plain `kas dump` with the shared workspace as work directory would move
+    # its clean repositories to their pins, so the entry is read through the
+    # read-only layer reader against the workspace's meta-avocado clone.
+    from bakar import bsp_detect
+    from bakar.steps.kas_pins import read_merged_config_layer
+
+    try:
+        layer = bsp_detect.layer_repo_of(kas_yaml) if layer_reuse_applies(kas_yaml) else None
+        if layer is not None:
+            read_merged_config_layer(layer, cfg.workspace / "meta-avocado")
+    except ReleaseRoutingError as exc:
+        return _fail(name, Severity.BLOCK, str(exc), fix_hint=f"Edit {kas_yaml} and re-run.")
+    if layer is not None:
+        return _ok(name, Severity.BLOCK, f"{kas_yaml} parses cleanly")
+
     # A kas file whose meta-avocado checkout is not the workspace's own (a linked
     # worktree, or a main checkout outside a routed workspace) is validated
     # through the same wrapper the build uses, so its includes resolve against
