@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from bakar.release_workspace import is_valid_delivered_name, sanitize_delivered_name
 
 if TYPE_CHECKING:
-    from bakar.bsp_detect import LinkedWorktree
+    from bakar.bsp_detect import LayerRepo, LinkedWorktree
 
 _RECEIVE_PACK = "git -c receive.autogc=false receive-pack"
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
@@ -199,6 +199,25 @@ def delivered_name(checkout: Path, worktree: LinkedWorktree | None) -> str:
         # Every detached checkout would share one remote worktree named HEAD.
         raise DeliveryError(f"{checkout} has a detached HEAD; check out a branch or build from a linked worktree")
     return sanitize_delivered_name(branch)
+
+
+def layer_delivery_name(layer: LayerRepo) -> str:
+    """Name a layer repository's delivery from its recognised checkout.
+
+    A linked worktree is named after its directory, a main checkout after its
+    branch. A main checkout with no branch is detached and refused, because
+    every detached checkout would otherwise share one remote worktree.
+    """
+    if layer.is_linked_worktree:
+        return sanitize_delivered_name(layer.checkout_name)
+    if layer.branch is None:
+        raise DeliveryError(f"{layer.checkout} has a detached HEAD; check out a branch or build from a linked worktree")
+    return sanitize_delivered_name(layer.branch)
+
+
+def layer_push_argv(layer: LayerRepo, host: str, bare_repo: str, commit: str) -> list[str]:
+    """Build the non-forced push of ``commit`` to the host's bare repository for ``layer``."""
+    return push_argv(layer.checkout, host, bare_repo, commit, layer_delivery_name(layer))
 
 
 def is_shallow(checkout: Path) -> bool:

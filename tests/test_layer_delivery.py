@@ -8,12 +8,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from bakar.bsp_detect import LinkedWorktree
+from bakar.bsp_detect import LayerRepo, LinkedWorktree
 from bakar.release_workspace import ReleaseRoutingError
 from bakar.steps.layer_delivery import (
     DeliveryError,
     SnapshotPreview,
     delivered_name,
+    layer_delivery_name,
+    layer_push_argv,
     push_argv,
     snapshot_commit,
     snapshot_preview,
@@ -353,3 +355,71 @@ def test_snapshot_commit_unchanged_for_clean_checkout(tmp_path: Path) -> None:
     head = _make_repo(repo)
     assert snapshot_preview(repo, cap_mb=1) == SnapshotPreview(head=head, dirty=False, untracked=[])
     assert snapshot_commit(repo, cap_mb=1) == (head, False)
+
+
+def _layer(repo: Path, **overrides: object) -> LayerRepo:
+    fields: dict[str, object] = {
+        "checkout": repo,
+        "name": repo.name,
+        "dependency": {},
+        "is_linked_worktree": False,
+        "checkout_name": repo.name,
+        "branch": "main",
+    }
+    fields.update(overrides)
+    return LayerRepo(**fields)  # type: ignore[arg-type]
+
+
+def test_layer_delivery_name_main_checkout_uses_branch(tmp_path: Path) -> None:
+    repo = tmp_path / "meta-other"
+    _make_repo(repo)
+    assert layer_delivery_name(_layer(repo, branch="user/fix")) == "user-fix"
+
+
+def test_layer_delivery_name_linked_worktree_uses_checkout_name(tmp_path: Path) -> None:
+    repo = tmp_path / "meta-other"
+    _make_repo(repo)
+    layer = _layer(repo, is_linked_worktree=True, checkout_name="my feature", branch="whatever")
+    assert layer_delivery_name(layer) == "my-feature"
+
+
+def test_layer_delivery_name_refuses_detached_main_checkout(tmp_path: Path) -> None:
+    repo = tmp_path / "meta-other"
+    _make_repo(repo)
+    with pytest.raises(DeliveryError, match="detached HEAD"):
+        layer_delivery_name(_layer(repo, branch=None))
+
+
+def test_layer_snapshot_works_on_non_meta_avocado_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "meta-other"
+    head = _make_repo(repo)
+    _dirty(repo)
+    index_before = _git(repo, "diff", "--cached", "--name-only")
+    branch_before = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    commit, snapshot = snapshot_commit(repo, cap_mb=1)
+    assert snapshot is True
+    assert commit != head
+    assert _git(repo, "rev-parse", f"{commit}^") == head
+    assert _git(repo, "show", f"{commit}:new.txt") == "untracked"
+    assert _git(repo, "diff", "--cached", "--name-only") == index_before
+    assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD") == branch_before
+    assert _git(repo, "stash", "list") == ""
+
+
+def test_layer_snapshot_refuses_key_file_in_non_meta_avocado_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "meta-other"
+    _make_repo(repo)
+    (repo / "server.pem").write_text("secret\n")
+    with pytest.raises(DeliveryError, match="key material"):
+        snapshot_commit(repo, cap_mb=1)
+
+
+def test_layer_push_argv_targets_bare_repo_without_force(tmp_path: Path) -> None:
+    repo = tmp_path / "meta-other"
+    _make_repo(repo)
+    commit = "b" * 40
+    argv = layer_push_argv(_layer(repo, branch="feat"), "pc2", "/ws/layers/meta-other.git", commit)
+    assert argv[:3] == ["git", "-C", str(repo)]
+    assert "ssh://pc2/ws/layers/meta-other.git" in argv
+    assert argv[-1] == f"{commit}:refs/bakar/feat/{commit[:12]}"
+    assert not any(a in ("-f", "--force") or a.startswith(("--force", "+")) for a in argv)
