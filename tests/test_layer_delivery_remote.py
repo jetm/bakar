@@ -24,6 +24,7 @@ from bakar.steps.layer_delivery_remote import (
     EXIT_MOVED,
     EXIT_NO_BUILD_LOCK,
     EXIT_NO_MARKER,
+    EXIT_NOT_BARE,
     MARKER_FILENAME,
     DeliveryTarget,
     MarkerFields,
@@ -31,6 +32,7 @@ from bakar.steps.layer_delivery_remote import (
     build_lock_path,
     delivered_path,
     describe_exit,
+    ensure_bare_repo_script,
     ensure_worktree_script,
     marker_json,
 )
@@ -877,3 +879,163 @@ def test_worktree_from_older_layout_is_refused_not_nested(workspace: Path, tmp_p
     assert res.returncode == EXIT_NO_MARKER
     assert "older bakar layout" in res.stderr
     assert not (root / "wt1" / "meta-avocado").exists()
+
+
+# --- layer repositories delivered into a bakar-owned bare repository ---------
+
+_META_ADD = 'git -C "$workspace/meta-avocado" worktree add'
+_LAYER_ADD = 'git -C "$repo_git" worktree add'
+
+
+def _bare_source(tmp_path: Path, label: str) -> tuple[Path, str]:
+    """A source checkout whose one commit is pushed to a fresh bare repository; return (bare, commit)."""
+    src = tmp_path / f"src-{label}"
+    src.mkdir()
+    _git("init", "-q", "-b", "main", src)
+    commit = _commit(src, f"{label}.txt", f"{label}\n")
+    bare = tmp_path / "layers" / f"{label}.git"
+    res = _exec(ensure_bare_repo_script(str(bare)))
+    assert res.returncode == 0, res.stderr
+    _git("-C", src, "push", "-q", str(bare), f"{commit}:refs/bakar/delivered/{commit}")
+    return bare, commit
+
+
+def _bare_run(tmp_path: Path, bare: Path, layer: str, commit: str, *, host: str = HOST):
+    script = ensure_worktree_script(
+        DeliveryTarget(
+            workspace=str(tmp_path / "ws"),
+            worktree_root=str(tmp_path / "worktrees" / layer),
+            repo_git=str(bare),
+            checkout_dirname=layer,
+        ),
+        MarkerFields(source_host=host, source_path=SRC, name="main", commit=commit, snapshot=False),
+    )
+    return _exec(script)
+
+
+def test_bare_repository_is_created_when_absent(tmp_path: Path):
+    bare = tmp_path / "a" / "b" / "layer.git"
+    res = _exec(ensure_bare_repo_script(str(bare)))
+    assert res.returncode == 0, res.stderr
+    assert _git("-C", bare, "rev-parse", "--is-bare-repository") == "true"
+
+
+def test_bare_repository_creation_leaves_an_existing_one_untouched(tmp_path: Path):
+    bare, commit = _bare_source(tmp_path, "one")
+    res = _exec(ensure_bare_repo_script(str(bare)))
+    assert res.returncode == 0, res.stderr
+    assert _git("-C", bare, "rev-parse", f"{commit}^{{commit}}") == commit
+
+
+def test_bare_repository_creation_refuses_a_path_that_is_not_one(tmp_path: Path):
+    path = tmp_path / "plain"
+    path.mkdir()
+    (path / "keep.txt").write_text("x")
+    res = _exec(ensure_bare_repo_script(str(path)))
+    assert res.returncode == EXIT_NOT_BARE
+    assert (path / "keep.txt").read_text() == "x"
+
+
+def test_bare_first_delivery_adds_a_detached_worktree_and_marker(tmp_path: Path):
+    bare, commit = _bare_source(tmp_path, "one")
+    res = _bare_run(tmp_path, bare, "one", commit)
+    assert res.returncode == 0, res.stderr
+    dest = tmp_path / "worktrees" / "one" / "main" / "one"
+    assert _head(dest) == commit
+    marker = _marker(dest)
+    assert marker["source_host"] == HOST
+    assert marker["commit"] == commit
+    assert _git("-C", dest, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+
+
+def test_bare_second_delivery_by_the_same_owner_moves_the_worktree(tmp_path: Path):
+    bare, first = _bare_source(tmp_path, "one")
+    assert _bare_run(tmp_path, bare, "one", first).returncode == 0
+    src = tmp_path / "src-one"
+    second = _commit(src, "more.txt", "more\n")
+    _git("-C", src, "push", "-q", str(bare), f"{second}:refs/bakar/delivered/{second}")
+    res = _bare_run(tmp_path, bare, "one", second)
+    assert res.returncode == 0, res.stderr
+    dest = tmp_path / "worktrees" / "one" / "main" / "one"
+    assert _head(dest) == second
+    assert _marker(dest)["commit"] == second
+    again = _bare_run(tmp_path, bare, "one", second)
+    assert again.returncode == 0
+    assert "already at" in again.stdout
+
+
+def test_bare_foreign_owner_is_refused_and_its_marker_kept(tmp_path: Path):
+    bare, commit = _bare_source(tmp_path, "one")
+    assert _bare_run(tmp_path, bare, "one", commit).returncode == 0
+    dest = tmp_path / "worktrees" / "one" / "main" / "one"
+    before = _marker(dest)
+    src = tmp_path / "src-one"
+    other = _commit(src, "other.txt", "other\n")
+    _git("-C", src, "push", "-q", str(bare), f"{other}:refs/bakar/delivered/{other}")
+    res = _bare_run(tmp_path, bare, "one", other, host="elsewhere")
+    assert res.returncode == EXIT_FOREIGN_MARKER
+    assert _head(dest) == commit
+    assert _marker(dest) == before
+
+
+def test_bare_layers_delivered_under_the_same_name_occupy_different_worktrees(tmp_path: Path):
+    bare_a, commit_a = _bare_source(tmp_path, "alpha")
+    bare_b, commit_b = _bare_source(tmp_path, "beta")
+    assert _bare_run(tmp_path, bare_a, "alpha", commit_a).returncode == 0
+    assert _bare_run(tmp_path, bare_b, "beta", commit_b).returncode == 0
+    dest_a = tmp_path / "worktrees" / "alpha" / "main" / "alpha"
+    dest_b = tmp_path / "worktrees" / "beta" / "main" / "beta"
+    assert _head(dest_a) == commit_a
+    assert _head(dest_b) == commit_b
+    assert build_lock_path(str(tmp_path / "worktrees" / "alpha"), "main") != build_lock_path(
+        str(tmp_path / "worktrees" / "beta"), "main"
+    )
+    assert (tmp_path / "worktrees" / "alpha" / ".main.lock").exists()
+    assert (tmp_path / "worktrees" / "beta" / ".main.lock").exists()
+
+
+def test_bare_scripts_have_no_destructive_operations():
+    layer = ensure_worktree_script(
+        DeliveryTarget(workspace="/w", worktree_root="/r/layer", repo_git="/b/layer.git"),
+        MarkerFields(source_host=HOST, source_path=SRC, name="main", commit="abc", snapshot=False),
+    )
+    creator = ensure_bare_repo_script("/b/layer.git")
+    for forbidden in (*_FORBIDDEN, "force", "prune", "remove"):
+        assert forbidden not in layer, forbidden
+        assert forbidden not in creator, forbidden
+
+
+def test_bare_target_changes_only_the_repository_the_worktree_is_added_to():
+    fields = MarkerFields(source_host=HOST, source_path=SRC, name="wt1", commit="abc", snapshot=False)
+    meta = ensure_worktree_script(DeliveryTarget(workspace="/w", worktree_root="/r"), fields)
+    assert _META_ADD in meta
+    assert "repo_git" not in meta
+    layer = ensure_worktree_script(DeliveryTarget(workspace="/w", worktree_root="/r", repo_git="/b/x.git"), fields)
+    assert layer.replace(_LAYER_ADD, _META_ADD).replace("repo_git=/b/x.git\n", "") == meta
+
+
+def test_bare_layer_worktree_from_older_layout_is_refused_not_nested(tmp_path: Path):
+    bare, commit = _bare_source(tmp_path, "one")
+    root = tmp_path / "worktrees" / "one"
+    _git("-C", bare, "worktree", "add", "-q", "--detach", root / "main", commit)
+    res = _bare_run(tmp_path, bare, "one", commit)
+    assert res.returncode == EXIT_NO_MARKER
+    assert "older bakar layout" in res.stderr
+    assert not (root / "main" / "one").exists()
+
+
+def test_checkout_dirname_names_the_layer_worktree_and_the_guard_checks_the_same_path():
+    assert delivered_path("/r", "wt1", "meta-foo") == "/r/wt1/meta-foo"
+    assert delivered_path("/r", "wt1") == "/r/wt1/meta-avocado"
+    guard = build_guard(worktree_root="/r", name="wt1", commit="abc", checkout_dirname="meta-foo")
+    assert "/r/wt1/meta-foo" in guard
+    assert "meta-avocado" not in guard
+
+
+@pytest.mark.parametrize("dirname", ["", "a b", "x/y", "..", "a;b"])
+def test_an_unusable_checkout_dirname_is_refused(dirname: str):
+    with pytest.raises(ReleaseRoutingError):
+        build_guard(worktree_root="/r", name="wt1", commit="abc", checkout_dirname=dirname)
+    fields = MarkerFields(source_host=HOST, source_path=SRC, name="wt1", commit="abc", snapshot=False)
+    with pytest.raises(ReleaseRoutingError):
+        ensure_worktree_script(DeliveryTarget(workspace="/w", worktree_root="/r", checkout_dirname=dirname), fields)

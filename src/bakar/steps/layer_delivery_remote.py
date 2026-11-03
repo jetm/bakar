@@ -32,6 +32,8 @@ EXIT_BUILD_RUNNING = 7
 # The build guard's own statuses, distinct from the delivery script's.
 EXIT_MOVED = 8
 EXIT_NO_BUILD_LOCK = 9
+# Raised by the bare-repository creation script only, never by the worktree script.
+EXIT_NOT_BARE = 10
 
 _EXIT_DESCRIPTIONS = {
     EXIT_LOCKED: "another dispatch of the same name holds the delivery lock",
@@ -41,6 +43,7 @@ _EXIT_DESCRIPTIONS = {
     EXIT_BUILD_RUNNING: "a build is running in the delivered worktree's build directory",
     EXIT_MOVED: "another dispatch moved the delivered worktree after delivery",
     EXIT_NO_BUILD_LOCK: "the build lock could not be opened or taken, so the build did not start",
+    EXIT_NOT_BARE: "the layer repository path exists but is not a bare repository",
 }
 
 # Compares the marker's owner against the expected host and the JSON list of
@@ -93,15 +96,17 @@ _GUARD_SCRIPT = (
 )
 
 
-# The checkout directory is always this name: the layer's BBMASK entries match
-# `meta-avocado/<layer>/...` by path, so a worktree directory named after the
-# branch makes them miss and the build fails at parse on dangling bbappends.
+# The meta-avocado checkout directory is always this name: the layers' BBMASK
+# entries match `meta-avocado/<layer>/...` by path, so a worktree directory named
+# after the branch makes them miss and the build fails at parse on dangling
+# bbappends. A layer repository's worktree takes its layer name instead, because
+# the host recognises a meta-avocado checkout by a directory of this name.
 CHECKOUT_DIRNAME = "meta-avocado"
 
 
-def delivered_path(worktree_root: str, name: str) -> str:
-    """Return where the delivered checkout lives: ``<root>/<name>/meta-avocado``."""
-    return f"{worktree_root}/{name}/{CHECKOUT_DIRNAME}"
+def delivered_path(worktree_root: str, name: str, checkout_dirname: str = CHECKOUT_DIRNAME) -> str:
+    """Return where the delivered checkout lives: ``<root>/<name>/<checkout_dirname>``."""
+    return f"{worktree_root}/{name}/{checkout_dirname}"
 
 
 def build_lock_path(worktree_root: str, name: str) -> str:
@@ -109,7 +114,7 @@ def build_lock_path(worktree_root: str, name: str) -> str:
     return f"{worktree_root}/.{name}.build.lock"
 
 
-def build_guard(*, worktree_root: str, name: str, commit: str) -> str:
+def build_guard(*, worktree_root: str, name: str, commit: str, checkout_dirname: str = CHECKOUT_DIRNAME) -> str:
     """Return the shell-quoted command prefix a delivered build runs under.
 
     It holds :func:`build_lock_path` shared for the whole build, which the
@@ -122,7 +127,9 @@ def build_guard(*, worktree_root: str, name: str, commit: str) -> str:
     """
     if not is_valid_delivered_name(name):
         raise ReleaseRoutingError(f"delivered name {name!r} must match [A-Za-z0-9._-]+")
-    dest = delivered_path(worktree_root, name)
+    if not is_valid_delivered_name(checkout_dirname):
+        raise ReleaseRoutingError(f"checkout directory {checkout_dirname!r} must match [A-Za-z0-9._-]+")
+    dest = delivered_path(worktree_root, name, checkout_dirname)
     return shlex.join(["bash", "-c", _GUARD_SCRIPT, build_lock_path(worktree_root, name), dest, commit])
 
 
@@ -139,10 +146,21 @@ class MarkerFields:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class DeliveryTarget:
-    """Where on the host a delivered worktree is placed."""
+    """Where on the host a delivered worktree is placed.
+
+    ``repo_git`` is the repository the worktree is added to. Unset, it is the
+    workspace's ``meta-avocado`` clone; a layer repository sets it to its bakar-owned
+    bare repository and passes ``<worktree_root>/<layer name>`` as ``worktree_root``,
+    so each layer has its own worktrees and its own lock files.
+    ``checkout_dirname`` is the worktree's directory below ``<worktree_root>/<name>``;
+    a layer repository sets its layer name, so the host never sees a layer in a
+    directory called ``meta-avocado``.
+    """
 
     workspace: str
     worktree_root: str
+    repo_git: str | None = None
+    checkout_dirname: str = CHECKOUT_DIRNAME
 
 
 def marker_json(fields: MarkerFields, *, delivered_at: str | None = None) -> str:
@@ -167,13 +185,36 @@ def describe_exit(code: int) -> str:
     return _EXIT_DESCRIPTIONS.get(code, f"the delivery script failed with exit status {code}")
 
 
+def ensure_bare_repo_script(repo_git: str) -> str:
+    """Return the bash script that creates the bare repository ``repo_git`` when absent.
+
+    An existing bare repository is left as it is. A path that exists and is not a
+    bare repository is refused with :data:`EXIT_NOT_BARE` and left untouched.
+    """
+    q = shlex.quote
+    return f"""\
+set -euo pipefail
+repo={q(repo_git)}
+if [ ! -e "$repo" ]; then
+    mkdir -p -- "$(dirname -- "$repo")"
+    git init -q --bare -- "$repo"
+    echo "bakar: created bare repository $repo"
+    exit 0
+fi
+if [ "$(git -C "$repo" rev-parse --is-bare-repository 2>/dev/null)" != true ]; then
+    echo "bakar: $repo exists but is not a bare repository" >&2
+    exit {EXIT_NOT_BARE}
+fi
+"""
+
+
 def ensure_worktree_script(
     target: DeliveryTarget,
     fields: MarkerFields,
     *,
     source_path_aliases: tuple[str, ...] = (),
 ) -> str:
-    """Return the bash script that places ``fields.commit`` at ``<worktree_root>/<name>/meta-avocado``.
+    """Return the bash script that places ``fields.commit`` at ``<worktree_root>/<name>/<checkout_dirname>``.
 
     ``fields.source_path`` is written into new markers; a marker naming it or any
     of ``source_path_aliases`` (other spellings of the same checkout, such as one
@@ -189,19 +230,25 @@ def ensure_worktree_script(
         raise ReleaseRoutingError(
             f"delivered name {name!r} must match [A-Za-z0-9._-]+",
         )
+    if not is_valid_delivered_name(target.checkout_dirname):
+        raise ReleaseRoutingError(f"checkout directory {target.checkout_dirname!r} must match [A-Za-z0-9._-]+")
     q = shlex.quote
     marker = marker_json(fields)
     accepted_paths = json.dumps([source_path, *(p for p in source_path_aliases if p != source_path)])
+    if target.repo_git is None:
+        repo_line, repo_ref = "", '"$workspace/meta-avocado"'
+    else:
+        repo_line, repo_ref = f"repo_git={q(target.repo_git)}\n", '"$repo_git"'
     return f"""\
 set -euo pipefail
 workspace={q(workspace)}
-root={q(worktree_root)}
+{repo_line}root={q(worktree_root)}
 name={q(name)}
 commit={q(commit)}
 src_host={q(source_host)}
 src_paths={q(accepted_paths)}
 marker={q(marker)}
-dest="$root/$name/{CHECKOUT_DIRNAME}"
+dest="$root/$name/{target.checkout_dirname}"
 pending="$root/.$name.pending"
 build_lock_file={q(build_lock_path(worktree_root, name))}
 
@@ -240,7 +287,7 @@ if [ ! -e "$dest" ]; then
     printf '%s' "$marker" > "$pending"
     # A record left behind by a failed add would vouch for a worktree someone
     # later adds by hand at this path and commit.
-    git -C "$workspace/meta-avocado" worktree add -q --detach "$dest" "$commit" 9>&- || {{
+    git -C {repo_ref} worktree add -q --detach "$dest" "$commit" 9>&- || {{
         rc=$?
         : > "$pending"
         exit "$rc"
