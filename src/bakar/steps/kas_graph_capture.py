@@ -157,6 +157,11 @@ def _resolve_capture_target(ctx: KasBuildContext, log: RunLogger) -> str | None:
     overlays, and a layered configuration's effective ``target:`` can come from
     any file in the stack. Reading the top-level YAML directly would get the
     common case right and the layered one silently wrong.
+
+    The dump is assembled by ``run_kas_subcommand`` through the same
+    ``_build_kas_arg`` the build uses, so a layer entry in a release workspace
+    re-dumps with the reuse overlay and pin in its file list, never as a bare
+    dump against the shared workspace.
     """
     # Deferred: kas_build defines run_kas_subcommand and KasSubcommand and
     # imports this module back, so a module-level import would be a cycle.

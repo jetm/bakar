@@ -12,7 +12,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -20,7 +20,7 @@ import yaml
 from bakar.bsp_detect import LayerRepo
 from bakar.config import BuildConfig, _overlay_dir
 from bakar.release_workspace import ReleaseRoutingError
-from bakar.steps import kas_build
+from bakar.steps import kas_build, kas_graph_capture
 from bakar.steps.kas_build import _build_kas_arg, _run_kas_dump, _write_meta_avocado_wrapper
 from bakar.steps.repo_reuse import RepoFacts, RepoState
 
@@ -764,3 +764,278 @@ def test_meta_avocado_pin_stays_byte_identical(tmp_path: Path) -> None:
 
     expected = f'header:\n  version: 16\nrepos:\n  meta-avocado:\n    path: "{checkout.resolve()}"\n'
     assert (cfg.bsp_root / "avocado-pin.yml").read_text(encoding="utf-8") == expected
+
+
+# ---------------------------------------------------------------------------
+# layer repository entry under the reuse policy
+# ---------------------------------------------------------------------------
+
+LAYER_MERGED = {"repos": {"meta-vendor": {"url": "https://example.invalid/vendor.git", "commit": PIN}}}
+
+
+def _layer_build_setup(tmp_path: Path) -> tuple[BuildConfig, LayerRepo, Path]:
+    cfg, layer, _dep = _layer_setup(tmp_path)
+    overlay = tmp_path / "overlay.yml"
+    overlay.write_text("header:\n  version: 16\n", encoding="utf-8")
+    return cfg, layer, overlay
+
+
+def _layer_states(ws: Path, *, dependency_side: Path | None = None) -> list[RepoState]:
+    dependency = (
+        RepoState("meta-avocado", ws / "meta-avocado", PIN, "frozen")
+        if dependency_side is None
+        else RepoState("meta-avocado", ws / "meta-avocado", PIN, "side", dependency_side, False)
+    )
+    return [dependency, RepoState("meta-vendor", ws / "meta-vendor", PIN, "frozen")]
+
+
+def _build_layer(cfg: BuildConfig, layer: LayerRepo, overlay: Path, states: list[RepoState]) -> list[str]:
+    """Run ``_build_kas_arg`` for a layer entry with every kas and git call mocked; return the dump argv."""
+    with (
+        patch.object(kas_build, "layer_repo_of", return_value=layer),
+        patch.object(kas_build.kas_pins, "read_merged_config_layer", return_value=LAYER_MERGED),
+        patch.object(kas_build.repo_reuse, "classify", return_value=states),
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)) as run,
+    ):
+        _build_kas_arg(cfg, layer.entry or Path(), overlay)
+    return run.call_args.args[0]
+
+
+def test_layer_entry_dump_carries_reuse_overlay_then_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, layer, overlay = _layer_build_setup(tmp_path)
+
+    argv = _build_layer(cfg, layer, overlay, _layer_states(cfg.workspace))
+
+    assert argv[:2] == ["kas", "dump"]
+    # The build's own dump takes no skip flag: the reuse overlay protects it.
+    assert "--skip" not in argv
+    files = argv[-1].split(":")
+    assert files[0] == "avocado-wrapper.yml"
+    assert files[-2:] == ["avocado-reuse.yml", "avocado-pin.yml"]
+    overlay_data = yaml.safe_load((cfg.bsp_root / "avocado-reuse.yml").read_text(encoding="utf-8"))
+    assert overlay_data["repos"]["meta-avocado"] == {"path": "meta-avocado", "url": None}
+
+
+def test_layer_entry_is_classified_before_the_wrapper_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, layer, overlay = _layer_build_setup(tmp_path)
+    wrapper = cfg.bsp_root / "avocado-wrapper.yml"
+    seen: list[bool] = []
+
+    def read(*_a: object, **_k: object) -> dict:
+        seen.append(wrapper.exists())
+        return LAYER_MERGED
+
+    def classify(*_a: object, **_k: object) -> list[RepoState]:
+        seen.append(wrapper.exists())
+        return _layer_states(cfg.workspace)
+
+    with (
+        patch.object(kas_build, "layer_repo_of", return_value=layer),
+        patch.object(kas_build.kas_pins, "read_merged_config_layer", side_effect=read),
+        patch.object(kas_build.repo_reuse, "classify", side_effect=classify),
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)),
+    ):
+        _build_kas_arg(cfg, layer.entry or Path(), overlay)
+
+    assert seen == [False, False]
+    assert wrapper.exists()
+
+
+def test_layer_entry_classifies_the_dependency_from_its_declaration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, layer, overlay = _layer_build_setup(tmp_path)
+    layer.dependency["commit"] = PIN
+    with (
+        patch.object(kas_build, "layer_repo_of", return_value=layer),
+        patch.object(kas_build.kas_pins, "read_merged_config_layer", return_value=LAYER_MERGED) as read,
+        patch.object(kas_build.repo_reuse, "classify", return_value=_layer_states(cfg.workspace)) as classify,
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)),
+    ):
+        _build_kas_arg(cfg, layer.entry or Path(), overlay)
+
+    assert read.call_args.args[1] == cfg.workspace / "meta-avocado"
+    assert read.call_args.kwargs["wrap_parent"] == cfg.bsp_root
+    repos = classify.call_args.args[0]
+    assert repos["meta-avocado"] == {
+        "url": "https://example.invalid/meta-avocado.git",
+        "branch": "main",
+        "commit": PIN,
+        "path": "meta-avocado",
+    }
+    assert repos["meta-vendor"] == LAYER_MERGED["repos"]["meta-vendor"]
+
+
+def test_layer_entry_wrapper_names_the_side_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, layer, overlay = _layer_build_setup(tmp_path)
+    side = cfg.workspace / ".bakar" / "pins" / "meta-avocado" / PIN[:12]
+
+    _build_layer(cfg, layer, overlay, _layer_states(cfg.workspace, dependency_side=side))
+
+    wrapper = yaml.safe_load((cfg.bsp_root / "avocado-wrapper.yml").read_text(encoding="utf-8"))
+    assert wrapper["repos"]["meta-avocado"]["path"] == str(side.resolve())
+    # The build wrapper keeps the entry's url, unlike the read-only probe's.
+    assert "url" not in wrapper["repos"]["meta-avocado"]
+
+
+def test_layer_entry_wrapper_names_the_workspace_clone_when_frozen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, layer, overlay = _layer_build_setup(tmp_path)
+
+    _build_layer(cfg, layer, overlay, _layer_states(cfg.workspace))
+
+    wrapper = yaml.safe_load((cfg.bsp_root / "avocado-wrapper.yml").read_text(encoding="utf-8"))
+    assert wrapper["repos"]["meta-avocado"]["path"] == str((cfg.workspace / "meta-avocado").resolve())
+    pin = yaml.safe_load((cfg.bsp_root / "avocado-pin.yml").read_text(encoding="utf-8"))
+    assert pin["repos"] == {"meta-zedx": {"path": str(layer.checkout.resolve())}}
+
+
+@pytest.mark.parametrize(
+    "exc", [ReleaseRoutingError("commit abc of meta-avocado is not in the clone"), ReleaseRoutingError("third repo")]
+)
+def test_unclassifiable_layer_entry_refuses_before_kas_and_never_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: ReleaseRoutingError
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, layer, overlay = _layer_build_setup(tmp_path)
+
+    with (
+        patch.object(kas_build, "layer_repo_of", return_value=layer),
+        patch.object(kas_build.kas_pins, "read_merged_config_layer", side_effect=exc),
+        patch("bakar.steps.kas_build.subprocess.run") as run,
+        pytest.raises(RuntimeError, match=str(exc)),
+    ):
+        _build_kas_arg(cfg, layer.entry or Path(), overlay)
+
+    run.assert_not_called()
+    assert not (cfg.bsp_root / "avocado-wrapper.yml").exists()
+    assert not (cfg.bsp_root / "avocado-reuse.yml").exists()
+
+
+def test_blocked_layer_entry_refuses_without_writing_or_running_kas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, layer, overlay = _layer_build_setup(tmp_path)
+    blocked = [
+        RepoState("bitbake", cfg.workspace / "bitbake", PIN, "side", blocking=REASON, head=OTHER_HEAD, clean=True)
+    ]
+
+    with (
+        patch.object(kas_build, "layer_repo_of", return_value=layer),
+        patch.object(kas_build.kas_pins, "read_merged_config_layer", return_value=LAYER_MERGED),
+        patch.object(kas_build.repo_reuse, "classify", return_value=blocked),
+        patch("bakar.steps.kas_build.subprocess.run") as run,
+        pytest.raises(RuntimeError) as err,
+    ):
+        _build_kas_arg(cfg, layer.entry or Path(), overlay)
+
+    assert "bitbake" in str(err.value)
+    # bakar sync reads meta-avocado kas files only, so a layer entry's repair is by hand.
+    assert "bakar sync" not in str(err.value)
+    assert "git -C <clone> checkout <pin>" in str(err.value)
+    assert REASON in str(err.value)
+    run.assert_not_called()
+    assert not (cfg.bsp_root / "avocado-wrapper.yml").exists()
+
+
+def test_ambiguous_layer_entry_refuses_under_reuse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, layer, overlay = _layer_build_setup(tmp_path)
+
+    with (
+        patch.object(kas_build, "layer_repo_of", side_effect=ReleaseRoutingError("declares 2 repositories")),
+        patch("bakar.steps.kas_build.subprocess.run") as run,
+        pytest.raises(RuntimeError, match="declares 2 repositories"),
+    ):
+        _build_kas_arg(cfg, layer.entry or Path(), overlay)
+
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize("policy", ["kas", None])
+def test_layer_entry_without_the_reuse_policy_keeps_the_existing_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: str | None
+) -> None:
+    if policy is None:
+        monkeypatch.delenv("BAKAR_REPO_POLICY", raising=False)
+    else:
+        monkeypatch.setenv("BAKAR_REPO_POLICY", policy)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "meta-avocado").mkdir()
+    checkout = ws / "meta-zedx"
+    entry = _kas_file(checkout)
+    cfg = _cfg(ws, entry)
+    layer = LayerRepo(checkout, "meta-zedx", {"url": "u"}, False, "meta-zedx", "main", entry.resolve())
+    overlay = tmp_path / "overlay.yml"
+    overlay.write_text("header:\n  version: 16\n", encoding="utf-8")
+
+    with (
+        patch.object(kas_build, "layer_repo_of", return_value=layer) as detect,
+        patch.object(kas_build.kas_pins, "read_merged_config_layer") as read,
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)) as run,
+    ):
+        _build_kas_arg(cfg, entry, overlay)
+
+    # An explicit kas policy is honoured, not refused; the layer reader never runs.
+    detect.assert_not_called()
+    read.assert_not_called()
+    assert "avocado-reuse.yml" not in run.call_args.args[0][-1]
+
+
+def test_reuse_outside_a_layer_or_meta_avocado_checkout_still_notes_and_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "meta-avocado").mkdir()
+    entry = _kas_file(ws / "meta-other")
+    cfg = _cfg(ws, entry)
+    overlay = tmp_path / "overlay.yml"
+    overlay.write_text("header:\n  version: 16\n", encoding="utf-8")
+
+    with (
+        patch.object(kas_build, "layer_repo_of", return_value=None),
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)) as run,
+    ):
+        _build_kas_arg(cfg, entry, overlay)
+
+    assert "not inside a meta-avocado checkout, using the kas policy" in capsys.readouterr().err
+    assert "avocado-reuse.yml" not in run.call_args.args[0][-1]
+
+
+def test_post_build_graph_capture_dump_carries_the_reuse_overlay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The capture's target-resolving ``kas dump`` goes through the same protected assembly as the build."""
+    monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
+    cfg, layer, overlay = _layer_build_setup(tmp_path)
+    log = MagicMock()
+    ctx = kas_build.KasBuildContext(
+        cfg=cfg, log=log, kas_yaml=layer.entry or Path(), overlay_source=overlay, extra_overlays=[]
+    )
+
+    with (
+        patch.object(kas_build, "layer_repo_of", return_value=layer),
+        patch.object(kas_build.kas_pins, "read_merged_config_layer", return_value=LAYER_MERGED),
+        patch.object(kas_build.repo_reuse, "classify", return_value=_layer_states(cfg.workspace)),
+        patch("bakar.steps.kas_build.subprocess.run", return_value=_completed(0, stdout=DUMP_YAML)) as run,
+        patch.object(kas_build, "_run_kas_child", return_value=0),
+        patch.object(kas_build, "_build_env", return_value={}),
+        patch.object(kas_build, "_container_eventlog_path", return_value=None),
+    ):
+        kas_graph_capture._resolve_capture_target(ctx, log)
+
+    argv = run.call_args.args[0]
+    assert "--skip" not in argv
+    assert argv[-1].split(":")[-2:] == ["avocado-reuse.yml", "avocado-pin.yml"]

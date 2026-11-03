@@ -69,13 +69,14 @@ from bakar import (
 from bakar.bsp_detect import (
     LayerRepo,
     layer_pin_text,
+    layer_repo_of,
     layer_wrapper_text,
     meta_avocado_checkout,
     meta_avocado_pin_text,
     meta_avocado_wrapper_text,
 )
 from bakar.buildtools import BUILDTOOLS_DIR_ENV, detect_buildtools, resolve_oe_core_release_key
-from bakar.config import GENERATED_BUILD_YAML, BuildConfig, _overlay_dir
+from bakar.config import GENERATED_BUILD_YAML, BuildConfig, _overlay_dir, layer_reuse_applies
 from bakar.fmt import neutralize
 from bakar.kas import KasGenOptions, write_yaml
 from bakar.observability import RunLogger, run_id_epoch
@@ -289,7 +290,8 @@ def _write_layer_wrapper(cfg: BuildConfig, layer: LayerRepo, dependency_path: Pa
     """Write the wrapper ``kas dump`` starts from for a layer repository entry.
 
     ``dependency_path`` is the meta-avocado directory the classification chose
-    (the workspace clone when frozen or missing, the side checkout when side).
+    (the workspace clone when frozen, the side checkout when side). The clone
+    always exists here: reading the entry's pin needs it.
     Returns ``bsp_root/avocado-wrapper.yml``.
     """
     wrapper = cfg.bsp_root / "avocado-wrapper.yml"
@@ -387,17 +389,31 @@ def _write_reuse_overlay(
         states = repo_reuse.classify(merged.get("repos") or {}, cfg.workspace, pair_core_with_bitbake=cfg.host_mode)
     except ReleaseRoutingError as exc:
         raise RuntimeError(str(exc)) from exc
-    if repo_reuse.blocking(states):
+
+    def refusal(states: list[repo_reuse.RepoState]) -> str:
         # -w names this build's workspace: bare `bakar sync <kas>` resolves the
         # routed one, which differs after `bakar build -w /other <kas>`.
         sync_kas = user_kas or kas_yaml
         repair = shlex.join(["bakar", "sync", str(sync_kas), "-w", str(cfg.workspace)])
         extras = [str(p) for p in user_extras]
-        raise RuntimeError(
-            repo_reuse.render_refusal(
-                states, repair=repair, extra_overlays=extras, main_pins=_main_file_pins(cfg, states, sync_kas, extras)
-            )
+        return repo_reuse.render_refusal(
+            states, repair=repair, extra_overlays=extras, main_pins=_main_file_pins(cfg, states, sync_kas, extras)
         )
+
+    return _apply_reuse_states(cfg, states, refusal)
+
+
+def _apply_reuse_states(
+    cfg: BuildConfig, states: list[repo_reuse.RepoState], refusal: Callable[[list[repo_reuse.RepoState]], str]
+) -> Path:
+    """Refuse a build with a blocking state, else write the reuse overlay for ``states``.
+
+    ``refusal`` renders the message for the blocked states. Shared by the
+    meta-avocado and the layer repository paths. Returns the overlay's path
+    relative to ``cfg.bsp_root``.
+    """
+    if repo_reuse.blocking(states):
+        raise RuntimeError(refusal(states))
     # Still under the workspace lock _build_kas_arg holds.
     for st in states:
         if st.name == "openembedded-core" and st.state == "side" and st.paired_bitbake is not None:
@@ -422,6 +438,85 @@ def _write_reuse_overlay(
     overlay = cfg.bsp_root / _REUSE_OVERLAY_YAML
     overlay.write_text(repo_reuse.reuse_overlay_text(states, cfg.workspace), encoding="utf-8")
     return Path(_REUSE_OVERLAY_YAML)
+
+
+def _classify_layer(
+    cfg: BuildConfig, layer: LayerRepo, overlay_rels: list[Path]
+) -> tuple[list[repo_reuse.RepoState], Path]:
+    """Classify a layer entry's pinned repositories; return the states and where meta-avocado is declared.
+
+    Reads the merged configuration through the read-only layer reader, so
+    nothing is written under ``bsp_root`` and no shared clone is touched before
+    the build either refuses or knows where each repository will live. The
+    dependency is classified from the entry's own declaration: the reader
+    declares it without a url, which would hide it from the classification.
+    The returned path is the workspace clone when meta-avocado is frozen and its
+    side checkout path when it is not at its pin. A missing clone never gets
+    this far: the reader needs it to read the pin and refuses first.
+    """
+    try:
+        merged = kas_pins.read_merged_config_layer(
+            layer,
+            cfg.workspace / "meta-avocado",
+            extra_files=[cfg.bsp_root / rel for rel in overlay_rels],
+            wrap_parent=cfg.bsp_root,
+        )
+    except ReleaseRoutingError as exc:
+        raise RuntimeError(str(exc)) from exc
+    repos = {name: entry for name, entry in (merged.get("repos") or {}).items() if name != "meta-avocado"}
+    repos["meta-avocado"] = {**layer.dependency, "path": "meta-avocado"}
+    states = repo_reuse.classify(repos, cfg.workspace, pair_core_with_bitbake=cfg.host_mode)
+    dependency_path = cfg.workspace / "meta-avocado"
+    for st in states:
+        if st.name == "meta-avocado" and st.state == "side" and st.side_path is not None:
+            dependency_path = st.side_path
+    return states, dependency_path
+
+
+def _layer_refusal(cfg: BuildConfig, states: list[repo_reuse.RepoState]) -> str:
+    # bakar sync reads meta-avocado kas files only, so a layer entry's blockers are fixed by hand.
+    repair = f"git -C <clone> checkout <pin> in each clean clone listed above (workspace {cfg.workspace})"
+    return repo_reuse.render_refusal(states, repair=repair)
+
+
+def _layer_reuse_entry(kas_yaml: Path) -> LayerRepo | None:
+    """Return the layer repository ``kas_yaml`` is an entry of when the reuse policy applies, else None.
+
+    The policy is the one routing sets for a configured release workspace (or
+    the caller set explicitly); under any other value the existing flow runs
+    unchanged, so an explicit ``kas`` policy is honoured. A policy value that
+    does not parse is left to the existing flow, which refuses it. Raises
+    ``RuntimeError`` for an entry that is recognisably a layer entry but
+    ambiguous or unreadable, since the build must not fall back to the kas
+    policy for it.
+    """
+    if not layer_reuse_applies(kas_yaml):
+        return None
+    try:
+        return layer_repo_of(kas_yaml)
+    except ReleaseRoutingError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def _dump_layer_entry(cfg: BuildConfig, layer: LayerRepo, overlay_rel: Path, extra_overlay_rels: list[Path]) -> Path:
+    """Run the build's ``kas dump`` for a layer entry in a release workspace, protected by the reuse overlay.
+
+    Classification comes first and a build that cannot be classified refuses
+    here, before any file is written and before kas runs; there is no fall
+    back to the kas policy. The wrapper is written only once the dependency's
+    location is known, and the pin is merged after the reuse overlay so no
+    overlay can move the layer repository off its checkout. Everything runs
+    under the workspace lock, which is held through the dump because the dump
+    is where kas clones whatever classify found missing.
+    """
+    # Shared and process-long, so a sync cannot move a clone mid-build.
+    repo_reuse.hold_workspace_in_use(cfg.workspace)
+    with repo_reuse.workspace_lock(cfg.workspace):
+        states, dependency_path = _classify_layer(cfg, layer, [overlay_rel, *extra_overlay_rels])
+        reuse_rel = _apply_reuse_states(cfg, states, lambda blocked: _layer_refusal(cfg, blocked))
+        wrapper = _write_layer_wrapper(cfg, layer, dependency_path)
+        pin_rel = _write_layer_pin(cfg, layer)
+        return _run_kas_dump(cfg, wrapper, overlay_rel, [*extra_overlay_rels, reuse_rel, pin_rel])
 
 
 # Sections bakar itself writes into the generated YAML. Each run regenerates them from
@@ -799,6 +894,12 @@ def _build_kas_arg(
     # path; materialize it under .bakar/ so kas can resolve and inherit it.
     if cfg.mold:
         materialize_layer(cfg, _MOLD_LAYER_NAME)
+    layer = _layer_reuse_entry(kas_yaml)
+    if layer is not None:
+        _setup_meta_avocado_build_dir(cfg)
+        overlay_rel = materialize_overlay(cfg, overlay_source, is_main_overlay=True)
+        extra_overlay_rels = [materialize_overlay(cfg, p) for p in extra_overlays or []]
+        return str(_dump_layer_entry(cfg, layer, overlay_rel, extra_overlay_rels))
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
         overlay_rel = materialize_overlay(cfg, overlay_source, is_main_overlay=True)
