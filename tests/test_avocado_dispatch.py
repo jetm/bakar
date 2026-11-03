@@ -14,6 +14,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from bakar import bsp_detect as bsp_detect_mod
 from bakar.release_workspace import sanitize_delivered_name
 from bakar.steps import avocado_dispatch as ad
 from bakar.steps import layer_delivery, layer_delivery_remote, remote_dispatch
@@ -973,8 +974,8 @@ def test_plan_side_checkout_line_replaces_control_characters(
 # The plan is compared with whitespace collapsed because rich wraps it at the terminal width.
 GOLDEN_PLAN = (
     "dispatch plan -> pc2 workspace: /srv/ws/scarthgap (release routing) "
-    "+ worktree /srv/ws/scarthgap/.bakar/worktrees/feature-x (created, or moved to the delivered commit), "
-    "with its git admin directory /srv/ws/scarthgap/meta-avocado/.git/worktrees/feature-x "
+    "+ worktree /srv/ws/scarthgap/.bakar/worktrees/feature-x/meta-avocado (created, or moved to the delivered commit), "
+    "with its git admin directory an entry under /srv/ws/scarthgap/meta-avocado/.git/worktrees "
     "holding the delivery marker bakar-delivered.json "
     "+ bookkeeping files in /srv/ws/scarthgap/.bakar/worktrees (created if missing): "
     ".feature-x.lock, .feature-x.pending, .feature-x.build.lock "
@@ -995,8 +996,8 @@ GOLDEN_PUSH = [
 ]
 GOLDEN_SHA = {
     "capability": "1c78548f9ee41f8131ce5f7d1753a22388d8874806cb0e633c1fd132873e38c6",
-    "ensure": "f43a538ad293cc1da6ed56ed8770493bcd9f995fadddb8be56dfcc07af181bc3",
-    "remote": "dd1ac22896db8050565df2fb12d2b71dfd9e9aff424c16d68df3e5ea29e0d002",
+    "ensure": "2bb9a5c3e104395f4ad14a6333bc8b2d58214b6d7737c88cac4898badb8ace96",
+    "remote": "76c8c1aec5d891d529f1702184a72b31be6081936c97ef44bc92976460d5ce25",
 }
 
 
@@ -1043,3 +1044,428 @@ def test_golden_meta_avocado_dispatch_outputs(
     assert plan == GOLDEN_PLAN
     assert push == GOLDEN_PUSH
     assert shas == GOLDEN_SHA
+
+
+# --- layer-repository dispatch ---------------------------------------------
+
+LAYER_NAME = "meta-foo"
+LAYER_WRITES = {"ensure_repo", "push", "ensure", "stream"}
+LAYER_ARGV = ["build", "kas/machine/m.yml", "--on", HOST]
+
+
+class LayerRec:
+    """A :class:`Recorder` that also tells the bare-repository script from the worktree script."""
+
+    def __init__(self, rec: Recorder, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.rec = rec
+        self.repo_rc = 0
+        self.repo_script = ""
+        inner = remote_dispatch._ssh_bash_capture
+
+        def capture(host: str, script: str, **kw: Any) -> subprocess.CompletedProcess[str]:
+            if "git init -q --bare" in script:
+                rec.calls.append(("ensure_repo", host))
+                self.repo_script = script
+                return subprocess.CompletedProcess(["ssh"], self.repo_rc, "", "not bare")
+            return inner(host, script, **kw)
+
+        monkeypatch.setattr(remote_dispatch, "_ssh_bash_capture", capture)
+
+
+@pytest.fixture
+def lrec(rec: Recorder, monkeypatch: pytest.MonkeyPatch) -> LayerRec:
+    return LayerRec(rec, monkeypatch)
+
+
+@pytest.fixture
+def layer(checkout: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    from bakar import bsp_detect
+
+    found = bsp_detect.LayerRepo(
+        checkout=checkout,
+        name=LAYER_NAME,
+        dependency={},
+        is_linked_worktree=False,
+        checkout_name=checkout.name,
+        branch="main",
+        entry=checkout / "kas" / "machine" / "m.yml",
+    )
+    monkeypatch.setattr(bsp_detect, "layer_repo_of", lambda _kas, **_kw: found)
+    return found
+
+
+def _layer_dispatch(checkout: Path, layer: Any, kas_arg: str, local_args: list[str], **overrides: Any) -> int:
+    layer_repo_dir = overrides.pop("layer_repo_dir", None)
+    kwargs: dict[str, Any] = {
+        "workspace": WORKSPACE,
+        "checkout": checkout,
+        "worktree": None,
+        "kas_yaml": checkout / "kas" / "machine" / "m.yml",
+        "kas_arg": kas_arg,
+        "local_args": local_args,
+        "release": "scarthgap",
+        "worktree_root": None,
+        "build_dir_template": None,
+        "cap_mb": 64,
+        "invoking_cwd": checkout,
+        "workspace_source": "[workspaces] template",
+    }
+    flags = {
+        "sccache_dist": overrides.pop("sccache_dist", False),
+        "assume_yes": overrides.pop("assume_yes", False),
+        "dry_run": overrides.pop("dry_run", False),
+    }
+    kwargs.update(overrides)
+    return ad.dispatch_layer_build(
+        HOST,
+        ad.AvocadoDispatchRequest(**kwargs),
+        layer,
+        layer_repo_dir,
+        remote_dispatch.DispatchFlags(**flags),
+    )
+
+
+def test_layer_call_order_and_probe_command(lrec: LayerRec, layer: Any, checkout: Path) -> None:
+    rc = _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV)
+    assert rc == 0
+    assert lrec.rec.names() == [
+        "snapshot",
+        "preflight",
+        "local_version",
+        "capability",
+        "check_workspace",
+        "ensure_repo",
+        "push",
+        "ensure",
+        "stream",
+        "surface",
+    ]
+    assert lrec.rec.capability_script == "bakar settings get dispatch.layer_repo_dir\n"
+    assert ("check_workspace", (HOST, str(WORKSPACE), "scarthgap")) in lrec.rec.calls
+
+
+def test_layer_bare_repository_is_the_push_target_and_never_meta_avocado(
+    lrec: LayerRec, layer: Any, checkout: Path
+) -> None:
+    bare = f"{WORKSPACE}/.bakar/layers/{LAYER_NAME}.git"
+    assert _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV) == 0
+    push = next(a for n, a in lrec.rec.calls if n == "push")
+    assert f"ssh://{HOST}{bare}" in push
+    assert f"{COMMIT}:refs/bakar/main/{COMMIT[:12]}" in push
+    assert "--force" not in push
+    assert not any("meta-avocado" in arg for arg in push)
+    assert lrec.repo_script == layer_delivery_remote.ensure_bare_repo_script(bare)
+    ensure = lrec.rec.ensure_script
+    assert f"repo_git={bare}\n" in ensure
+    assert 'git -C "$repo_git" worktree add' in ensure
+    assert f"root={WORKSPACE}/.bakar/worktrees/{LAYER_NAME}\n" in ensure
+    assert "meta-avocado" not in ensure
+
+
+def test_layer_repo_dir_setting_and_worktree_root_are_honoured(lrec: LayerRec, layer: Any, checkout: Path) -> None:
+    rc = _layer_dispatch(
+        checkout,
+        layer,
+        "kas/machine/m.yml",
+        LAYER_ARGV,
+        layer_repo_dir=Path("/srv/layers"),
+        worktree_root=Path("/srv/wt"),
+    )
+    assert rc == 0
+    push = next(a for n, a in lrec.rec.calls if n == "push")
+    assert f"ssh://{HOST}/srv/layers/{LAYER_NAME}.git" in push
+    assert f"root=/srv/wt/{LAYER_NAME}\n" in lrec.rec.ensure_script
+    assert f"cd /srv/wt/{LAYER_NAME}/main/{LAYER_NAME} || exit 1" in lrec.rec.remote_script
+
+
+def test_layer_remote_command_drops_local_workspace_and_passes_the_routed_one(
+    lrec: LayerRec, layer: Any, checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KAS_WORK_DIR", "/local/ws")
+    kas = str(checkout / "kas" / "machine" / "m.yml")
+    local = ["build", kas, "-w", "/local/ws", "--workspace=/x", "--on", HOST, "-y"]
+    assert _layer_dispatch(checkout, layer, kas, local, build_dir_template="b-{worktree}-{stem}") == 0
+    script = lrec.rec.remote_script
+    line = _remote_argv_line(script)
+    assert line.endswith(f"bakar build kas/machine/m.yml --workspace {WORKSPACE}")
+    assert "/local/ws" not in line
+    assert "/x" not in line.split()
+    assert "-w" not in line.split()
+    assert "--on" not in line
+    assert "BAKAR_REPO_POLICY=reuse" in script
+    assert f"BAKAR_WORKTREE_BUILD_DIR=b-{LAYER_NAME}-main-{{stem}}" in script
+    assert "KAS_WORK_DIR" not in script
+
+
+def test_layer_workspace_option_stays_before_a_terminator(lrec: LayerRec, layer: Any, checkout: Path) -> None:
+    local = ["build", "kas/machine/m.yml", "--on", HOST, "--", "bitbake", "x"]
+    assert _layer_dispatch(checkout, layer, "kas/machine/m.yml", local) == 0
+    line = _remote_argv_line(lrec.rec.remote_script)
+    assert line.endswith(f"bakar build kas/machine/m.yml --workspace {WORKSPACE} -- bitbake x")
+
+
+def test_layer_kas_segment_outside_the_checkout_is_refused_before_any_call(
+    lrec: LayerRec, layer: Any, checkout: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    outside = tmp_path / "other.yml"
+    outside.write_text("header: {version: 14}\n")
+    kas_arg = f"kas/machine/m.yml:{outside}"
+    assert _layer_dispatch(checkout, layer, kas_arg, ["build", kas_arg]) == 2
+    assert lrec.rec.calls == []
+    err = " ".join(capsys.readouterr().err.split())
+    assert "would not exist in the delivered worktree" in err
+    assert "layer repository checkout" in err
+
+
+@pytest.mark.parametrize("assume_yes", [False, True])
+def test_layer_old_host_bakar_is_refused_even_with_yes(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str], assume_yes: bool
+) -> None:
+    lrec.rec.capability_rc = 2
+    lrec.rec.capability_stderr = "Unknown key: dispatch.layer_repo_dir\n"
+    rc = _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV, assume_yes=assume_yes)
+    err = " ".join(capsys.readouterr().err.split())
+    assert rc == 1
+    assert "supports layer-repository dispatch" in err
+    assert "does not know dispatch.layer_repo_dir" in err
+    assert "update bakar on the host" in err
+    assert "layer entry with the kas policy" in err
+    # The meta-avocado wording does not apply to a layer dispatch.
+    assert "release-workspace dispatch" not in err
+    assert "BAKAR_REPO_POLICY" not in err
+    assert "--yes does not override this" in err
+    assert not ({"check_workspace"} | LAYER_WRITES) & set(lrec.rec.names())
+
+
+def test_layer_probe_ssh_failure_is_not_reported_as_an_outdated_bakar(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lrec.rec.capability_rc = 255
+    lrec.rec.capability_stderr = "Connection refused\n"
+    assert _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV, assume_yes=True) == 1
+    err = capsys.readouterr().err
+    assert f"could not probe the bakar on {HOST}" in err
+    assert "update it" not in err
+    assert "could not confirm" not in err
+    assert not ({"check_workspace"} | LAYER_WRITES) & set(lrec.rec.names())
+
+
+def test_layer_workspace_mismatch_refuses_before_any_write(lrec: LayerRec, layer: Any, checkout: Path) -> None:
+    lrec.rec.workspace_error = "workspace declares another release"
+    assert _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV) == 1
+    assert not LAYER_WRITES & set(lrec.rec.names())
+
+
+def test_layer_repository_path_that_is_not_bare_stops_before_the_push(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lrec.repo_rc = layer_delivery_remote.EXIT_NOT_BARE
+    rc = _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV)
+    assert rc == layer_delivery_remote.EXIT_NOT_BARE
+    assert "is not a bare repository" in capsys.readouterr().err
+    assert not {"push", "ensure", "stream"} & set(lrec.rec.names())
+
+
+def _host_build_dir(layer: Any, delivered: str, template: str | None = None) -> str:
+    """The build directory the host's own naming gives the layer worktree delivered as ``delivered``.
+
+    The host's worktree is a linked worktree of the bare repository at
+    ``<root>/<layer name>/<delivered>``, so it is built by hand here as the
+    host's ``layer_repo_of`` would return it, not derived from the local checkout.
+    """
+    from bakar import config as config_mod
+
+    host = bsp_detect_mod.LayerRepo(
+        checkout=Path(f"/srv/wt/{layer.name}/{delivered}"),
+        name=layer.name,
+        dependency={},
+        is_linked_worktree=True,
+        checkout_name=delivered,
+        branch=delivered,
+        entry=Path(f"/srv/wt/{layer.name}/{delivered}/kas/machine/m.yml"),
+    )
+    return config_mod.layer_build_dir_name(host, host.entry, template)
+
+
+def _planned_build_dir(capsys: pytest.CaptureFixture[str], workspace: Path) -> str:
+    err = " ".join(capsys.readouterr().err.split())
+    match = re.search(rf"build directory {re.escape(str(workspace))}/(\S+)", err)
+    assert match is not None, err
+    return match.group(1)
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_layer_plan_names_the_host_build_directory_for_either_local_checkout(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str], linked: bool
+) -> None:
+    from dataclasses import replace
+
+    local = replace(layer, is_linked_worktree=linked, checkout_name="wt-one", branch="feat-x")
+    assert _layer_dispatch(checkout, local, "kas/machine/m.yml", LAYER_ARGV) == 0
+    delivered = "wt-one" if linked else "feat-x"
+    expected = _host_build_dir(local, delivered)
+    assert expected == f"build-m-{LAYER_NAME}-{delivered}"
+    assert _planned_build_dir(capsys, WORKSPACE) == expected
+    assert ("surface", (HOST, WORKSPACE / expected, 0)) in lrec.rec.calls
+
+
+def test_layer_plan_build_directory_uses_the_sanitised_delivered_name(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from dataclasses import replace
+
+    local = replace(layer, branch="feat/odd name")
+    assert _layer_dispatch(checkout, local, "kas/machine/m.yml", LAYER_ARGV) == 0
+    delivered = layer_delivery.layer_delivery_name(local)
+    assert delivered != "feat/odd name"
+    assert _planned_build_dir(capsys, WORKSPACE) == _host_build_dir(local, delivered)
+
+
+def _host_resolved_build_dir(script: str, layer_name: str, delivered: str) -> str:
+    """The directory a host bakar of any version picks for the delivered layer, given the dispatched script.
+
+    The host reads ``BAKAR_WORKTREE_BUILD_DIR`` from the script and names the build
+    from the layer worktree it sits in: ``<root>/<layer>/<delivered>/<layer>``, so
+    its checkout directory is the layer's name.
+    """
+    from bakar import config as config_mod
+
+    # The assignment sits inside nested shell quoting, so the quote characters around it are skipped.
+    match = re.search(r"BAKAR_WORKTREE_BUILD_DIR=([^\s'\"]+)", script)
+    assert match is not None, script
+    template = match.group(1)
+    checkout = Path(f"/srv/wt/{layer_name}/{delivered}/{layer_name}")
+    host = bsp_detect_mod.LayerRepo(
+        checkout=checkout,
+        name=layer_name,
+        dependency={},
+        is_linked_worktree=True,
+        checkout_name=checkout.name,
+        branch=delivered,
+        entry=checkout / "kas" / "machine" / "m.yml",
+    )
+    return config_mod.layer_build_dir_name(host, host.entry, template)
+
+
+def _layer_dispatch_build_dir(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str], **overrides: Any
+) -> tuple[str, str]:
+    """Dispatch ``layer`` and return the planned build directory and the one the host resolves."""
+    from dataclasses import replace
+
+    layer = replace(layer, **overrides)
+    assert _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV) == 0
+    planned = _planned_build_dir(capsys, WORKSPACE)
+    delivered = layer_delivery.layer_delivery_name(layer)
+    resolved = _host_resolved_build_dir(lrec.rec.remote_script, layer.name, delivered)
+    assert ("surface", (HOST, WORKSPACE / planned, 0)) in lrec.rec.calls
+    return planned, resolved
+
+
+def test_layer_plan_prints_the_directory_the_host_resolves_and_the_run_id_lookup_reads(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Requirements (d) and (e): the host builds in what the dispatched template
+    # renders to, with no help from a host-side naming change.
+    planned, resolved = _layer_dispatch_build_dir(lrec, layer, checkout, capsys)
+    assert planned == resolved == f"build-m-{LAYER_NAME}-main"
+
+
+def test_layer_same_layer_under_two_delivered_names_gets_two_build_directories(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    one = _layer_dispatch_build_dir(lrec, layer, checkout, capsys, branch="one")
+    two = _layer_dispatch_build_dir(lrec, layer, checkout, capsys, branch="two")
+    assert one[0] == one[1] != two[0]
+    assert two[0] == two[1]
+
+
+def test_layer_two_layers_under_one_delivered_name_get_two_build_directories(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    foo = _layer_dispatch_build_dir(lrec, layer, checkout, capsys)
+    bar = _layer_dispatch_build_dir(lrec, layer, checkout, capsys, name="meta-bar")
+    assert foo[0] == foo[1] != bar[0]
+    assert bar[0] == bar[1]
+
+
+def test_layer_and_meta_avocado_with_one_stem_get_two_build_directories(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    layer_dir, _ = _layer_dispatch_build_dir(lrec, layer, checkout, capsys, branch="feature-x")
+    assert _dispatch(checkout, "kas/machine/m.yml", ["build", "kas/machine/m.yml", "--on", HOST]) == 0
+    meta_dir = _planned_build_dir(capsys, WORKSPACE)
+    assert meta_dir == "build-m-feature-x"
+    assert layer_dir == f"build-m-{LAYER_NAME}-feature-x"
+
+
+def test_layer_checkout_directory_is_the_layer_name_never_meta_avocado(
+    lrec: LayerRec, layer: Any, checkout: Path
+) -> None:
+    # The host recognises a meta-avocado checkout by a directory of that name, so a
+    # layer delivered below one would no longer be classified as a layer.
+    assert _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV) == 0
+    delivered = f"{WORKSPACE}/.bakar/worktrees/{LAYER_NAME}/main/{LAYER_NAME}"
+    assert f'dest="$root/$name/{LAYER_NAME}"' in lrec.rec.ensure_script
+    assert f"cd {delivered}" in lrec.rec.remote_script
+    # The build guard checks the same path, not a meta-avocado one.
+    assert lrec.rec.remote_script.count(delivered) >= 2
+    assert "meta-avocado" not in lrec.rec.remote_script
+
+
+def test_layer_named_meta_avocado_is_refused_before_the_host_is_contacted(
+    lrec: LayerRec, layer: Any, checkout: Path
+) -> None:
+    from dataclasses import replace
+
+    assert _layer_dispatch(checkout, replace(layer, name="meta-avocado"), "kas/machine/m.yml", LAYER_ARGV) == 2
+    assert lrec.rec.names() == []
+
+
+def test_layer_plan_lines(lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    lrec.rec.snapshot = True
+    lrec.rec.untracked = ["notes.txt"]
+    assert _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV) == 0
+    err = " ".join(capsys.readouterr().err.split())
+    root = f"{WORKSPACE}/.bakar/worktrees/{LAYER_NAME}"
+    build_dir = _host_build_dir(layer, "main")
+    assert build_dir == f"build-m-{LAYER_NAME}-main"
+    assert err.index(f"workspace: {WORKSPACE} ([workspaces] template)") < err.index("+ ")
+    assert f"bare repository {WORKSPACE}/.bakar/layers/{LAYER_NAME}.git (created if absent)" in err
+    assert f"worktree {root}/main/{LAYER_NAME} " in err
+    assert f"an entry under {WORKSPACE}/.bakar/layers/{LAYER_NAME}.git/worktrees holding the delivery marker" in err
+    assert f"bookkeeping files in {root}" in err
+    assert f"build directory {WORKSPACE}/{build_dir}" in err
+    assert "shared-clone pin check runs on the host when the build starts" in err
+    assert "snapshot of uncommitted changes: yes" in err
+    assert "nothing is deleted" in err
+    assert ("surface", (HOST, WORKSPACE / build_dir, 0)) in lrec.rec.calls
+    # The host classifies its own shared clones at build start; no probe from here.
+    assert "pin_probe" not in lrec.rec.names()
+
+
+def test_layer_dry_run_stops_after_the_probe_and_workspace_check(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV, dry_run=True) == 0
+    assert lrec.rec.names() == ["snapshot_preview", "preflight", "local_version", "capability", "check_workspace"]
+    out = " ".join(capsys.readouterr().err.split())
+    assert out.rstrip().endswith(f"dry run: nothing was pushed or created on {HOST}")
+
+
+def test_layer_dry_run_prints_the_plan_before_a_workspace_refusal(
+    lrec: LayerRec, layer: Any, checkout: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lrec.rec.workspace_error = "workspace declares another release"
+    assert _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV, dry_run=True) == 1
+    out = " ".join(capsys.readouterr().err.split())
+    assert out.index("dispatch plan") < out.index("remote workspace check failed")
+    assert not LAYER_WRITES & set(lrec.rec.names())
+
+
+def test_layer_plan_and_scripts_are_non_destructive(lrec: LayerRec, layer: Any, checkout: Path) -> None:
+    assert _layer_dispatch(checkout, layer, "kas/machine/m.yml", LAYER_ARGV) == 0
+    push = next(a for n, a in lrec.rec.calls if n == "push")
+    assert not {"--force", "-f", "--delete", "--prune", "--mirror", "--force-with-lease"} & set(push)
+    for script in (lrec.repo_script, lrec.rec.ensure_script):
+        assert not re.search(r"\brm\b|worktree (remove|prune)|--force|git gc|branch -[dD]", script)

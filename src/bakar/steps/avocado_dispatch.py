@@ -18,7 +18,7 @@ import os
 import shlex
 import socket
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +30,7 @@ from bakar.release_workspace import (
     REPO_POLICY_ENV,
     REPO_POLICY_REUSE,
     ReleaseRoutingError,
+    is_valid_delivered_name,
     parse_repo_policy,
     worktree_build_dir_name,
 )
@@ -39,13 +40,18 @@ from bakar.steps import remote_dispatch as rd
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from bakar.bsp_detect import LinkedWorktree
+    from bakar.bsp_detect import LayerRepo, LinkedWorktree
 
 console = rd.console
 
 # Answered only by a bakar that carries release-workspace dispatch: an older one
 # exits non-zero on the unknown key, and it would also ignore BAKAR_REPO_POLICY.
 _CAPABILITY_KEY = "dispatch.snapshot_untracked_cap_mb"
+# Answered only by a bakar that carries layer-repository dispatch, for the same reason.
+_LAYER_CAPABILITY_KEY = "dispatch.layer_repo_dir"
+_META_AVOCADO_LABEL = "meta-avocado"
+_LAYER_LABEL = "layer repository"
+_PIN_CHECK_ON_HOST_NOTE = "the shared-clone pin check runs on the host when the build starts"
 # How many untracked paths the plan names before summarising the rest.
 _PLAN_UNTRACKED_SHOWN = 20
 # Bounds the delivery push so a dead link ends it through the keepalive instead of hanging.
@@ -84,7 +90,7 @@ class KasArgError(Exception):
     """A kas argument segment cannot be named relative to the delivered checkout."""
 
 
-def _relative_to_checkout(segment: str, checkout: Path, cwd: Path) -> str:
+def _relative_to_checkout(segment: str, checkout: Path, cwd: Path, label: str = _META_AVOCADO_LABEL) -> str:
     """Return ``segment`` as a path relative to ``checkout``, resolving it from ``cwd``.
 
     The lexical form is tried first because ``checkout`` arrives as the logical
@@ -102,14 +108,23 @@ def _relative_to_checkout(segment: str, checkout: Path, cwd: Path) -> str:
         return Path(os.path.realpath(candidate)).relative_to(Path(os.path.realpath(checkout))).as_posix()
     except ValueError:
         raise KasArgError(
-            f"kas file {segment!r} is outside the meta-avocado checkout {checkout}, "
+            f"kas file {segment!r} is outside the {label} checkout {checkout}, "
             "so it would not exist in the delivered worktree"
         ) from None
 
 
-def rewrite_kas_arg(kas_arg: str, checkout: Path, cwd: Path) -> str:
+def rewrite_kas_arg(kas_arg: str, checkout: Path, cwd: Path, label: str = _META_AVOCADO_LABEL) -> str:
     """Rewrite a colon-joined kas argument to paths relative to ``checkout``."""
-    return ":".join(_relative_to_checkout(segment, checkout, cwd) for segment in kas_arg.split(":"))
+    return ":".join(_relative_to_checkout(segment, checkout, cwd, label) for segment in kas_arg.split(":"))
+
+
+def with_workspace_option(argv: list[str], workspace: Path) -> list[str]:
+    """Return ``argv`` with ``--workspace <workspace>`` added, before a ``--`` terminator when there is one."""
+    option = ["--workspace", str(workspace)]
+    if "--" in argv:
+        at = argv.index("--")
+        return [*argv[:at], *option, *argv[at:]]
+    return [*argv, *option]
 
 
 def strip_workspace_option(args: list[str]) -> list[str]:
@@ -147,7 +162,7 @@ def build_remote_argv(local_args: list[str], kas_arg: str, rewritten_kas: str) -
     return argv
 
 
-def remote_env(build_dir_template: str | None, name: str) -> dict[str, str]:
+def remote_env(build_dir_template: str | None, worktree_value: str) -> dict[str, str]:
     """Forwarded ``BAKAR_*``/``KAS_*`` variables for the remote build.
 
     ``KAS_WORK_DIR`` names a local directory, and the remote workspace is chosen
@@ -157,10 +172,13 @@ def remote_env(build_dir_template: str | None, name: str) -> dict[str, str]:
     env[REPO_POLICY_ENV] = REPO_POLICY_REUSE
     # Always sent: the remote's own config must not pick another directory than
     # the one the plan names and the remote run is scoped to.
-    # The delivered name is filled in here: the host sees only the checkout
-    # directory, which is always meta-avocado, and would key every dispatch to
-    # the same build directory. The name holds only [A-Za-z0-9._-], so no brace.
-    env["BAKAR_WORKTREE_BUILD_DIR"] = (build_dir_template or DEFAULT_BUILD_DIR_TEMPLATE).replace("{worktree}", name)
+    # ``{worktree}`` is filled in here: the host derives it from the checkout
+    # directory, which is meta-avocado for every meta-avocado delivery and the
+    # layer name for every delivery of one layer, and would key all of them to one
+    # build directory. The value holds only [A-Za-z0-9._-], so no brace.
+    env["BAKAR_WORKTREE_BUILD_DIR"] = (build_dir_template or DEFAULT_BUILD_DIR_TEMPLATE).replace(
+        "{worktree}", worktree_value
+    )
     return env
 
 
@@ -201,9 +219,18 @@ def _check_remote_capability(host: str, capability_key: str) -> bool:
     # current one with a broken config fails the same probe, so the remote's own
     # words are shown instead of asserting which it was.
     stderr = "\n".join(result.stderr.strip().splitlines()[:5])
+    shown = escape(stderr) if stderr else "(no stderr)"
+    if capability_key == _LAYER_CAPABILITY_KEY:
+        console.print(
+            f"[red]could not confirm that the bakar on {host} supports layer-repository dispatch[/] "
+            f"(exit {result.returncode}): {shown}; it does not know {capability_key}. An older bakar would build a "
+            "layer entry with the kas policy and move the workspace's shared clones off their pins; update bakar on "
+            "the host (git pull + uv tool install --force). --yes does not override this."
+        )
+        return False
     console.print(
         f"[red]could not confirm that the bakar on {host} supports release-workspace dispatch[/] "
-        f"(exit {result.returncode}): {escape(stderr) if stderr else '(no stderr)'}; if that bakar predates this "
+        f"(exit {result.returncode}): {shown}; if that bakar predates this "
         f"feature, update it (git pull + uv tool install --force). Without it {REPO_POLICY_ENV} would be ignored "
         "and the workspace's shared clones moved off their pins; --yes does not override this."
     )
@@ -228,6 +255,8 @@ class AvocadoDispatchRequest:
     # ``None`` means "read them from the kas file"; ``{}`` is a real value (no pinned repositories).
     pinned_repos: dict | None = None
     workspace_source: str | None = None
+    # Names the checkout in a refusal about a kas segment lying outside it.
+    checkout_label: str = _META_AVOCADO_LABEL
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -248,13 +277,27 @@ class DispatchTarget:
     delivered_name: str
     # Build directory name inside the workspace.
     build_dir: str
+    # What ``{worktree}`` in the build-directory template is filled with before it
+    # is sent to the host, so the host's own derivation from the checkout directory
+    # never decides the directory.
+    worktree_value: str
+    # The worktree's directory below ``<worktree_root>/<delivered_name>``.
+    checkout_dirname: str = layer_delivery_remote.CHECKOUT_DIRNAME
     # The ``workspace:`` line of the plan.
     workspace_line: str
     # Setting the host's bakar must answer, or ``None`` to skip the capability probe.
     capability_key: str | None
     # Script that makes ``repo_git`` exist on the host, or ``None`` when it already does.
-    # The core does not act on it yet: no target needs a repository created first.
+    # It runs after the host checks and before the push.
     ensure_repo_script: str | None
+    # A layer's repository is bare and the remote build gets its workspace as an option,
+    # because the delivered worktree has no main checkout beside the workspace.
+    forward_workspace: bool = False
+    # Plan line saying the host checks the shared clones itself at build start; when set,
+    # the dispatch does not probe them from here.
+    pin_check_note: str | None = None
+    # The plan is printed ahead of a workspace refusal in a dry run.
+    plan_before_refusal: bool = False
 
 
 def _remote_repo(target: DispatchTarget, workspace: Path) -> str:
@@ -264,7 +307,44 @@ def _remote_repo(target: DispatchTarget, workspace: Path) -> str:
 
 def _admin_dir(target: DispatchTarget, remote_repo: str) -> str:
     """The git directory of ``remote_repo``: the repository itself when bare, else its ``.git``."""
-    return remote_repo if target.ensure_repo_script is not None else f"{remote_repo}/.git"
+    return remote_repo if target.repo_git is not None else f"{remote_repo}/.git"
+
+
+def _layer_target(request: AvocadoDispatchRequest, layer: LayerRepo, layer_repo_dir: Path | None) -> DispatchTarget:
+    """The target that delivers a layer repository into its own bare repository on the host."""
+    # The name becomes a directory and a repository file name on the host.
+    if not is_valid_delivered_name(layer.name):
+        raise ReleaseRoutingError(f"layer repository name {layer.name!r} must match [A-Za-z0-9._-]+")
+    # The host recognises a meta-avocado checkout by a directory of that name, so a
+    # layer worktree named after the layer must not take it.
+    if layer.name == layer_delivery_remote.CHECKOUT_DIRNAME:
+        raise ReleaseRoutingError(
+            f"layer repository name {layer.name!r} is the meta-avocado checkout directory name; "
+            "the host would take the layer for meta-avocado"
+        )
+    name = layer_delivery.layer_delivery_name(layer)
+    # The host's own derivation sees only the checkout directory (the layer name for
+    # every delivery of this layer), so the template is sent with this value already
+    # in place: two deliveries of one layer, two layers under one name and a layer
+    # beside a meta-avocado file of the same stem each keep their own directory.
+    worktree_value = f"{layer.name}-{name}"
+    base = request.worktree_root if request.worktree_root is not None else request.workspace / ".bakar" / "worktrees"
+    repos_dir = layer_repo_dir if layer_repo_dir is not None else request.workspace / ".bakar" / "layers"
+    bare = f"{repos_dir}/{layer.name}.git"
+    return DispatchTarget(
+        repo_git=bare,
+        worktree_root=base / layer.name,
+        delivered_name=name,
+        build_dir=worktree_build_dir_name(request.kas_yaml.stem, worktree_value, request.build_dir_template),
+        worktree_value=worktree_value,
+        checkout_dirname=layer.name,
+        workspace_line=f"{request.workspace} ({request.workspace_source or 'release routing'})",
+        capability_key=_LAYER_CAPABILITY_KEY,
+        ensure_repo_script=layer_delivery_remote.ensure_bare_repo_script(bare),
+        forward_workspace=True,
+        pin_check_note=_PIN_CHECK_ON_HOST_NOTE,
+        plan_before_refusal=True,
+    )
 
 
 def _meta_avocado_target(request: AvocadoDispatchRequest) -> DispatchTarget:
@@ -276,6 +356,7 @@ def _meta_avocado_target(request: AvocadoDispatchRequest) -> DispatchTarget:
         worktree_root=root,
         delivered_name=name,
         build_dir=worktree_build_dir_name(request.kas_yaml.stem, name, request.build_dir_template),
+        worktree_value=name,
         workspace_line=f"{request.workspace} ({request.workspace_source or 'release routing'})",
         capability_key=_CAPABILITY_KEY,
         ensure_repo_script=None,
@@ -292,6 +373,28 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
     when the log stream is lost while the build keeps running.
     """
     return _dispatch(host, request, flags, _meta_avocado_target)
+
+
+def dispatch_layer_build(
+    host: str,
+    request: AvocadoDispatchRequest,
+    layer: LayerRepo,
+    layer_repo_dir: Path | None,
+    flags: rd.DispatchFlags,
+) -> int:
+    """Deliver the layer repository ``layer`` to the ``request.release`` workspace on ``host`` and build there.
+
+    ``request`` is the same description :func:`dispatch_avocado_build` takes, with
+    ``workspace`` the routed workspace and ``checkout`` the layer's logical checkout;
+    ``worktree`` and ``pinned_repos`` are not used. ``layer_repo_dir`` is the
+    ``[dispatch] layer_repo_dir`` setting: the host directory holding the bare
+    repositories, or ``None`` for ``<workspace>/.bakar/layers``. The commit goes to
+    ``<layer_repo_dir>/<layer name>.git``, never to the workspace's meta-avocado
+    clone, and the host's shared clones are checked by the host's own build.
+    Returns what :func:`dispatch_avocado_build` returns.
+    """
+    layer_request = replace(request, checkout_label=_LAYER_LABEL, pinned_repos={})
+    return _dispatch(host, layer_request, flags, lambda req: _layer_target(req, layer, layer_repo_dir))
 
 
 def _dispatch(
@@ -328,7 +431,9 @@ def _dispatch(
 
     cwd = invoking_cwd if invoking_cwd is not None else Path.cwd()
     try:
-        remote_argv = build_remote_argv(local_args, kas_arg, rewrite_kas_arg(kas_arg, checkout, cwd))
+        remote_argv = build_remote_argv(
+            local_args, kas_arg, rewrite_kas_arg(kas_arg, checkout, cwd, request.checkout_label)
+        )
     except KasArgError as exc:
         console.print(f"[red]cannot dispatch:[/] {exc}")
         return 2
@@ -337,6 +442,8 @@ def _dispatch(
         target = make_target(request)
         name, build_dir, root = target.delivered_name, target.build_dir, target.worktree_root
         remote_repo = _remote_repo(target, workspace)
+        if target.forward_workspace:
+            remote_argv = with_workspace_option(remote_argv, workspace)
         if flags.dry_run:
             # Same refusal checks as snapshot_commit, but no git object is written.
             preview = layer_delivery.snapshot_preview(checkout, cap_mb=cap_mb)
@@ -357,6 +464,39 @@ def _dispatch(
         console.print(f"[red]cannot deliver {checkout}:[/] {exc}")
         return 1
 
+    target_dir = root / name / target.checkout_dirname
+    writes = [
+        f"worktree {target_dir} (created, or moved to the delivered commit), with its git admin directory "
+        f"an entry under {_admin_dir(target, remote_repo)}/worktrees holding the delivery marker "
+        f"{layer_delivery_remote.MARKER_FILENAME}",
+        f"bookkeeping files in {root} (created if missing): .{name}.lock, .{name}.pending, .{name}.build.lock",
+        f"ref {ref_name} in {remote_repo}",
+        f"build directory {workspace}/{build_dir}",
+    ]
+    if target.ensure_repo_script is not None:
+        writes.insert(0, f"bare repository {remote_repo} (created if absent)")
+    plan = rd.DispatchPlan(workspace=target.workspace_line, writes=writes)
+
+    def show_plan(side_repos: list[repo_reuse.RepoState]) -> None:
+        rd.print_dispatch_plan(host, plan)
+        if target.pin_check_note is not None:
+            console.print(f"  {target.pin_check_note}", markup=False)
+        if side_repos:
+            console.print("  side checkouts the host build will use:")
+            for st in side_repos:
+                console.print(
+                    f"    {repo_reuse.printable(st.name)}: {repo_reuse.printable(st.side_path)}",
+                    markup=False,
+                    soft_wrap=True,
+                )
+        console.print(f"  snapshot of uncommitted changes: {'yes' if snapshot else 'no'}")
+        if untracked:
+            console.print("  untracked paths the snapshot carries:")
+            for path in untracked[:_PLAN_UNTRACKED_SHOWN]:
+                console.print(f"    {path}", markup=False)
+            if len(untracked) > _PLAN_UNTRACKED_SHOWN:
+                console.print(f"    and {len(untracked) - _PLAN_UNTRACKED_SHOWN} more")
+
     if not rd.preflight_or_report(host, assume_yes=assume_yes):
         return 1
     if target.capability_key is not None and not _check_remote_capability(host, target.capability_key):
@@ -364,19 +504,24 @@ def _dispatch(
     try:
         rd.check_remote_workspace(host, str(workspace), release)
     except rd.DispatchError as exc:
+        if flags.dry_run and target.plan_before_refusal:
+            show_plan([])
         console.print(f"[red]remote workspace check failed:[/] {exc}")
         return 1
 
     # Classified on the host by the build's own rules, before anything is written
-    # there; --yes does not reach this check.
-    repos = request.pinned_repos
-    if repos is None:
-        try:
-            repos = kas_pins.read_merged_config(kas_yaml, checkout=checkout).get("repos") or {}
-        except ReleaseRoutingError as exc:
-            console.print(f"[red]cannot dispatch:[/] {exc}")
-            return 2
-    entries = repo_reuse.pinned_entries(repos, workspace)
+    # there; --yes does not reach this check. A target with a pin-check note leaves
+    # the classification to the host's own build.
+    entries: list = []
+    if target.pin_check_note is None:
+        repos = request.pinned_repos
+        if repos is None:
+            try:
+                repos = kas_pins.read_merged_config(kas_yaml, checkout=checkout).get("repos") or {}
+            except ReleaseRoutingError as exc:
+                console.print(f"[red]cannot dispatch:[/] {exc}")
+                return 2
+        entries = repo_reuse.pinned_entries(repos, workspace)
     states: list[repo_reuse.RepoState] = []
     blocked = False
     if entries:
@@ -390,7 +535,9 @@ def _dispatch(
         states = repo_reuse.classify_facts(
             entries,
             facts,
-            pair_core_with_bitbake=host_pairs_core_with_bitbake(remote_argv, remote_env(build_dir_template, name)),
+            pair_core_with_bitbake=host_pairs_core_with_bitbake(
+                remote_argv, remote_env(build_dir_template, target.worktree_value)
+            ),
         )
         blocked = bool(repo_reuse.blocking(states))
         # A dry run still prints the table before it refuses, so the refusal waits for it.
@@ -399,36 +546,7 @@ def _dispatch(
                 repo_reuse.render_refusal(states, repair=_sync_repair(kas_yaml, host)), markup=False, soft_wrap=True
             )
             return 1
-    side_repos = [st for st in states if st.state == "side" and st.blocking is None]
-
-    target_dir = root / name / layer_delivery_remote.CHECKOUT_DIRNAME
-    plan = rd.DispatchPlan(
-        workspace=target.workspace_line,
-        writes=[
-            f"worktree {target_dir} (created, or moved to the delivered commit), with its git admin directory "
-            f"an entry under {_admin_dir(target, remote_repo)}/worktrees holding the delivery marker "
-            f"{layer_delivery_remote.MARKER_FILENAME}",
-            f"bookkeeping files in {root} (created if missing): .{name}.lock, .{name}.pending, .{name}.build.lock",
-            f"ref {ref_name} in {remote_repo}",
-            f"build directory {workspace}/{build_dir}",
-        ],
-    )
-    rd.print_dispatch_plan(host, plan)
-    if side_repos:
-        console.print("  side checkouts the host build will use:")
-        for st in side_repos:
-            console.print(
-                f"    {repo_reuse.printable(st.name)}: {repo_reuse.printable(st.side_path)}",
-                markup=False,
-                soft_wrap=True,
-            )
-    console.print(f"  snapshot of uncommitted changes: {'yes' if snapshot else 'no'}")
-    if untracked:
-        console.print("  untracked paths the snapshot carries:")
-        for path in untracked[:_PLAN_UNTRACKED_SHOWN]:
-            console.print(f"    {path}", markup=False)
-        if len(untracked) > _PLAN_UNTRACKED_SHOWN:
-            console.print(f"    and {len(untracked) - _PLAN_UNTRACKED_SHOWN} more")
+    show_plan([st for st in states if st.state == "side" and st.blocking is None])
 
     if flags.dry_run:
         if states:
@@ -443,6 +561,18 @@ def _dispatch(
             return 1
         console.print(f"dry run: nothing was pushed or created on {host}")
         return 0
+
+    if target.ensure_repo_script is not None:
+        created = rd._ssh_bash_capture(host, target.ensure_repo_script)
+        if created.returncode != 0:
+            console.print(
+                f"[red]could not prepare the repository {escape(remote_repo)} on {host}:[/] "
+                f"{layer_delivery_remote.describe_exit(created.returncode)}"
+            )
+            for text in (created.stdout.strip(), created.stderr.strip()):
+                if text:
+                    console.print(text, markup=False)
+            return created.returncode
 
     try:
         push = layer_delivery.push_argv(checkout, host, remote_repo, commit, name)
@@ -470,7 +600,10 @@ def _dispatch(
 
     script = layer_delivery_remote.ensure_worktree_script(
         layer_delivery_remote.DeliveryTarget(
-            workspace=str(workspace), worktree_root=str(root), repo_git=target.repo_git
+            workspace=str(workspace),
+            worktree_root=str(root),
+            repo_git=target.repo_git,
+            checkout_dirname=target.checkout_dirname,
         ),
         layer_delivery_remote.MarkerFields(
             source_host=socket.gethostname(),
@@ -508,9 +641,11 @@ def _dispatch(
         rd.RemoteScriptSpec(
             remote_argv=remote_argv,
             cwd=target_dir,
-            env_vars=remote_env(build_dir_template, name),
+            env_vars=remote_env(build_dir_template, target.worktree_value),
             sccache_off=not sccache_dist,
-            guard=layer_delivery_remote.build_guard(worktree_root=str(root), name=name, commit=commit),
+            guard=layer_delivery_remote.build_guard(
+                worktree_root=str(root), name=name, commit=commit, checkout_dirname=target.checkout_dirname
+            ),
             detach=flags.detach,
         )
     )
