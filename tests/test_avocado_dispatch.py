@@ -431,7 +431,7 @@ def test_remote_argv_cwd_and_env(rec: Recorder, checkout: Path, monkeypatch: pyt
     script = rec.remote_script
     assert "cd /srv/wt/feature-x/meta-avocado" in script
     assert "BAKAR_REPO_POLICY=reuse" in script
-    assert "BAKAR_WORKTREE_BUILD_DIR=b-{worktree}-{stem}" in script
+    assert "BAKAR_WORKTREE_BUILD_DIR=b-feature-x-{stem}" in script
     assert "BAKAR_FOO=bar" in script
     assert "KAS_WORK_DIR" not in script
     assert "BAKAR_SCCACHE_DIST=0" in script
@@ -595,9 +595,12 @@ def test_strip_workspace_option_in_short_clusters() -> None:
     assert ad.strip_workspace_option(["build", "-nk", "k.yml"]) == ["build", "-nk", "k.yml"]
 
 
-def test_remote_env_always_names_the_build_dir_template() -> None:
-    assert ad.remote_env(None)["BAKAR_WORKTREE_BUILD_DIR"] == "build-{stem}-{worktree}"
-    assert ad.remote_env("b-{stem}")["BAKAR_WORKTREE_BUILD_DIR"] == "b-{stem}"
+def test_remote_env_names_the_build_dir_with_the_worktree_filled_in() -> None:
+    # The checkout directory is always meta-avocado, so a host reading {worktree}
+    # from it would give every dispatch one shared build directory.
+    assert ad.remote_env(None, "feature-x")["BAKAR_WORKTREE_BUILD_DIR"] == "build-{stem}-feature-x"
+    assert ad.remote_env("b-{stem}", "feature-x")["BAKAR_WORKTREE_BUILD_DIR"] == "b-{stem}"
+    assert ad.remote_env("{worktree}/{stem}", "w1")["BAKAR_WORKTREE_BUILD_DIR"] == "w1/{stem}"
 
 
 @pytest.mark.parametrize(

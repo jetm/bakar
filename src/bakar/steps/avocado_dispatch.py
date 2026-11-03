@@ -145,7 +145,7 @@ def build_remote_argv(local_args: list[str], kas_arg: str, rewritten_kas: str) -
     return argv
 
 
-def remote_env(build_dir_template: str | None) -> dict[str, str]:
+def remote_env(build_dir_template: str | None, name: str) -> dict[str, str]:
     """Forwarded ``BAKAR_*``/``KAS_*`` variables for the remote build.
 
     ``KAS_WORK_DIR`` names a local directory, and the remote workspace is chosen
@@ -155,7 +155,10 @@ def remote_env(build_dir_template: str | None) -> dict[str, str]:
     env[REPO_POLICY_ENV] = REPO_POLICY_REUSE
     # Always sent: the remote's own config must not pick another directory than
     # the one the plan names and the remote run is scoped to.
-    env["BAKAR_WORKTREE_BUILD_DIR"] = build_dir_template or DEFAULT_BUILD_DIR_TEMPLATE
+    # The delivered name is filled in here: the host sees only the checkout
+    # directory, which is always meta-avocado, and would key every dispatch to
+    # the same build directory. The name holds only [A-Za-z0-9._-], so no brace.
+    env["BAKAR_WORKTREE_BUILD_DIR"] = (build_dir_template or DEFAULT_BUILD_DIR_TEMPLATE).replace("{worktree}", name)
     return env
 
 
@@ -318,7 +321,7 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
         states = repo_reuse.classify_facts(
             entries,
             facts,
-            pair_core_with_bitbake=host_pairs_core_with_bitbake(remote_argv, remote_env(build_dir_template)),
+            pair_core_with_bitbake=host_pairs_core_with_bitbake(remote_argv, remote_env(build_dir_template, name)),
         )
         blocked = bool(repo_reuse.blocking(states))
         # A dry run still prints the table before it refuses, so the refusal waits for it.
@@ -436,7 +439,7 @@ def dispatch_avocado_build(host: str, request: AvocadoDispatchRequest, flags: rd
         rd.RemoteScriptSpec(
             remote_argv=remote_argv,
             cwd=target,
-            env_vars=remote_env(build_dir_template),
+            env_vars=remote_env(build_dir_template, name),
             sccache_off=not sccache_dist,
             guard=layer_delivery_remote.build_guard(worktree_root=str(root), name=name, commit=commit),
             detach=flags.detach,
