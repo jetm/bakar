@@ -44,6 +44,7 @@ from typing import Any, Literal
 import yaml
 
 from bakar.gitutil import git_stdout
+from bakar.release_workspace import ReleaseRoutingError
 
 # Repo-name substrings that identify each BSP. Order matters within a
 # family: the first matching substring wins. The lists are kept short
@@ -513,3 +514,123 @@ def meta_avocado_pin_text(checkout: Path) -> str:
 def worktree_wrapper_text(worktree: LinkedWorktree, kas_yaml: Path) -> str:
     """Render a kas wrapper YAML that pins ``meta-avocado`` to the worktree."""
     return meta_avocado_wrapper_text(worktree.checkout, kas_yaml)
+
+
+@dataclass(frozen=True)
+class LayerRepo:
+    """A kas entry that lives in a layer repository and depends on a pinned meta-avocado."""
+
+    checkout: Path
+    name: str
+    dependency: dict
+    is_linked_worktree: bool
+    checkout_name: str
+    branch: str | None
+
+
+def _git_root_of(path: Path) -> Path | None:
+    """Return the nearest ancestor of ``path`` holding a ``.git`` entry of any kind, else None."""
+    try:
+        resolved = path.resolve()
+        start = resolved if resolved.is_dir() else resolved.parent
+        return next((c for c in (start, *start.parents) if (c / ".git").exists()), None)
+    except OSError:
+        return None
+
+
+def _head_branch(checkout: Path) -> str | None:
+    """Return the branch ``checkout``'s HEAD names, or None when detached or unreadable.
+
+    Reads the HEAD file directly (the per-worktree admin directory for a linked
+    worktree) so no git process starts.
+    """
+    try:
+        dot_git = checkout / ".git"
+        if dot_git.is_file():
+            first = dot_git.read_text(encoding="utf-8").splitlines()[0]
+            if not first.startswith("gitdir:"):
+                return None
+            git_dir = Path(first[len("gitdir:") :].strip())
+            if not git_dir.is_absolute():
+                git_dir = checkout / git_dir
+        else:
+            git_dir = dot_git
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError, UnicodeDecodeError, IndexError:
+        return None
+    prefix = "ref: refs/heads/"
+    return head[len(prefix) :] if head.startswith(prefix) else None
+
+
+def _read_kas_repos(kas_yaml: Path, checkout: Path, depth: int = 0) -> dict[str, dict]:
+    """Return the ``repos`` of ``kas_yaml`` merged over those of its string includes.
+
+    Only string includes that resolve inside ``checkout`` are followed; a
+    ``{repo, file}`` include names another repository and is not read. A later
+    (including) file overrides keys of an included one, per repository, as kas
+    does. Raises :class:`ReleaseRoutingError` naming the file when it cannot be
+    read as YAML; an include that does not exist is skipped.
+    """
+    try:
+        data = yaml.safe_load(kas_yaml.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise ReleaseRoutingError(f"{kas_yaml} could not be read as a kas file: {exc}") from exc
+    if not isinstance(data, dict):
+        return {}
+    merged: dict[str, dict] = {}
+    header = data.get("header")
+    includes = header.get("includes") if isinstance(header, dict) else None
+    if depth < _MAX_INCLUDE_DEPTH and isinstance(includes, list):
+        root = checkout.resolve()
+        for inc in includes:
+            if not isinstance(inc, str):
+                continue
+            target = (kas_yaml.parent / inc).resolve()
+            if not target.is_relative_to(root) or not target.is_file():
+                continue
+            for name, entry in _read_kas_repos(target, checkout, depth + 1).items():
+                merged.setdefault(name, {}).update(entry)
+    repos = data.get("repos")
+    if isinstance(repos, dict):
+        for name, entry in repos.items():
+            merged.setdefault(str(name), {}).update(entry if isinstance(entry, dict) else {})
+    return merged
+
+
+def layer_repo_of(kas_yaml: Path) -> LayerRepo | None:
+    """Return the layer repository ``kas_yaml`` is an entry of, else None.
+
+    A layer entry lies in a git checkout whose origin does not name meta-avocado
+    and declares exactly one repository without a ``url`` (the layer repository,
+    named by its declaration, not by the directory) plus ``meta-avocado`` with a
+    ``url``. Main checkouts, linked worktrees and worktrees of bare repositories
+    resolve alike. Never runs kas and never touches the network.
+
+    Raises :class:`ReleaseRoutingError` when two or more repositories carry no
+    ``url`` (naming each) or the entry cannot be read as YAML.
+    """
+    if is_meta_avocado_yaml(kas_yaml) or _origin_repo_name(kas_yaml) == _META_AVOCADO:
+        return None
+    checkout = _git_root_of(kas_yaml)
+    if checkout is None:
+        return None
+    repos = _read_kas_repos(kas_yaml, checkout)
+    dependency = repos.get(_META_AVOCADO)
+    if dependency is None or not dependency.get("url"):
+        return None
+    url_less = [name for name, entry in repos.items() if not entry.get("url")]
+    if len(url_less) >= 2:
+        raise ReleaseRoutingError(
+            f"{kas_yaml} declares {len(url_less)} repositories without a url ({', '.join(url_less)}); "
+            "exactly one may be the layer repository"
+        )
+    if not url_less:
+        return None
+    return LayerRepo(
+        checkout=checkout,
+        name=url_less[0],
+        dependency={k: dependency[k] for k in ("url", "branch", "commit") if k in dependency},
+        is_linked_worktree=linked_worktree_common_dir(checkout) is not None,
+        checkout_name=checkout.name,
+        branch=_head_branch(checkout),
+    )
