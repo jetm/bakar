@@ -476,8 +476,13 @@ depends on the build:
   pushed into the remote workspace's own `meta-avocado` clone and checked out
   there as a linked worktree. Nothing is rsynced. See
   [Meta-avocado dispatch](#meta-avocado-dispatch).
+- A **layer-repository build** (a kas file in your own layer's checkout that
+  declares `meta-avocado` with a `url`) is routed to the same kind of release
+  workspace, and the layer travels as a git commit into a bare repository on the
+  host. See [Layer-repository builds](#layer-repository-builds).
 - **Every other form** (NXP and TI manifests, bitbake-setup workspaces, qcom,
-  and kas files outside `meta-avocado`) mirrors the workspace root to the same
+  and kas files that are neither in a `meta-avocado` checkout nor layer entries)
+  mirrors the workspace root to the same
   absolute path on the remote with an additive `rsync -a`. See
   [Additive mirror for other build forms](#additive-mirror-for-other-build-forms).
 
@@ -554,12 +559,13 @@ wins.
 
 `-w` names a local workspace: bakar checks it on the machine you run it on and
 changes into it, so a path that exists only on the build host fails there with
-`workspace does not exist or is not a directory` (exit 2). A meta-avocado `--on`
-build ignores the local workspace and always builds in the workspace its release
-maps to on the host. A `-w` naming a different workspace than that one is
-refused with exit 2 before any ssh command runs, and the refusal names the
-routed path; drop `-w`, or point it at the routed path when that path also
-exists locally.
+`workspace does not exist or is not a directory` (exit 2). With `--on`, `-w` is
+the routed workspace that is passed on to the remote build, not a directory the
+build runs in locally: a meta-avocado or layer-repository `--on` build ignores
+the local workspace and always builds in the workspace its release maps to on
+the host. A `-w` naming a different workspace than that one is refused with
+exit 2 before any ssh command runs, and the refusal names the routed path; drop
+`-w`, or point it at the routed path when that path also exists locally.
 
 bakar does not create release workspaces. Create one once per host with the
 commands the missing-workspace refusal prints (see
@@ -774,10 +780,115 @@ Every check runs before the first remote write:
     started, on the remote host's UTC clock; see
     [Remote build, streaming and exit codes](#remote-build-streaming-and-exit-codes).
 
+### Layer-repository builds
+
+A layer repository is a git checkout of your own layer, outside `meta-avocado`,
+that carries a kas file building on `meta-avocado`. bakar treats a kas file as a
+layer entry when its checkout's origin does not name `meta-avocado` and the file
+declares exactly one repository without a `url` that lies in the checkout (the
+layer repository: its `path` is absent, resolves to the checkout root, or is a
+subdirectory of it such as `meta-board: {path: meta-board}`) plus `meta-avocado`
+with a `url`. When the layer repository is a subdirectory, that subdirectory is
+the layer kas adds to the build; the entry file is still read from the checkout
+root. A repository without a `url` whose `path` points
+elsewhere is a local layer: it is ignored, and never makes a file a layer entry
+or an error. Main checkouts, linked worktrees and worktrees of a bare repository
+all count.
+
+A file in which two or more repositories resolve to the checkout root, or one
+that cannot be read as YAML, is refused with the names or the parse error. The
+refusal is exit 2 on `--on`, and on a local build when `[workspaces]` is
+configured, where the file is routed to a release workspace. A local build with
+no `[workspaces]` never routes the file, so it is built as an ordinary kas file
+unless `BAKAR_REPO_POLICY=reuse` is set, which stops it with the same error.
+`bakar triage` and the build-directory lookup treat such a file as an ordinary
+kas file instead of refusing it, and a path that does not exist is never an
+entry.
+
+```yaml
+# meta-board/kas/board.yml
+repos:
+  meta-board:
+  meta-avocado:
+    url: https://example.com/avocado-linux/meta-avocado.git
+    branch: wrynose
+    commit: 0123456789abcdef0123456789abcdef01234567
+```
+
+**Release.** The release is the `branch:` of the `meta-avocado` declaration,
+used as written: `wrynose` builds `wrynose`, with no `-avocado` suffix to strip.
+A commit-only pin names no release and is refused with exit 2; put a `branch:`
+next to the commit. A branch with a slash in it, `.` or `..` is refused too,
+because it becomes a workspace directory name. The release maps to a workspace
+through `[workspaces]`, as described in [Release workspaces](#release-workspaces).
+
+**Reuse policy.** In a configured release workspace the build runs under the
+`reuse` policy, as a meta-avocado build does, and never falls back to the kas
+policy. Under any other policy (the default, or an explicit `kas`) a layer entry
+is built like any other kas file: in the directory holding it, with `bakar
+doctor` parsing it with plain kas rather than the layer reader. Under `reuse`,
+bakar classifies every pinned repository before kas runs, reading the `meta-avocado` kas files
+at the pinned commit from the workspace clone with `git archive`, so the clone
+is only read. Two refusals come from this step, both
+before kas runs and before anything is written:
+
+- The pinned `meta-avocado` commit is absent from the workspace's clone. bakar
+  does not fetch into a shared clone; the refusal prints
+  `git -C <clone> fetch origin <commit>` for you to run. When the workspace has
+  no `meta-avocado` clone at all, the refusal says so and names the commit
+  instead, because a fetch cannot run in a directory that does not exist.
+- An include in the stack names a third repository, other than the layer
+  repository and `meta-avocado`, so the release cannot be read without fetching
+  it.
+
+Repositories that cannot be reused are refused with the usual blocker list. The
+`bakar sync` line does not apply to a layer entry, because `bakar sync` reads
+meta-avocado kas files only: the refusal tells you to check out the pin in each
+clean clone by hand.
+
+**Dispatch.** `bakar build <layer kas file> --on <host>` routes the build to the
+release workspace the dependency's branch maps to on the host, with the
+workspace, `KAS_WORK_DIR` and bakar version requirements of a meta-avocado
+dispatch. The layer is delivered as a git commit, never rsynced, into its own
+bare repository `<layer_repo_dir>/<layer name>.git` on the host, and checked out
+as a linked worktree at `<worktree_root>/<layer name>/<delivered name>/<layer name>`.
+The layer name is the repository's name in the kas file, and the checkout
+directory carries it rather than `meta-avocado`, because the host recognises a
+meta-avocado checkout by a directory of that name. A layer repository named
+`meta-avocado` is refused for the same reason. The delivered name is chosen as
+for a meta-avocado dispatch. The host builds in
+`build-<stem>-<layer name>-<delivered name>`: the dispatch fills that value into
+`[build] worktree_build_dir` before sending it, so the plan names the directory
+the host uses, whatever its bakar version, and neither two layers delivered
+under one name nor a layer and a meta-avocado file sharing a stem share a
+directory. A worktree an older bakar left at `<worktree_root>/<layer name>/<delivered name>`
+is refused and left for you to retire. The remote workspace's own `meta-avocado`
+clone is not pushed to.
+
+`layer_repo_dir` is a setting in the `[dispatch]` table of the user config
+(`bakar settings set dispatch.layer_repo_dir <path>`): an absolute path on the
+host, defaulting to `<routed workspace>/.bakar/layers`. `~` and relative paths
+are refused. See [settings.md](settings.md) and
+[config-reference.md](config-reference.md).
+
+**Host requirement.** Before anything is written the host is probed with
+`bakar settings get dispatch.layer_repo_dir`. A bakar that predates layer
+dispatch rejects that key, and without the reuse policy it would move the
+workspace's shared clones off their pins, so the dispatch is refused and `--yes`
+does not override it. Update bakar on the host (`git pull` and
+`uv tool install --force`).
+
+**`--dry-run` and `-w`.** `--dry-run` previews a layer entry like a meta-avocado
+build; see [Remote dry run](#remote-dry-run). `-w` with `--on` names the routed
+workspace that is passed on to the remote build, not a local directory the build
+runs in. A `-w` that differs from the routed workspace is refused with exit 2
+before any ssh command runs.
+
 ### Additive mirror for other build forms
 
 NXP and TI manifest builds, bitbake-setup workspaces, qcom builds and kas files
-outside `meta-avocado` keep the working-tree mirror. The remote must have the
+that are neither in a `meta-avocado` checkout nor layer entries keep the
+working-tree mirror. The remote must have the
 workspace at the same absolute path as the local machine.
 
 1. **Workspace guard** - an empty, relative, filesystem-root or home-directory
@@ -916,9 +1027,13 @@ file or build directory is written, locally or on the host. The ref line for a
 dirty checkout reads `refs/bakar/<name>/<snapshot of HEAD <commit12>, computed at
 dispatch>`, because the snapshot commit is not built.
 
+A layer entry (see [Layer-repository builds](#layer-repository-builds)) gets the
+same dry run: it runs the same checks, prints the plan with the bare repository
+and delivered worktree it would use, and writes nothing locally or on the host.
+
 Three combinations are refused with exit 2 before any ssh: `--on` with
 `--dry-run-script` (run the dry run locally), `--dry-run` with `--detach`, and a
-remote dry run of anything other than a meta-avocado kas build.
+remote dry run of anything other than a meta-avocado kas build or a layer entry.
 
 ### Refusals and fixes
 
@@ -963,12 +1078,20 @@ release workspace's own kas file.
 
 | Message (abridged) | Cause | Fix |
 |--------------------|-------|-----|
-| `--on for meta-avocado builds needs [workspaces] template in the bakar user config` | no `[workspaces]` table, or no template and no `[workspaces.releases]` entry for this release (exit 2) | add `[workspaces] template` or a `[workspaces.releases]` entry |
+| `--on for meta-avocado builds needs [workspaces] template in the bakar user config` | no `[workspaces]` table, or no template and no `[workspaces.releases]` entry for this release; a layer-repository dispatch gets the same message (exit 2) | add `[workspaces] template` or a `[workspaces.releases]` entry |
 | `Cannot route <kas> to a release workspace: the merged kas config has no openembedded-core pin`, `...has no branch:`, `...does not end in '-avocado'` | the release cannot be read from the pins (exit 2) | pin `openembedded-core` with `branch: <release>-avocado` |
 | `Cannot route <kas> ...: the openembedded-core pin names release 'x' but AVOCADO_YOCTO_SERIES is 'y'` | the kas tree contradicts itself (exit 2) | fix the pin or the variable |
 | `Cannot route <kas> ...: <kas> includes files from repositories other than its own checkout (<repos>)` | a kas include names a repository other than `meta-avocado` (exit 2) | include only files from the checkout |
 | `Release workspace <path> for release 'x' does not exist` | local build only: the routed path is missing (exit 2); other commands print a dim note and use the unrouted workspace | create the workspace, fix `[workspaces]`, or pass `-w` |
 | `cannot dispatch: kas file '<segment>' is outside the meta-avocado checkout` | a kas segment would not exist in the delivered worktree (exit 2) | keep every kas file and overlay inside the checkout |
+| `the meta-avocado dependency has no branch:, and a commit-only pin cannot name a release` | a layer entry pins `meta-avocado` by `commit:` alone (exit 2) | put a `branch:` naming the release next to the commit |
+| `the meta-avocado dependency branch '<x>' cannot be used as a workspace directory name` | the branch contains a slash or is `.` or `..` (exit 2) | use a branch named after the release, such as `wrynose` |
+| `<entry> declares N repositories without a url (<names>)` | the entry is ambiguous: two or more repositories without a `url` resolve to the checkout root (exit 2 on `--on` or with `[workspaces]` configured) | leave only the layer repository without a `url`, or give the others a `path` outside the checkout |
+| `commit <sha> of meta-avocado is not in <clone>; bakar does not fetch into a shared clone` | the pinned `meta-avocado` commit is absent from the workspace's clone on the machine running the build | run the printed `git -C <clone> fetch origin <sha>` |
+| `the workspace has no meta-avocado clone at <clone>, so the pin <sha> of meta-avocado cannot be read` | the routed workspace has no `meta-avocado` directory on the machine running the build | create the clone there at the release branch |
+| `<entry> includes files from repositories other than <layer> and meta-avocado (<repos>)` | a layer entry's include stack names a third repository (exit 2) | include only files from the layer repository and `meta-avocado` |
+| `could not probe the bakar on <host>` (ssh exit 255) | the ssh connection to the host failed, so the host's bakar was not asked (exit 1; `--yes` does not override it) | fix ssh to the host |
+| `could not confirm that the bakar on <host> supports layer-repository dispatch (exit N): ...` | the probe reached the host but failed with any other exit: the host's bakar does not know `dispatch.layer_repo_dir` (older than layer dispatch) or has a broken config; an older bakar would build the layer entry with the kas policy and move the shared clones (exit 1; `--yes` does not override it) | update bakar on the host |
 | `remote preflight failed for <host>` | host unreachable, no key auth, or no `bakar` on the remote non-login PATH | fix ssh or install bakar on the remote |
 | `bakar mismatch: local '...' vs remote '...'` | different bakar builds on the two hosts | sync the remote bakar, or pass `--yes` |
 | `remote workspace check failed: the release workspace <ws> does not exist on <host>` | no workspace on the remote | run the printed one-time commands on the host: `mkdir -p <ws>`, `git clone --branch <release> <meta-avocado origin URL> <ws>/meta-avocado`, `env KAS_WORK_DIR=<ws> kas checkout <ws>/meta-avocado/kas/machine/<machine>.yml` |
@@ -991,7 +1114,7 @@ release workspace's own kas file.
 | `BAKAR_REPO_POLICY='x' is not a repository policy` | the variable holds a value other than `kas` or `reuse`; the build and the doctor refuse it rather than fall back to `kas` | unset it, or set `kas` or `reuse` |
 | `git push failed (exit N); remote build not started.` | git's own message is printed above it | act on git's message |
 | `could not place the worktree <path> on <host>: another dispatch of the same name holds the delivery lock` | a dispatch of the same name is still delivering (script exit 3) | wait for it |
-| `...: the delivery path exists but carries no readable bakar marker` | bakar did not create `<worktree_root>/<name>/meta-avocado`, or a worktree from before the checkout directory was fixed sits at `<worktree_root>/<name>` (script exit 4) | move that directory aside by hand, or dispatch from a worktree with another name |
+| `...: the delivery path exists but carries no readable bakar marker` | bakar did not create `<worktree_root>/<name>/meta-avocado`, or a worktree from before the checkout directory was fixed sits at `<worktree_root>/<name>` (for a layer repository, `<worktree_root>/<layer name>` takes the place of `<worktree_root>` and `<layer name>` that of `meta-avocado`; script exit 4) | move that directory aside by hand, or dispatch from a worktree with another name |
 | `...: the delivered worktree belongs to another host or checkout` | the marker names another dispatching host or checkout path (script exit 5) | dispatch under another name, or remove that worktree by hand |
 | `...: the delivered worktree has uncommitted changes` | the delivered tree was edited on the remote; the changed paths are listed (script exit 6) | inspect and clean it by hand; bakar never discards changes |
 | `--clean cannot be combined with --on` | `--clean` would delete a build directory on the remote (exit 2) | build with `--on`, or run `bakar build --clean` on that host |
