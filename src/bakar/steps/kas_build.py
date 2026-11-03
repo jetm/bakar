@@ -1203,6 +1203,13 @@ def run_build(ctx: KasBuildContext, *, extra_overlays: list[Path] | None = None,
             )
             terminated = True
             return rc
+        except _HOST_PREREQUISITE_ERRORS as exc:
+            # Record the real cause as the step's error text before the exception
+            # propagates, and mark the step terminated so the finally block does
+            # not add a ``wrapper-crash`` record that would hide it.
+            log.step_fail(step, reason=_HOST_PREREQUISITE_REASON, exit_code=1, error=str(exc))
+            terminated = True
+            raise
         rc, stall_tasks = outcome.rc, outcome.stall_tasks
         if rc == 0:
             deploy = cfg.resolved_tmpdir / "deploy" / "images" / cfg.machine
@@ -1409,6 +1416,10 @@ def run_shell_live(ctx: KasBuildContext, command: str) -> int:
             )
             terminated = True
             return rc
+        except _HOST_PREREQUISITE_ERRORS as exc:
+            log.step_fail("kas_shell_live", reason=_HOST_PREREQUISITE_REASON, exit_code=1, error=str(exc))
+            terminated = True
+            raise
         rc = outcome.rc
         completed = True
     finally:
@@ -1486,6 +1497,18 @@ class BitbakeBinMissingError(RuntimeError):
     ``find_program(ctx.environ['PATH'], 'bitbake')`` cannot locate bitbake and
     the launch fails with a confusing downstream error.
     """
+
+
+# Host prerequisite failures raised while the build environment is prepared.
+# The same four are caught at the CLI for the printed error line; the steps
+# record them so the run record names the cause instead of ``wrapper-crash``.
+_HOST_PREREQUISITE_ERRORS = (
+    BuildtoolsMissingError,
+    BitbakeBinMissingError,
+    hashserv.NetworkStateDirError,
+    ReleaseRoutingError,
+)
+_HOST_PREREQUISITE_REASON = "host-prerequisite"
 
 
 def _capture_sourced_env(env_script: Path) -> dict[str, str]:

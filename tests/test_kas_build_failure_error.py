@@ -185,3 +185,94 @@ def test_run_shell_live_through_real_pty_pump_records_error(tmp_path: Path, monk
     assert len(fails) == 1
     assert fails[0]["reason"] == "exit_code=3"
     assert fails[0]["error"] == "ERROR: shell boom"
+
+
+def _raising_pty(exc: Exception):
+    def _raise(pty_ctx: object) -> _PtyOutcome:
+        raise exc
+
+    return _raise
+
+
+def _all_step_fails(events_path: Path) -> list[dict]:
+    records = [json.loads(ln) for ln in events_path.read_text().splitlines() if ln]
+    return [e for e in records if e.get("event") == "step_fail"]
+
+
+_MISSING_BIN = "host build requires the bundled bitbake bin directory ... does not exist: /w/bitbake/bin"
+
+
+@pytest.mark.unit
+def test_run_build_records_host_prerequisite_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    exc = kas_build.BitbakeBinMissingError(_MISSING_BIN)
+    monkeypatch.setattr(kas_build, "_run_pty_with_ui", _raising_pty(exc))
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        with pytest.raises(kas_build.BitbakeBinMissingError) as raised:
+            kas_build.run_build(_ctx(tmp_path, log))
+        events_path = log.events_path
+    assert raised.value is exc
+    fails = _all_step_fails(events_path)
+    assert len(fails) == 1
+    assert fails[0]["step"] == "kas_build"
+    assert fails[0]["reason"] == "host-prerequisite"
+    assert fails[0]["exit_code"] == 1
+    assert "/w/bitbake/bin" in fails[0]["error"]
+    assert not any(f["reason"] == "wrapper-crash" for f in fails)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "exc",
+    [
+        kas_build.BuildtoolsMissingError("no buildtools"),
+        kas_build.hashserv.NetworkStateDirError("bad state dir"),
+        kas_build.ReleaseRoutingError("bad routing"),
+    ],
+)
+def test_run_build_records_each_host_prerequisite_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    monkeypatch.setattr(kas_build, "_run_pty_with_ui", _raising_pty(exc))
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        with pytest.raises(type(exc)):
+            kas_build.run_build(_ctx(tmp_path, log))
+        events_path = log.events_path
+    fails = _all_step_fails(events_path)
+    assert [f["reason"] for f in fails] == ["host-prerequisite"]
+    assert fails[0]["error"] == str(exc)
+
+
+@pytest.mark.unit
+def test_run_build_pty_runtime_error_still_wrapper_crash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kas_build, "_run_pty_with_ui", _raising_pty(RuntimeError("pty broke")))
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        with pytest.raises(RuntimeError, match="pty broke"):
+            kas_build.run_build(_ctx(tmp_path, log))
+        events_path = log.events_path
+    fails = _all_step_fails(events_path)
+    assert [f["reason"] for f in fails] == ["wrapper-crash"]
+
+
+@pytest.mark.unit
+def test_run_shell_live_records_host_prerequisite_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    exc = kas_build.BitbakeBinMissingError(_MISSING_BIN)
+    monkeypatch.setattr(kas_build, "_run_pty_with_ui", _raising_pty(exc))
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        with pytest.raises(kas_build.BitbakeBinMissingError):
+            kas_build.run_shell_live(_ctx(tmp_path, log), "bitbake -e")
+        events_path = log.events_path
+    fails = _all_step_fails(events_path)
+    assert len(fails) == 1
+    assert fails[0]["step"] == "kas_shell_live"
+    assert fails[0]["reason"] == "host-prerequisite"
+    assert "/w/bitbake/bin" in fails[0]["error"]
+
+
+@pytest.mark.unit
+def test_run_shell_live_pty_runtime_error_still_wrapper_crash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kas_build, "_run_pty_with_ui", _raising_pty(RuntimeError("pty broke")))
+    with RunLogger(runs_dir=tmp_path / "runs") as log:
+        with pytest.raises(RuntimeError, match="pty broke"):
+            kas_build.run_shell_live(_ctx(tmp_path, log), "bitbake -e")
+        events_path = log.events_path
+    assert [f["reason"] for f in _all_step_fails(events_path)] == ["wrapper-crash"]
