@@ -13,6 +13,7 @@ from bakar.release_workspace import (
     map_release,
     matches_release_workspace,
     parse_repo_policy,
+    release_key_from_dependency,
     release_key_from_merged,
     sanitize_delivered_name,
     worktree_build_dir_name,
@@ -334,3 +335,21 @@ def test_a_delivered_name_is_a_valid_git_ref_component(tmp_path: Path) -> None:
             ["git", "check-ref-format", f"refs/bakar/{name}/0123456789ab"], capture_output=True, check=False
         )
         assert proc.returncode == 0, name
+
+
+class TestReleaseKeyFromDependency:
+    def test_branch_is_the_release_key(self) -> None:
+        dep = {"url": "https://example.test/meta-avocado", "branch": "wrynose", "commit": "a" * 40}
+        assert release_key_from_dependency(dep) == "wrynose"
+
+    @pytest.mark.parametrize("dep", [{"commit": "a" * 40}, {"branch": ""}, {"branch": None}, {}])
+    def test_commit_only_pin_is_refused(self, dep: dict) -> None:
+        with pytest.raises(ReleaseRoutingError, match="commit-only pin cannot name a release") as exc:
+            release_key_from_dependency(dep)
+        assert "branch" in str(exc.value)
+
+    @pytest.mark.parametrize("branch", ["feature/x", "a/b", ".", ".."])
+    def test_unusable_directory_name_is_refused_naming_the_branch(self, branch: str) -> None:
+        with pytest.raises(ReleaseRoutingError, match="workspace directory name") as exc:
+            release_key_from_dependency({"branch": branch})
+        assert repr(branch) in str(exc.value)

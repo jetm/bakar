@@ -21,6 +21,7 @@ from bakar.bsp_detect import (
     detect_kas_workspace,
     is_bbsetup_workspace,
     is_meta_avocado_yaml,
+    layer_repo_of,
     meta_avocado_checkout,
 )
 from bakar.bsp_model import BspModel, detect_bsp_family, get_model
@@ -30,6 +31,7 @@ from bakar.release_workspace import (
     ReleaseRoutingError,
     map_release,
     matches_release_workspace,
+    release_key_from_dependency,
 )
 from bakar.user_config import UserConfig, load_user_config
 
@@ -255,29 +257,36 @@ def _resolve_workspace(
 
 
 def _routed_release_workspace(kas_yaml: Path, *, strict: bool = True) -> Path | None:
-    """Return the ``[workspaces]``-routed workspace for a meta-avocado kas file, else None.
+    """Return the ``[workspaces]``-routed workspace for a meta-avocado or layer-repository kas file, else None.
 
     Routing only runs when the user config names a template or a per-release
     entry, so an unconfigured host never pays for the ``kas dump`` probe. A
     routed workspace is shared by every checkout of that release, so the build
     defaults to reusing its repositories rather than moving them to the pins
-    (``BAKAR_REPO_POLICY=reuse``) unless the caller already chose a policy.
+    (``BAKAR_REPO_POLICY=reuse``) unless the caller already chose a policy. A
+    layer entry takes its release from its meta-avocado dependency's branch and
+    never runs the kas probe.
     """
-    if not is_meta_avocado_yaml(kas_yaml):
-        return None
     from bakar.commands import console
 
+    meta = is_meta_avocado_yaml(kas_yaml)
     cfg = _user_config_or_exit()
     if not (cfg.workspaces_template or cfg.workspaces_releases):
-        return None
-    checkout = meta_avocado_checkout(kas_yaml)
-    if checkout is None:
         return None
 
     from bakar.steps import kas_pins
 
     try:
-        release = kas_pins.probe_release(kas_yaml, checkout)
+        if meta:
+            checkout = meta_avocado_checkout(kas_yaml)
+            if checkout is None:
+                return None
+            release = kas_pins.probe_release(kas_yaml, checkout)
+        else:
+            layer = layer_repo_of(kas_yaml)
+            if layer is None:
+                return None
+            release = release_key_from_dependency(layer.dependency)
         routed = map_release(release, cfg.workspaces_template, cfg.workspaces_releases)
     except ReleaseRoutingError as exc:
         if not strict:
@@ -332,11 +341,18 @@ def _default_reuse_for_release_workspace(workspace: Path, kas_yaml: Path) -> Non
     reached by routing or typed by hand, and plain kas would move every clean
     clone in it to the pins. An explicit policy still wins.
     """
-    if os.environ.get(REPO_POLICY_ENV) or not is_meta_avocado_yaml(kas_yaml):
+    if os.environ.get(REPO_POLICY_ENV):
         return
     cfg = _user_config_or_exit()
     if not (cfg.workspaces_template or cfg.workspaces_releases):
         return
+    if not is_meta_avocado_yaml(kas_yaml):
+        try:
+            if layer_repo_of(kas_yaml) is None:
+                return
+        except ReleaseRoutingError:
+            # Not a refusal point: the routing step names the unreadable entry.
+            return
     if matches_release_workspace(workspace, cfg.workspaces_template, cfg.workspaces_releases):
         os.environ[REPO_POLICY_ENV] = REPO_POLICY_REUSE
 

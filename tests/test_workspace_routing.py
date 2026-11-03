@@ -14,7 +14,7 @@ import pytest
 import typer
 
 import bakar.commands._workspace as workspace_mod
-from bakar.bsp_detect import detect_kas_workspace
+from bakar.bsp_detect import LayerRepo, detect_kas_workspace
 from bakar.commands._helpers import _INVOCATION, _bsp_from_cwd, _resolve_workspace
 from bakar.commands.triage import _resolve_triage_dirs
 from bakar.release_workspace import ReleaseRoutingError
@@ -209,7 +209,7 @@ def test_routing_error_falls_back_for_read_only_commands(
     )
 
     assert ws == workspace_mod.detect_kas_workspace(meta_avocado_worktree_layout.kas_yaml)
-    err = capsys.readouterr().err.replace("\n", "")
+    err = " ".join(capsys.readouterr().err.split())
     assert "kas not found on PATH" in err
     assert f"using the unrouted workspace {ws}" in err
     assert "pass -w <workspace> to name another one" in err
@@ -421,3 +421,145 @@ def test_triage_build_root_unrouted_main_checkout(
 
     assert report_root == detect_kas_workspace(kas_yaml) / "build-m"
     assert _POLICY not in workspace_mod.os.environ
+
+
+def _layer(tmp_path: Path, branch: str | None = "wrynose") -> tuple[Path, LayerRepo]:
+    kas_yaml = tmp_path / "layer" / "kas" / "x.yml"
+    kas_yaml.parent.mkdir(parents=True)
+    kas_yaml.write_text("header:\n  version: 16\n")
+    dep: dict = {"url": "https://example.test/meta-avocado", "commit": "a" * 40}
+    if branch is not None:
+        dep["branch"] = branch
+    repo = LayerRepo(
+        checkout=tmp_path / "layer",
+        name="layer",
+        dependency=dep,
+        is_linked_worktree=False,
+        checkout_name="layer",
+        branch="main",
+    )
+    return kas_yaml, repo
+
+
+def _as_layer(monkeypatch: pytest.MonkeyPatch, repo: LayerRepo) -> None:
+    monkeypatch.setattr(workspace_mod, "layer_repo_of", lambda _p: repo)
+
+
+def test_layer_entry_routes_by_dependency_branch_without_the_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(_POLICY, raising=False)
+    routed = tmp_path / "peridio-wrynose"
+    routed.mkdir()
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "peridio-{release}")))
+    _probe_must_not_run(monkeypatch)
+    kas_yaml, repo = _layer(tmp_path)
+    _as_layer(monkeypatch, repo)
+
+    assert _resolve_workspace(None, kas_yaml=kas_yaml, family="generic") == routed
+    assert workspace_mod.os.environ[_POLICY] == "reuse"
+
+
+def test_layer_entry_keeps_a_preset_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(_POLICY, "kas")
+    (tmp_path / "peridio-wrynose").mkdir()
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "peridio-{release}")))
+    kas_yaml, repo = _layer(tmp_path)
+    _as_layer(monkeypatch, repo)
+
+    _resolve_workspace(None, kas_yaml=kas_yaml, family="generic")
+
+    assert workspace_mod.os.environ[_POLICY] == "kas"
+
+
+def test_layer_entry_unconfigured_host_does_not_read_the_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(_POLICY, raising=False)
+    _use_config(monkeypatch, UserConfig())
+    _probe_must_not_run(monkeypatch)
+
+    def fail(_p: Path) -> None:
+        raise AssertionError("layer_repo_of must not run without a [workspaces] mapping")
+
+    monkeypatch.setattr(workspace_mod, "layer_repo_of", fail)
+    kas_yaml, _repo = _layer(tmp_path)
+
+    assert _resolve_workspace(None, kas_yaml=kas_yaml, family="generic") == detect_kas_workspace(kas_yaml)
+    assert _POLICY not in workspace_mod.os.environ
+
+
+def test_layer_entry_commit_only_pin_exits_2_naming_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv(_POLICY, raising=False)
+    (tmp_path / "peridio-wrynose").mkdir()
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "peridio-{release}")))
+    kas_yaml, repo = _layer(tmp_path, branch=None)
+    _as_layer(monkeypatch, repo)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        _resolve_workspace(None, kas_yaml=kas_yaml, family="generic")
+
+    assert excinfo.value.exit_code == 2
+    err = capsys.readouterr().err.replace("\n", "")
+    assert str(kas_yaml) in err
+    assert "commit-only pin cannot name a release" in err
+    assert _POLICY not in workspace_mod.os.environ
+
+
+def test_layer_entry_slash_branch_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "peridio-{release}")))
+    kas_yaml, repo = _layer(tmp_path, branch="feat/x")
+    _as_layer(monkeypatch, repo)
+
+    with pytest.raises(typer.Exit):
+        _resolve_workspace(None, kas_yaml=kas_yaml, family="generic")
+
+
+def test_layer_entry_unreadable_entry_exits_2_naming_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "peridio-{release}")))
+    kas_yaml, _repo = _layer(tmp_path)
+
+    def bad(p: Path) -> None:
+        raise ReleaseRoutingError(f"{p} could not be read as YAML")
+
+    monkeypatch.setattr(workspace_mod, "layer_repo_of", bad)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        _resolve_workspace(None, kas_yaml=kas_yaml, family="generic")
+
+    assert excinfo.value.exit_code == 2
+    assert str(kas_yaml) in capsys.readouterr().err.replace("\n", "")
+
+
+def test_layer_entry_missing_routed_dir_strict_and_lenient(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv(_POLICY, raising=False)
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "peridio-{release}")))
+    kas_yaml, repo = _layer(tmp_path)
+    _as_layer(monkeypatch, repo)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        _resolve_workspace(None, kas_yaml=kas_yaml, family="generic")
+    assert excinfo.value.exit_code == 2
+
+    ws = _resolve_workspace(None, kas_yaml=kas_yaml, family="generic", strict_routing=False)
+    assert ws == detect_kas_workspace(kas_yaml)
+    assert "does not exist here" in capsys.readouterr().err.replace("\n", "")
+    assert _POLICY not in workspace_mod.os.environ
+
+
+def test_layer_entry_explicit_release_workspace_defaults_to_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(_POLICY, raising=False)
+    explicit = tmp_path / "peridio-wrynose"
+    explicit.mkdir()
+    _use_config(monkeypatch, UserConfig(workspaces_template=str(tmp_path / "peridio-{release}")))
+    kas_yaml, repo = _layer(tmp_path)
+    _as_layer(monkeypatch, repo)
+
+    assert _resolve_workspace(explicit, kas_yaml=kas_yaml, family="generic") == explicit
+    assert workspace_mod.os.environ[_POLICY] == "reuse"

@@ -86,6 +86,26 @@ def release_key_from_merged(config: dict) -> str:
     return key
 
 
+def release_key_from_dependency(dependency: dict) -> str:
+    """Return the release key from a layer entry's meta-avocado dependency ``branch``.
+
+    Unlike :func:`release_key_from_merged` the branch is used as written: a layer
+    entry names the release directly (``wrynose``), with no ``-avocado`` suffix to
+    strip and no ``AVOCADO_YOCTO_SERIES`` to cross-check.
+    """
+    branch = dependency.get("branch")
+    if not isinstance(branch, str) or not branch:
+        raise ReleaseRoutingError(
+            "the meta-avocado dependency has no branch:, and a commit-only pin cannot name a release; "
+            "put a branch next to the commit"
+        )
+    if "/" in branch or "\0" in branch or branch in {".", ".."}:
+        raise ReleaseRoutingError(
+            f"the meta-avocado dependency branch {branch!r} cannot be used as a workspace directory name"
+        )
+    return branch
+
+
 def check_template(label: str, value: str, allowed: frozenset[str]) -> None:
     """Raise ReleaseRoutingError naming ``label`` unless ``value`` is a valid template.
 
