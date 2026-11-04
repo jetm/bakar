@@ -31,6 +31,11 @@ local_conf_header:
   zz-bakar-40-shared-cache: |
     # Redirect sstate fetches to the configured mirror before going upstream.
     # Path layout follows the Yocto Project autobuilder convention (/all/PATH).
-    SSTATE_MIRRORS ?= "file://.* ${@os.environ.get('BAKAR_SSTATE_MIRROR_URL', '')}/all/PATH;downloadfilename=PATH"
+    # The URL is read from the datastore with d.getVar, not os.environ: the sstate
+    # fetch runs in the do_*_setscene task, and bitbake-worker rebuilds a task's
+    # os.environ from the exported datastore variables only, which a passthrough
+    # variable is not. The hash check runs in the cooker and would still see the
+    # mirror, so every reported hit would then fail to fetch and rebuild.
+    SSTATE_MIRRORS ?= "file://.* ${@d.getVar('BAKAR_SSTATE_MIRROR_URL') or ''}/all/PATH;downloadfilename=PATH"
     # Connect to the Yocto Project hash equivalence server for cross-machine reuse.
     BB_HASHSERVE_UPSTREAM = "wss://hashserv.yoctoproject.org/ws"
