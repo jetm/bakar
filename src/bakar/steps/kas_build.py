@@ -688,6 +688,27 @@ def _resolve_user_yaml(cfg: BuildConfig, kas_yaml: Path) -> Path:
         ) from exc
 
 
+_UNFORWARDABLE_URL_CHARS = frozenset("'\"\\$`*?")
+
+
+def _forwardable_url(url: str) -> bool:
+    """True when *url* survives kas-container's unquoted word splitting intact.
+
+    Brackets are accepted only as an IPv6 host literal, where the glob pattern
+    cannot match a path in practice.
+    """
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F or c in _UNFORWARDABLE_URL_CHARS for c in url):
+        return False
+    scheme_end = url.find("//")
+    start = scheme_end + 2 if scheme_end != -1 else 0
+    path_start = url.find("/", start)
+    authority = url[start:] if path_start == -1 else url[start:path_start]
+    rest = "" if path_start == -1 else url[path_start:]
+    if "[" in rest or "]" in rest or "[" in url[:start] or "]" in url[:start]:
+        return False
+    return authority.count("[") == authority.count("]") <= 1
+
+
 def _ccache_args(
     cfg: BuildConfig,
     *,
@@ -775,6 +796,20 @@ def _ccache_args(
         runtime_args += " -e BAKAR_SCCACHE_DIR=/work/.sccache-cache"
     if need_host_gateway:
         runtime_args += " --add-host=host.docker.internal:host-gateway"
+    # kas-container drops BAKAR_* from its env allowlist, so the hub mirror URL
+    # the overlay reads is forwarded explicitly, and only when non-empty.
+    dl_mirror_url = os.environ.get("BAKAR_DL_MIRROR_URL") or cfg.dl_mirror_url
+    if dl_mirror_url:
+        # kas-container expands KAS_RUNTIME_ARGS unquoted (word splitting and globbing,
+        # no quote removal), so the URL is forwarded verbatim or not at all.
+        if _forwardable_url(dl_mirror_url):
+            runtime_args += f" -e BAKAR_DL_MIRROR_URL={dl_mirror_url}"
+        elif not dry_run:
+            print(
+                "warning: the hub mirror URL has characters that cannot be forwarded into the container; "
+                "the container build will not use the hub mirror",
+                file=sys.stderr,
+            )
     if eventlog_path is not None:
         runtime_args += f" -e BB_DEFAULT_EVENTLOG={eventlog_path}"
     if run_id is not None:
@@ -1825,7 +1860,22 @@ def _build_env(
         # buildtools default below is a fallback for the relocated SDK's missing
         # one, not a policy about which CAs to trust.
         if k.startswith(
-            ("KAS_", "BB_", "SSTATE_", "DL_", "NPROC", "PATH", "HOME", "USER", "SDKMACHINE", "SSL_CERT_FILE")
+            (
+                "KAS_",
+                "BB_",
+                "SSTATE_",
+                "DL_",
+                "NPROC",
+                "PATH",
+                "HOME",
+                "USER",
+                "SDKMACHINE",
+                "SSL_CERT_FILE",
+                # Named exactly, not by a BAKAR_ prefix: the hub download mirror
+                # a caller exports must survive into the build, and nothing else
+                # under BAKAR_ should.
+                "BAKAR_DL_MIRROR_URL",
+            )
         )
     }
     # PATH might not have leaked via the startswith rule if the shell
@@ -1855,6 +1905,12 @@ def _build_env(
         passthrough.setdefault("SSTATE_MIRRORS", cfg.sstate_mirrors)
     if cfg.sstate_mirror_url is not None:
         passthrough.setdefault("BAKAR_SSTATE_MIRROR_URL", cfg.sstate_mirror_url)
+    # An exported-but-empty value is treated as unset, so the configured URL wins
+    # and the hub overlay never renders an empty mirror.
+    if not passthrough.get("BAKAR_DL_MIRROR_URL"):
+        passthrough.pop("BAKAR_DL_MIRROR_URL", None)
+        if cfg.dl_mirror_url:
+            passthrough["BAKAR_DL_MIRROR_URL"] = cfg.dl_mirror_url
     # sccache-dist scheduler: exported only when distributed-compile is enabled,
     # so a disabled build is byte-for-byte unchanged. The sccache overlay reads
     # this var (like BAKAR_SSTATE_MIRROR_URL above). In container mode localhost
