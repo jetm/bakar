@@ -215,6 +215,38 @@ The forecast covers repository revisions and nothing else. Changes to overlays,
 forecast, which is why even the PASS message ends with `configuration changes
 are not forecast`.
 
+## Cache-sharing checks
+
+Three checks cover the live push of finished downloads from builders to the
+store host (see
+[the capability note](capabilities/shared-cache-hub-push.md)).
+
+| Check | Severity | Asserts | Fix hint |
+|-------|----------|---------|----------|
+| `cache-push-service` | WARN | On a host with `cache_push_target` set, the user unit `bakar-cache-push.service` is active and its oldest queued entry is under 60 minutes old | `systemctl --user enable --now bakar-cache-push.service` |
+| `sstate-mirror-shared-mount` | BLOCK | The effective `SSTATE_MIRRORS` names no http(s) mirror while the sstate directory is on NFS | Use a `file://` mirror, or move the sstate directory off NFS |
+| `store-stale-tarballs` | WARN | On a host with `cache_push_target` unset, no `git2_*.tar.gz.tmp` file in the top level of the downloads directory is older than one hour | Remove the named temp files |
+
+Outcomes:
+
+| Check | Outcome | Status / severity |
+|-------|---------|-------------------|
+| `cache-push-service` | `cache_push_target` unset (store host) | SKIP / INFO |
+| `cache-push-service` | Unit not active | FAIL / WARN |
+| `cache-push-service` | Oldest queued entry older than 60 minutes | FAIL / WARN |
+| `cache-push-service` | Oldest queued entry older than 15 minutes | FAIL / INFO |
+| `cache-push-service` | Unit active, queue empty or younger than 15 minutes | PASS / INFO |
+| `sstate-mirror-shared-mount` | http(s) mirror and sstate directory on NFS | FAIL / BLOCK |
+| `sstate-mirror-shared-mount` | http(s) mirror and the sstate directory's filesystem undetermined | FAIL / WARN |
+| `sstate-mirror-shared-mount` | No http(s) mirror, or a local sstate directory | PASS / INFO |
+| `store-stale-tarballs` | One or more stale temp tarballs (count and up to 10 names) | FAIL / WARN |
+| `store-stale-tarballs` | None, or `cache_push_target` set (pusher host) | PASS or SKIP / INFO |
+
+Only the http-over-NFS `sstate-mirror-shared-mount` outcome can stop a build: a
+mirror fetch into a shared sstate directory takes a lock inside it. An inactive
+or lagging pusher is advisory because builds keep passing; the cost is that
+other hosts fetch from upstream instead of the store.
+
 ## Uninative wiring checks
 
 Uninative is oe-core's prebuilt glibc plus dynamic loader that every `-native`

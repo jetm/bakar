@@ -99,6 +99,16 @@ The TCP probe (1 s timeout, against the derived port) catches a wedged daemon th
 
 The check is in `SHARED_CHECKS` and excluded from `_DOCKER_CHECKS` - the daemon runs on the host in both container and host build mode, so the check runs in both.
 
+## Cluster hash server and the store
+
+The cluster's central hash server accepts reports from every builder; it is not
+read-only. It must stay in step with the store that holds the objects: an
+equivalence reported by one host can name an object that only that host holds
+until its push reaches the store. The cost is a sstate miss and a rebuild, not a
+failure. See
+[shared-cache-hub-push](capabilities/shared-cache-hub-push.md) for how finished
+downloads reach the store.
+
 ## Configuration
 
 ```toml
