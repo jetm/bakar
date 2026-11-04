@@ -79,10 +79,6 @@ local_conf_header:
     # `=` suffices now that the zz-bakar key sorts this section last.
     BB_HASHSERVE_UPSTREAM = ""
 
-    # Fetch robustness: raise the per-URI timeout so transient TLS / DNS
-    # stalls do not trip the default (~45s) and fail the task.
-    BB_FETCH_TIMEOUT = "600"
-
     # Replace scarthgap's default MIRRORS table (which hardcodes the dead
     # sources.openembedded.org host) with a curated catch-all pointing at
     # the Yocto Project source mirror. Bitbake consults MIRRORS on the
