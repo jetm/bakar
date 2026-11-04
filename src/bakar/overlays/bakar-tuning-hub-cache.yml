@@ -27,4 +27,9 @@ local_conf_header:
     # by a compromised push key would be trusted unverified.
     # Assigned only when the URL is non-empty: an empty replacement renders as
     # "/" and BitBake's uri_replace raises MalformedUrl on every do_fetch.
-    PREMIRRORS:prepend = "${@'(https?|ftp|crate|gomod)://.*/.* ' + os.environ['BAKAR_DL_MIRROR_URL'] + '/ \\n ' if os.environ.get('BAKAR_DL_MIRROR_URL') else ''}"
+    # The URL is read from the datastore with d.getVar, never from os.environ:
+    # bitbake-worker rebuilds each task's os.environ from the exported datastore
+    # variables only, and a passthrough variable such as this one is not exported.
+    # os.environ held the URL in the cooker, so `bakar getvar` showed the hub entry,
+    # and was empty in do_fetch, where every source went to upstream.
+    PREMIRRORS:prepend = "${@'(https?|ftp|crate|gomod)://.*/.* ' + d.getVar('BAKAR_DL_MIRROR_URL') + '/ \\n ' if d.getVar('BAKAR_DL_MIRROR_URL') else ''}"

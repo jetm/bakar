@@ -155,22 +155,55 @@ def _premirrors_expr() -> str:
     return value[len('"${@') : -len('}"')]
 
 
-def _eval_premirrors(environ: dict[str, str]) -> str:
-    stub_os = types.SimpleNamespace(environ=environ)
-    expr = _premirrors_expr()  # the shipped overlay's own inline-python text, run against a stub os
+class _Datastore:
+    """The slice of BitBake's datastore the overlay's inline python touches."""
+
+    def __init__(self, variables: dict[str, str]) -> None:
+        self._variables = variables
+
+    def getVar(self, name: str) -> str | None:  # noqa: N802 - BitBake's spelling
+        return self._variables.get(name)
+
+
+def _eval_premirrors(variables: dict[str, str], environ: dict[str, str] | None = None) -> str:
+    """Run the shipped expression with a stub datastore and a stub os.environ.
+
+    ``environ`` defaults to empty because that is what a task sees: bitbake-worker
+    rebuilds os.environ from the exported datastore variables only.
+    """
+    stub_os = types.SimpleNamespace(environ=environ or {})
+    expr = _premirrors_expr()  # the shipped overlay's own inline-python text
     # nosemgrep: python.lang.security.audit.eval-detected.eval-detected
-    return eval(expr, {"os": stub_os})
+    return eval(expr, {"os": stub_os, "d": _Datastore(variables)})
 
 
-@pytest.mark.parametrize("environ", [{}, {"BAKAR_DL_MIRROR_URL": ""}])
-def test_empty_or_absent_url_yields_no_premirror(environ: dict[str, str]) -> None:
-    assert _eval_premirrors(environ) == ""
+@pytest.mark.parametrize("variables", [{}, {"BAKAR_DL_MIRROR_URL": ""}])
+def test_empty_or_absent_url_yields_no_premirror(variables: dict[str, str]) -> None:
+    assert _eval_premirrors(variables) == ""
 
 
 def test_set_url_yields_checksummed_schemes_and_the_url() -> None:
     value = _eval_premirrors({"BAKAR_DL_MIRROR_URL": _HUB_URL})
     assert value.startswith("(https?|ftp|crate|gomod)://.*/.* " + _HUB_URL + "/ ")
     assert value.endswith("\\n ")
+
+
+def test_hub_entry_survives_the_task_environment() -> None:
+    # In do_fetch os.environ no longer holds the passthrough variable, only the
+    # datastore does. A live build on pc2 sent every source upstream when the
+    # expression read os.environ, while `bakar getvar` (cooker) still showed the entry.
+    value = _eval_premirrors({"BAKAR_DL_MIRROR_URL": _HUB_URL}, environ={})
+    assert value.startswith("(https?|ftp|crate|gomod)://.*/.* " + _HUB_URL + "/ ")
+
+
+def test_the_environment_alone_does_not_enable_the_hub() -> None:
+    # The mirror is a datastore decision: a stray exported variable must not add it.
+    assert _eval_premirrors({}, environ={"BAKAR_DL_MIRROR_URL": _HUB_URL}) == ""
+
+
+def test_expression_reads_the_datastore_not_os_environ() -> None:
+    assert "os.environ" not in _premirrors_expr()
+    assert "d.getVar('BAKAR_DL_MIRROR_URL')" in _premirrors_expr()
 
 
 def test_unreachable_warning_hides_userinfo_and_keeps_ipv6_literal(capsys: pytest.CaptureFixture[str]) -> None:
