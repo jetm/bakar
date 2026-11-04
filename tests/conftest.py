@@ -68,6 +68,7 @@ SCRUBBED_ENV_NAMES: frozenset[str] = frozenset(
         "XDG_STATE_HOME",
         "SSTATE_DIR",
         "DL_DIR",
+        "SSTATE_MIRRORS",
         "BUILD_DIR",
         "KAS_CONTAINER_ENGINE",
         "SCCACHE_SERVER_PORT",

@@ -220,6 +220,8 @@ def _make_cfg_mock(tmp_path: Path):
     mock_cfg.bsp_root = tmp_path
     mock_cfg.kas_yaml = None
     mock_cfg.runs_dir = runs_dir
+    # A MagicMock attribute is truthy; leave the hub probe off so it does not warn on stderr.
+    mock_cfg.use_hub_mirror = False
     return mock_cfg
 
 
