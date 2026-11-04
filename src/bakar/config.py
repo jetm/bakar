@@ -537,6 +537,8 @@ class BuildConfig:
     # the recommended pressure_max_* back to config.toml.
     psi_autocalibrate: bool = field(default=False)
     sstate_mirror_url: str | None = field(default=None)
+    dl_mirror_url: str | None = field(default=None)
+    cache_push_target: str | None = field(default=None)
     # Decoupled build parallelism sourced from config.toml [build]. All None ->
     # the existing NPROC-derived behavior. _build_env() exports NPROC from nproc
     # (cpu_count fallback when None), and BAKAR_PARALLEL_MAKE / BAKAR_BB_NUMBER_THREADS
@@ -752,6 +754,11 @@ class BuildConfig:
     def use_shared_cache(self) -> bool:
         """True when an sstate mirror URL is configured."""
         return bool(self.sstate_mirror_url)
+
+    @property
+    def use_hub_mirror(self) -> bool:
+        """True when a hub download-mirror URL is configured."""
+        return bool(self.dl_mirror_url)
 
     @property
     def use_sccache_dist(self) -> bool:
@@ -1474,6 +1481,8 @@ def resolve(request: ResolveRequest) -> BuildConfig:
         feed_dir=user_config.feed_dir if user_config else None,
         psi_autocalibrate=user_config.psi_autocalibrate if user_config else False,
         sstate_mirror_url=user_config.sstate_mirror_url if user_config else None,
+        dl_mirror_url=user_config.dl_mirror_url if user_config else None,
+        cache_push_target=user_config.cache_push_target if user_config else None,
         sccache_dist=resolved_sccache_dist,
         sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
         mold=resolved_mold,
