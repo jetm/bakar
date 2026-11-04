@@ -26,6 +26,8 @@ The downloads directory comes from the `DL_DIR` environment variable, else `dl_d
 
 `bakar cache push --watch` watches the top level of the downloads directory and pushes finished files over rsync/ssh using the key `~/.ssh/bakar-cache-push`. It runs until interrupted; Ctrl-C ends it cleanly.
 
+The push key is the only identity the transfer offers: the ssh command sets `IdentitiesOnly=yes` and `IdentityAgent=none`. Without the second option, an agent or identity file that your ssh config names for the store host is offered as well, and a store host that accepts it runs the push with that key, so the key restricted to write-only `rrsync` is never exercised. To check on the store host, list the key fingerprints that authenticated the pusher's logins (`journalctl -u sshd | grep 'Accepted publickey'`); they must be the push key's `ssh-keygen -lf ~/.ssh/bakar-cache-push.pub` fingerprint, not your login key's.
+
 | Exit | Meaning |
 |------|---------|
 | 0 | Interrupted after a normal watch |

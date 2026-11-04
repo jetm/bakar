@@ -79,6 +79,22 @@ def test_push_argv(tmp_path: Path) -> None:
     assert "--dry-run" in recon and "--out-format=%n" in recon
 
 
+def test_push_and_reconcile_authenticate_with_the_push_key_alone(tmp_path: Path) -> None:
+    # A user ssh config can offer an agent key and an identity file for the store host. On pc2
+    # and pc3 it did, the store host accepted the user's full key first, and no push ever used
+    # the write-only rrsync key. IdentityAgent=none is what makes the push key the only identity.
+    for argv in (
+        cp.build_push_argv(tmp_path, "hub:/dl", Path("/k/id"), tmp_path / "l"),
+        cp.build_reconcile_argv(tmp_path, "hub:/dl", Path("/k/id"), tmp_path / "l"),
+    ):
+        transport = argv[argv.index("-e") + 1].split()
+        assert transport[0] == "ssh"
+        assert "IdentityAgent=none" in transport
+        assert "IdentitiesOnly=yes" in transport
+        assert transport[transport.index("-i") + 1] == "/k/id"
+        assert "ForwardAgent=yes" not in transport
+
+
 @pytest.mark.parametrize(
     ("rc", "err", "want"),
     [

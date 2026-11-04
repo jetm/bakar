@@ -85,12 +85,25 @@ def scan_candidates(dl_dir: Path) -> list[str]:
 
 
 def push_ssh_argv(key: Path) -> list[str]:
+    """The ssh command rsync uses to reach the store, authenticating with the push key alone.
+
+    ``IdentitiesOnly`` does not do that by itself: a ``Host`` block in the user's ssh
+    config can name an agent and an identity file, and ssh offers those too. On pc2 and
+    pc3 the config's TPM-backed agent key was offered first and the store host accepted
+    it, so every push ran with the user's full key and the write-only ``rrsync`` key
+    was never used. ``IdentityAgent=none`` removes the agent, which leaves the config's
+    ``.pub`` identity with nothing to sign it, and the push key is the one that
+    authenticates. ``-F /dev/null`` would be stronger but drops the config's host-key
+    handling, so the push then fails host-key verification.
+    """
     return [
         "ssh",
         "-i",
         str(key),
         "-o",
         "IdentitiesOnly=yes",
+        "-o",
+        "IdentityAgent=none",
         "-o",
         "BatchMode=yes",
         *SSH_BOUND_OPTS,
