@@ -62,6 +62,8 @@ section or key, and the load stops.
 | `sstate_dir` | string | *(not set)* | Override `SSTATE_DIR` (sstate cache path). Passed to kas-container as an env var. |
 | `sstate_mirrors` | string | *(not set)* | Raw `SSTATE_MIRRORS` value passed to the build. Use `sstate_mirror_url` unless you need full control over the mirror syntax. |
 | `sstate_mirror_url` | string | *(not set)* | HTTP(S) sstate/downloads mirror URL. When set, bakar activates the shared-cache overlay (`bakar-tuning-shared-cache.yml`), which wires `SSTATE_MIRRORS` to `<url>/all/PATH;downloadfilename=PATH` and sets `BB_HASHSERVE_UPSTREAM`. Equivalent to passing `--sstate-mirror` on every invocation. The Yocto Project public mirror (`http://sstate.yoctoproject.org`) works without any additional config. |
+| `dl_mirror_url` | string | *(not set)* | Base URL of the central downloads store, for example `http://192.168.8.174:18742/downloads`. When set, bakar activates the hub-cache overlay, which serves http(s), ftp, crate and gomod sources from the store (not git or gitsm). The pusher also uses it to skip files the store already serves. The key is dropped for a build when the store does not answer within 3 seconds. The reachability probe connects directly and ignores proxy environment variables. Exported as `BAKAR_DL_MIRROR_URL`. |
+| `cache_push_target` | string | *(not set)* | ssh destination `bakar cache push` sends finished downloads to, for example `pc1:/mnt/JETM_SATA_9.1T/yocto-cache/downloads-incoming`. This must be a receiving directory, not the receiving host's own `DL_DIR`. Leave unset on the store host. |
 | `scheduler` | string | *(not set)* | BitBake task scheduler: `speed` (maximize parallelism) or `completion` (minimize task switches). |
 | `pressure_max_cpu` | float | *(not set)* | PSI cpu avg10 pressure threshold (0-100). Exported to the build as `BB_PRESSURE_MAX_CPU` converted to bitbake's stall-microseconds-per-second scale (percent × 10,000); bitbake stops launching new tasks while the measured stall rate exceeds it. Must be `>= 1`. Generate calibrated values with `psi_autocalibrate`. |
 | `pressure_max_io` | float | *(not set)* | PSI io avg10 threshold. Same semantics as `pressure_max_cpu`. |
@@ -377,6 +379,12 @@ tier decides. `BAKAR_CONTAINER` is parsed the same way.
 | `BAKAR_SHOW_BASELINE_DRIFT` | `show_baseline_drift` | env, workspace `[build]`, user config, default off. |
 | `BAKAR_SCCACHE_DIST` | `sccache_dist` | CLI `--sccache-dist`, env, user config, default off. No workspace tier. |
 | `BAKAR_CCACHE` | `ccache` | env, workspace `[build]`, user config; when none sets it, follows the resolved `sccache_dist`. |
+
+### Hub cache
+
+| Variable | `[build]` key | Description |
+|----------|---------------|-------------|
+| `BAKAR_DL_MIRROR_URL` | `dl_mirror_url` | Exported into the build from `dl_mirror_url` and read by the hub-cache overlay. |
 
 ### Release workspaces and dispatch
 

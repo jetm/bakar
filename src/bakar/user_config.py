@@ -30,6 +30,8 @@ _STR_FIELDS = {
     "local_tmpdir_base",
     "sstate_mirrors",
     "sstate_mirror_url",
+    "dl_mirror_url",
+    "cache_push_target",
     "scheduler",
     "ccache_dir",
     "feed_dir",
@@ -125,6 +127,8 @@ class UserConfig:
     local_tmpdir_base: str | None = None
     sstate_mirrors: str | None = None
     sstate_mirror_url: str | None = None
+    dl_mirror_url: str | None = None
+    cache_push_target: str | None = None
     scheduler: str | None = None
     sccache_dist: bool = False
     sccache_scheduler_url: str | None = None
@@ -329,6 +333,8 @@ _BUILD_KEYS = {
     "local_tmpdir_base": "local_tmpdir_base",
     "sstate_mirrors": "sstate_mirrors",
     "sstate_mirror_url": "sstate_mirror_url",
+    "dl_mirror_url": "dl_mirror_url",
+    "cache_push_target": "cache_push_target",
     "scheduler": "scheduler",
     "sccache_dist": "sccache_dist",
     "sccache_scheduler_url": "sccache_scheduler_url",
