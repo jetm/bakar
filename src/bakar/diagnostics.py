@@ -2645,6 +2645,115 @@ _FS_BLOCK: frozenset[str] = frozenset({"vfat", "exfat", "ntfs", "9p", "nfs", "nf
 _LEASE_BREAK_TIME_PATH = Path("/proc/sys/fs/lease-break-time")
 
 
+_PUSH_BACKLOG_WARN_S = 3600.0
+_PUSH_BACKLOG_INFO_S = 900.0
+_STALE_TARBALL_AGE_S = 3600.0
+_STALE_TARBALL_LIST_MAX = 10
+
+
+def check_cache_push_service(cfg: BuildConfig) -> CheckResult:
+    """Report ``bakar-cache-push.service`` health and the push queue backlog.
+
+    Skipped on a store host (``cache_push_target`` unset). Only advisory
+    severities: an inactive unit or a >60 min backlog is WARN, a >15 min
+    backlog is INFO; none of them can stop a build.
+    """
+    name = "cache-push-service"
+    if not cfg.cache_push_target:
+        return _skip(name, Severity.INFO, "cache_push_target not set (store host)")
+    from bakar import detach_records
+    from bakar.steps.cache_queue import PushQueue, queue_exists
+
+    unit = "bakar-cache-push.service"
+    if not detach_records.systemctl_unit_active(unit):
+        return _fail(
+            name,
+            Severity.WARN,
+            f"{unit} is not active",
+            fix_hint=f"systemctl --user enable --now {unit}",
+        )
+    # A diagnostic must not create state: with no queue database yet there is no
+    # backlog, and opening PushQueue would create the state directory and WAL files.
+    if not queue_exists():
+        return _ok(name, Severity.INFO, f"{unit} active, no queue yet")
+    with PushQueue() as queue:
+        age = queue.snapshot().oldest_age_s
+    if age is None:
+        return _ok(name, Severity.INFO, f"{unit} active, queue empty")
+    minutes = int(age // 60)
+    if age > _PUSH_BACKLOG_WARN_S:
+        return _fail(name, Severity.WARN, f"oldest queued push is {minutes} min old")
+    if age > _PUSH_BACKLOG_INFO_S:
+        return _fail(name, Severity.INFO, f"oldest queued push is {minutes} min old")
+    return _ok(name, Severity.INFO, f"{unit} active, oldest queued push {minutes} min old")
+
+
+def check_sstate_mirror_shared_mount(cfg: BuildConfig) -> CheckResult:
+    """Fail when an http(s) SSTATE_MIRRORS entry coexists with an NFS sstate dir.
+
+    A mirror fetch into a shared sstate directory takes a lock inside it, so
+    this is the one new cache-sharing row allowed to BLOCK.
+    """
+    name = "sstate-mirror-shared-mount"
+    mirrors = os.environ.get("SSTATE_MIRRORS") or cfg.sstate_mirrors or ""
+    if not mirrors:
+        # The shared-cache overlay sets SSTATE_MIRRORS with ?=, so it supplies
+        # the effective http(s) mirror only when none is set explicitly.
+        # Config only: the build drops a caller's BAKAR_SSTATE_MIRROR_URL and
+        # exports cfg.sstate_mirror_url, so reading the env here would disagree.
+        mirror_url = (cfg.sstate_mirror_url or "").strip()
+        if cfg.use_shared_cache and mirror_url.startswith(("http://", "https://")):
+            mirrors = f"{mirror_url.rstrip('/')}/all/PATH"
+    if "http://" not in mirrors and "https://" not in mirrors:
+        return _ok(name, Severity.INFO, "no http(s) sstate mirror configured")
+    sstate = os.environ.get("SSTATE_DIR") or cfg.sstate_dir
+    if not sstate:
+        return _skip(name, Severity.INFO, "no sstate directory configured")
+    on_nfs = mounts.is_path_on_nfs(Path(sstate))
+    if on_nfs is None:
+        return _fail(
+            name,
+            Severity.WARN,
+            f"could not determine the filesystem of sstate directory {sstate}",
+        )
+    if on_nfs:
+        return _fail(
+            name,
+            Severity.BLOCK,
+            f"SSTATE_MIRRORS names an http(s) mirror ({mirrors.strip()}) while sstate directory {sstate} is on NFS",
+            fix_hint="use a file:// mirror or move the sstate directory off NFS",
+        )
+    return _ok(name, Severity.INFO, f"http(s) sstate mirror with local sstate directory {sstate}")
+
+
+def check_store_stale_tarballs(cfg: BuildConfig) -> CheckResult:
+    """Warn about ``git2_*.tar.gz.tmp`` files left over in the store host's DL_DIR."""
+    name = "store-stale-tarballs"
+    if cfg.cache_push_target:
+        return _skip(name, Severity.INFO, "cache_push_target set (pusher host)")
+    if not cfg.dl_dir:
+        return _skip(name, Severity.INFO, "no downloads directory configured")
+    cutoff = time.time() - _STALE_TARBALL_AGE_S
+    stale: list[str] = []
+    try:
+        for entry in Path(cfg.dl_dir).glob("git2_*.tar.gz.tmp"):
+            try:
+                if entry.is_file() and not entry.is_symlink() and entry.stat().st_mtime < cutoff:
+                    stale.append(entry.name)
+            except OSError:
+                continue
+    except OSError:
+        return _skip(name, Severity.INFO, f"cannot read {cfg.dl_dir}")
+    if not stale:
+        return _ok(name, Severity.INFO, "no stale git2 tarball temp files")
+    names = ", ".join(sorted(stale)[:_STALE_TARBALL_LIST_MAX])
+    return _fail(
+        name,
+        Severity.WARN,
+        f"{len(stale)} stale git2_*.tar.gz.tmp file(s) older than 1 h in {cfg.dl_dir}: {names}",
+    )
+
+
 def check_nfs_delegations(cfg: BuildConfig) -> CheckResult:
     """Warn when this host exports the build tree and holds NFS delegations on it.
 
@@ -3738,6 +3847,10 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_uninative_cluster_consistency,
     # INFO/WARN only: advisory forecast of native rebuilds from recorded revision sets.
     check_native_forecast,
+    # WARN/INFO only, except the http-mirror-over-NFS sstate row (BLOCK).
+    check_cache_push_service,
+    check_sstate_mirror_shared_mount,
+    check_store_stale_tarballs,
 )
 
 # Docker-dependent checks from ``SHARED_CHECKS``. Filtered out of
@@ -3797,6 +3910,8 @@ _CACHE_TOUCHING_CHECKS: tuple[CheckFunc, ...] = (
     check_uninative_mirror_hit,
     check_uninative_cluster_consistency,
     check_native_forecast,
+    check_sstate_mirror_shared_mount,
+    check_store_stale_tarballs,
 )
 
 
@@ -3835,6 +3950,9 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "sstate-hash-leak",
             "disk-free",
             "native-rebuild-forecast",
+            "cache-push-service",
+            "sstate-mirror-shared-mount",
+            "store-stale-tarballs",
         ),
     ),
     (
@@ -3928,6 +4046,9 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_shared_cache_mounts, "shared-mounts", Severity.BLOCK),
     (check_uninative_cluster_consistency, "uninative-cluster-ceiling", Severity.BLOCK),
     (check_native_forecast, "native-rebuild-forecast", Severity.WARN),
+    (check_cache_push_service, "cache-push-service", Severity.WARN),
+    (check_sstate_mirror_shared_mount, "sstate-mirror-shared-mount", Severity.BLOCK),
+    (check_store_stale_tarballs, "store-stale-tarballs", Severity.WARN),
     # NXP-only (BspModel.doctor_extras)
     (check_forks_linux_imx, "forks-linux-imx", Severity.INFO),
     (check_manifest_consistency, "manifest", Severity.INFO),
