@@ -6,11 +6,16 @@ Split out of ``_helpers.py``. ``_helpers`` re-exports only the names that
 
 from __future__ import annotations
 
+import os
+import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
+from rich.markup import escape
 
+from bakar import probes
+from bakar.commands._app import console
 from bakar.config import _overlay_dir
 from bakar.diagnostics import (
     _UNINATIVE_FRAGMENT,
@@ -56,6 +61,62 @@ def _hashequiv_extra_overlays(cfg: BuildConfig) -> list[Path]:
 def _shared_cache_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return the shared-cache overlay path when ``cfg.use_shared_cache`` is True."""
     return _conditional_overlay(cfg.use_shared_cache, "bakar-tuning-shared-cache.yml")
+
+
+# URL -> reachability, so one process probes a given hub once however many
+# overlay resolutions (build, show, dump) it performs.
+_HUB_PROBE_MEMO: dict[str, bool] = {}
+
+
+def _display_url(url: str) -> str:
+    """Return *url* without userinfo so a password never reaches the terminal."""
+    url = str(url)
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = host + (f":{parts.port}" if parts.port else "")
+        if not parts.scheme or not netloc:
+            return url.rsplit("@", 1)[-1]
+        return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
+    except ValueError:
+        return url.rsplit("@", 1)[-1]
+
+
+def _hub_mirror_reachable(url: str | None) -> bool:
+    """Return whether the hub at *url* answers, probing at most once per URL per process.
+
+    An unreachable hub prints one warning line and the build proceeds without
+    the hub mirror. A falsy *url* is never probed.
+    """
+    if not url:
+        return False
+    if url not in _HUB_PROBE_MEMO:
+        reachable = probes.http_reachable(url, timeout=3.0)
+        _HUB_PROBE_MEMO[url] = reachable
+        if not reachable:
+            # soft_wrap keeps the warning one physical line however long the URL is.
+            shown = escape(_display_url(url))
+            console.print(
+                f"[yellow]warning:[/] hub mirror {shown} is unreachable; continuing without the hub mirror",
+                soft_wrap=True,
+            )
+    return _HUB_PROBE_MEMO[url]
+
+
+def _hub_mirror_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return the hub-cache overlay path when ``cfg.use_hub_mirror`` and the hub answers.
+
+    The ``and`` short-circuits, so no probe runs when ``dl_mirror_url`` is unset.
+    A caller-supplied ``BAKAR_DL_MIRROR_URL`` wins over the config value, exactly
+    as ``kas_build._build_env`` exports it, so the probe checks the URL the
+    build will actually use.
+    """
+    return _conditional_overlay(
+        cfg.use_hub_mirror and _hub_mirror_reachable(os.environ.get("BAKAR_DL_MIRROR_URL") or cfg.dl_mirror_url),
+        "bakar-tuning-hub-cache.yml",
+    )
 
 
 def _sccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
@@ -164,12 +225,12 @@ def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return all opt-in tuning overlay paths for cfg.
 
     cache-classify (always on) + host (host-mode rpm isolation) + ccache (when
-    effective) + hashequiv + shared-cache + sccache + mold + uninative. The
+    effective) + hashequiv + shared-cache + hub-cache + sccache + mold + uninative. The
     cache-classify overlay is unconditional so plain-ccache builds still get the
     cache-hit emitter; every other entry is gated on its toggle. List order does
     not set local.conf precedence - kas sorts local_conf_header by key, and the
     bakar overlays use sort-last ``zz-bakar-NN-*`` keys so the numeric segment
-    decides (base < ccache < hashequiv < shared-cache < sccache < mold <
+    decides (base < ccache < hashequiv < shared-cache < hub-cache < sccache < mold <
     ``zz-bakar-70-uninative``). The host overlay adds only a layer (no
     local_conf_header), so its position is immaterial. The uninative overlay is
     gated on the host environment rather than a config toggle - see
@@ -180,6 +241,7 @@ def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
         *_ccache_extra_overlays(cfg),
         *_hashequiv_extra_overlays(cfg),
         *_shared_cache_extra_overlays(cfg),
+        *_hub_mirror_extra_overlays(cfg),
         *_sccache_extra_overlays(cfg),
         *_mold_extra_overlays(cfg),
         *_uninative_extra_overlays(cfg),

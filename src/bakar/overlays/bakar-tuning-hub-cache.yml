@@ -1,0 +1,30 @@
+# Hub download-mirror opt-in overlay.
+#
+# Selected by bakar only when the `dl_mirror_url` config key is set and the hub
+# answers a reachability probe. It is never auto-loaded otherwise.
+#
+# What it does: puts the hub's source-download mirror in front of upstream for
+# every fetcher scheme, so tarballs, git and crate sources already fetched by
+# another machine come from the hub. It does not touch sstate or hash
+# equivalence; bakar-tuning-shared-cache covers those.
+#
+# The mirror URL is supplied at build time via the BAKAR_DL_MIRROR_URL
+# environment variable, which bakar exports from the configured dl_mirror_url.
+
+header:
+  version: 21
+
+env:
+  BAKAR_DL_MIRROR_URL:
+
+local_conf_header:
+  # Sort-last key (see bakar-tuning-generic): 45 orders hub-cache after
+  # shared-cache (40) and before sccache.
+  zz-bakar-45-hub-cache: |
+    # Try the hub download mirror before going upstream, for the checksummed fetcher schemes.
+    # git and gitsm are deliberately excluded: BitBake fetches git mirror tarballs with
+    # ignore_checksums set and the git fetcher has no checksum support, so a tarball planted
+    # by a compromised push key would be trusted unverified.
+    # Assigned only when the URL is non-empty: an empty replacement renders as
+    # "/" and BitBake's uri_replace raises MalformedUrl on every do_fetch.
+    PREMIRRORS:prepend = "${@'(https?|ftp|crate|gomod)://.*/.* ' + os.environ['BAKAR_DL_MIRROR_URL'] + '/ \\n ' if os.environ.get('BAKAR_DL_MIRROR_URL') else ''}"
