@@ -3,7 +3,7 @@
 The overlays carry every optimization that used to live in the
 generator's ``local_conf_header`` block. These tests parse the shipped
 files and assert each load-bearing line is present, so a regression
-that drops e.g. the renderdoc fix or the BB_FETCH_TIMEOUT bump fails
+that drops e.g. the renderdoc fix or the MIRRORS catch-all fails
 in CI before it lands in a build.
 """
 
@@ -27,7 +27,6 @@ _SHARED_LINES = (
     "BB_NUMBER_THREADS",
     "PARALLEL_MAKE",
     "IMAGE_FEATURES:remove",
-    'BB_FETCH_TIMEOUT = "600"',
     "MIRRORS = ",
     "PREMIRRORS:prepend = ",
 )

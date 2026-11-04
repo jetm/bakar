@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,7 @@ _TIMEOUT_S = 10
 _FORWARDED_PREFIXES = ("/downloads", "/sstate")
 _LOCK_WAIT_SYMBOLS = ("locks_lock_inode_wait", "flock_lock_inode_wait", "nfs4_proc_lock", "nlmclnt_")
 _SPIN_CPU_THRESHOLD = 80.0
+_CPU_SAMPLE_S = 1.0
 _JOURNAL_RE = re.compile(r"nfs|lockd|lease", re.IGNORECASE)
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
@@ -46,6 +48,7 @@ class ProcCapture:
     syscall: Item
     fds: list[str] = field(default_factory=list)
     fds_unreadable: str | None = None
+    cpu_pct: float | None = None
 
 
 @dataclass
@@ -133,15 +136,62 @@ def _lslocks_filtered(item: Item, prefixes: list[str]) -> Item:
     return Item(text="\n".join(lines))
 
 
-def capture(
+def _cpu_ticks(pid_dir: Path) -> int | None:
+    """utime + stime in clock ticks from ``/proc/<pid>/stat``, or None if unreadable."""
+    try:
+        raw = (pid_dir / "stat").read_text(errors="replace")
+        # comm may contain spaces and parentheses; the fields start after the last ")".
+        rest = raw.rsplit(")", 1)[1].split()
+        return int(rest[11]) + int(rest[12])
+    except OSError, IndexError, ValueError:
+        return None
+
+
+def _measure_cpu(
+    pid_dirs: dict[int, Path],
+    *,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+    clk_tck: int,
+) -> dict[int, float | None]:
+    """CPU share of each process over a short interval, not the ps lifetime average."""
+    first = {pid: _cpu_ticks(d) for pid, d in pid_dirs.items()}
+    t0 = clock()
+    sleep(_CPU_SAMPLE_S)
+    elapsed = clock() - t0
+    result: dict[int, float | None] = {}
+    for pid, d in pid_dirs.items():
+        before, after = first[pid], _cpu_ticks(d)
+        if before is None or after is None or elapsed <= 0:
+            result[pid] = None
+        else:
+            result[pid] = (after - before) / clk_tck / elapsed * 100.0
+    return result
+
+
+def capture(  # noqa: PLR0913 - sleep, clock and clk_tck are injected so tests stay fast
     cache_dirs: list[Path] | list[str],
     *,
     proc_root: Path = Path("/proc"),
     runner: Runner = subprocess.run,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    clk_tck: int | None = None,
 ) -> Capture:
     prefixes = [str(d) for d in cache_dirs] + list(_FORWARDED_PREFIXES)
     procs: list[ProcCapture] = []
-    for pid in find_bitbake_pids(proc_root):
+    pids = find_bitbake_pids(proc_root)
+    cpu = (
+        _measure_cpu(
+            {pid: proc_root / str(pid) for pid in pids},
+            sleep=sleep,
+            clock=clock,
+            clk_tck=clk_tck or os.sysconf("SC_CLK_TCK"),
+        )
+        if pids
+        else {}
+    )
+    for pid in pids:
         pid_dir = proc_root / str(pid)
         fds, fds_err = _collect_fds(pid_dir, prefixes)
         procs.append(
@@ -152,6 +202,7 @@ def capture(
                 syscall=_read(pid_dir / "syscall"),
                 fds=fds,
                 fds_unreadable=fds_err,
+                cpu_pct=cpu.get(pid),
             )
         )
 
@@ -177,9 +228,10 @@ def capture(
 
 def _ps_fields(item: Item) -> tuple[str, float | None, str]:
     """Split ``ps`` output into (state, cpu percent, wait channel)."""
-    if item.unreadable is not None or not (item.text or "").strip():
+    text = item.text
+    if item.unreadable is not None or text is None or not text.strip():
         return "", None, ""
-    parts = item.text.split()
+    parts = text.split()
     state = parts[0] if parts else ""
     try:
         cpu: float | None = float(parts[1]) if len(parts) > 1 else None
@@ -193,13 +245,16 @@ def classify(cap: Capture) -> Verdict:
     """First match of delegation-recall, held-lock, spin, else unclassified."""
     for rule in ("delegation-recall", "held-lock", "spin"):
         for proc in cap.procs:
-            state, cpu, wchan = _ps_fields(proc.ps)
+            state, _lifetime_cpu, wchan = _ps_fields(proc.ps)
+            cpu = proc.cpu_pct
             haystack = f"{proc.stack.text or ''} {wchan}"
             wait_symbol = wchan not in ("", "-", "0")
             if rule == "delegation-recall":
-                hit = state.startswith("D") and "__break_lease" in haystack
+                # __break_lease sleeps in wait_event_interruptible_timeout, so ps
+                # shows S, not D: the symbol decides, whatever the state.
+                hit = "__break_lease" in haystack
             elif rule == "held-lock":
-                hit = state.startswith("S") and any(s in haystack for s in _LOCK_WAIT_SYMBOLS)
+                hit = state[:1] in ("S", "D") and any(s in haystack for s in _LOCK_WAIT_SYMBOLS)
             else:
                 hit = state.startswith("R") and cpu is not None and cpu >= _SPIN_CPU_THRESHOLD and not wait_symbol
             if hit:

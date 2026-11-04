@@ -2,7 +2,7 @@
 #
 # Layered on top of any kas YAML that does not classify as NXP
 # or TI. Carries the optimizations that apply to any bitbake build:
-# fetch robustness (BB_FETCH_TIMEOUT + MIRRORS + PREMIRRORS for github.com)
+# fetch robustness (MIRRORS + PREMIRRORS for github.com)
 # and PYTHONMALLOC=malloc to mitigate the 3.14 GIL parser-fork race. ccache
 # wiring lives in the conditional bakar-tuning-ccache overlay (mutually
 # exclusive with sccache); FETCHCMD_wget is left to the workspace's own fetch
@@ -118,10 +118,6 @@ local_conf_header:
     # because it adds time on the first fetch and grows DL_DIR significantly.
     # BB_GENERATE_MIRROR_TARBALLS = "1"
     IMAGE_FEATURES:remove = "dev-pkgs dbg-pkgs tools-sdk tools-debug staticdev-pkgs"
-
-    # Fetch robustness: raise the per-URI timeout so transient TLS / DNS
-    # stalls do not trip the default (~45s) and fail the task.
-    BB_FETCH_TIMEOUT = "600"
 
     # Replace the distro's default MIRRORS table (poky scarthgap hardcodes
     # the dead sources.openembedded.org host) with a curated catch-all
