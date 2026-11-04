@@ -8,10 +8,13 @@ probe returns a report carrying the reason it could not answer.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import shutil
 import subprocess
+import threading
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -358,3 +361,60 @@ def _query_cluster_capacity() -> str | None:
     """
     report = probe_cluster()
     return None if report.capacity is None else _format_capacity(report.capacity)
+
+
+def http_reachable(url: str, timeout: float = 3.0) -> bool:
+    """Return True when ``url`` answers an HTTP request at all.
+
+    Any HTTP response counts, including 4xx and 5xx: a server that answers 403
+    is up, which is all a hub reachability check needs to know. Connection
+    failures, timeouts and malformed URLs return False. Never raises.
+
+    ``timeout`` bounds the whole probe: the work (resolve, connect, TLS, request,
+    response) runs in a daemon thread and the caller waits at most ``timeout``
+    seconds for it. A stalled worker is abandoned and ends on its own per-operation
+    timeouts. Redirects are not followed, since a 3xx already proves the server
+    answered. Proxy environment variables are ignored.
+    """
+    return head_status(url, timeout) is not None
+
+
+def http_exists(url: str, timeout: float = 2.0) -> bool:
+    """Return True when a HEAD request to ``url`` answers 2xx.
+
+    Same deadline, no-redirect and no-proxy behavior as :func:`http_reachable`;
+    404, 5xx, 3xx and every connection failure return False. Never raises.
+    """
+    status = head_status(url, timeout)
+    return status is not None and 200 <= status < 300
+
+
+def head_status(url: str, timeout: float) -> int | None:
+    """Return the HTTP status of a HEAD request to ``url``, or None on any error or timeout.
+
+    None (no answer) is distinct from a clean 404, so a caller can tell a server
+    that says "absent" from one that did not answer.
+    """
+    answered: list[int] = []
+    worker = threading.Thread(target=_probe_http, args=(url, timeout, answered), daemon=True)
+    worker.start()
+    worker.join(timeout)
+    return answered[0] if answered else None
+
+
+def _probe_http(url: str, timeout: float, answered: list[int]) -> None:
+    conn: http.client.HTTPConnection | None = None
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return
+        conn_cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+        conn = conn_cls(parts.hostname, parts.port, timeout=timeout)
+        target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        conn.request("HEAD", target)
+        answered.append(conn.getresponse().status)
+    except http.client.HTTPException, TimeoutError, ConnectionError, OSError, ValueError, TypeError, AttributeError:
+        return
+    finally:
+        if conn is not None:
+            conn.close()
