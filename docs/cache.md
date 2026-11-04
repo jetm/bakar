@@ -32,7 +32,7 @@ The downloads directory comes from the `DL_DIR` environment variable, else `dl_d
 | 1 | A prerequisite is missing: `cache_push_target` unset, no downloads directory, `inotifywait` not installed, or the push key file not found. The message names the first missing item. |
 | 2 | `--watch` was not given. Prints `bakar cache push only runs with --watch`. |
 
-Every eligible file is recorded in the queue before its transfer starts and removed only after the transfer succeeds, so a crash, a killed process or an unreachable store never loses a file. An unreachable store is retried; a full target disk pauses the queue (shown by `status`).
+Every eligible file is recorded in the queue before its transfer starts and removed only after the transfer succeeds, so a crash, a killed process or an unreachable store never loses a file. An unreachable store is retried; a full target disk pauses the queue (shown by `status`). Every failed transfer or reconcile logs one warning with rsync's own error text, so under systemd `journalctl --user -u bakar-cache-push.service` shows why a queue is not draining; `status` alone reports only the backlog.
 
 #### Eligibility rules
 

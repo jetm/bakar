@@ -174,6 +174,8 @@ def drain_once(  # noqa: PLR0913 - signature fixed by the spec
     if not live:
         return Outcome.OK
     outcome, error = _push_names(live, dl_dir, target, key, runner)
+    if outcome is not Outcome.OK:
+        logger.warning("push of %d file(s) to %s failed (%s): %s", len(live), target, outcome.name.lower(), error)
     if outcome is Outcome.OK:
         queue.remove(live)
         queue.set_paused(None)
@@ -289,6 +291,7 @@ def _isolate_failures(  # noqa: PLR0913 - mirrors drain_once
     def bisect(groups: list[list[str]], group_error: str) -> Outcome:
         nonlocal budget, last_error
         if len(groups) == 1:
+            logger.warning("giving up on %s for now: %s", groups[0][0], group_error)
             queue.record_failure(groups[0], group_error)
             return Outcome.FAILED
         mid = len(groups) // 2
@@ -390,6 +393,9 @@ def _reconcile(  # noqa: PLR0913 - mirrors the watch() injection points
         names = (proc.stdout or "").split("\n")
         queue.enqueue([n for n in names if _valid_name(n)])
         queue.mark_reconciled(now)
+    else:
+        detail = (proc.stderr or "").strip()[-200:] or f"rsync exit {proc.returncode}"
+        logger.warning("reconcile against %s failed (%s): %s", target, outcome.name.lower(), detail)
     return outcome
 
 

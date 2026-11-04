@@ -570,3 +570,62 @@ def test_reconcile_argv_and_roundtrip_of_names(tmp_path: Path) -> None:
 
     cp._reconcile(q, dl, "hub:/d", Path("/k"), run, 1.0)
     assert sorted(q.pending()) == sorted(["café.tar", "trail .tar "])
+
+
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == cp.logger.name and r.levelname == "WARNING"]
+
+
+def test_failed_drain_logs_rsync_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    q, dl = _setup(tmp_path)
+    err = "Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf"
+    with caplog.at_level("WARNING", logger=cp.logger.name):
+        cp.drain_once(q, dl, "hub:/d", Path("/k"), runner=_runner(255, err))
+    warnings = _warnings(caplog)
+    assert len(warnings) == 1
+    assert "hub:/d" in warnings[0]
+    assert "unreachable" in warnings[0]
+    assert err in warnings[0]
+
+
+def test_successful_drain_logs_nothing(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    q, dl = _setup(tmp_path)
+    with caplog.at_level("WARNING", logger=cp.logger.name):
+        cp.drain_once(q, dl, "hub:/d", Path("/k"), runner=_runner(0))
+    assert _warnings(caplog) == []
+
+
+def test_failed_reconcile_logs_rsync_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    q = PushQueue(tmp_path / "state")
+    dl = tmp_path / "dl"
+    dl.mkdir()
+    with caplog.at_level("WARNING", logger=cp.logger.name):
+        outcome = cp._reconcile(q, dl, "hub:/d", Path("/k"), _runner(255, "ssh: connect refused"), 1.0)
+    assert outcome is cp.Outcome.UNREACHABLE
+    warnings = _warnings(caplog)
+    assert len(warnings) == 1
+    assert "reconcile" in warnings[0]
+    assert "ssh: connect refused" in warnings[0]
+    assert q.snapshot().last_reconcile is None
+
+
+def test_failed_reconcile_without_stderr_logs_the_exit_code(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    q = PushQueue(tmp_path / "state")
+    dl = tmp_path / "dl"
+    dl.mkdir()
+    with caplog.at_level("WARNING", logger=cp.logger.name):
+        cp._reconcile(q, dl, "hub:/d", Path("/k"), _runner(255), 1.0)
+    assert "rsync exit 255" in _warnings(caplog)[0]
+
+
+def test_isolated_pair_failure_names_the_pair(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    q, dl = _pairs_queue(tmp_path, 3)
+
+    def run(argv, **kw):
+        lf = next(a for a in argv if a.startswith("--files-from=")).split("=", 1)[1]
+        rc = 23 if "f1" in _listed(lf) else 0
+        return subprocess.CompletedProcess(argv, rc, "", "bad file" if rc else "")
+
+    with caplog.at_level("WARNING", logger=cp.logger.name):
+        cp.drain_once(q, dl, "hub:/d", Path("/k"), runner=run)
+    assert any("f1" in w and "bad file" in w for w in _warnings(caplog))
