@@ -47,6 +47,7 @@
 | `feed` | [feed.md](feed.md) | Manage the local package feed: stage, mirror, index, serve, and prune a build's RPMs |
 | `dump` | [dump.md](dump.md) | Inspect the resolved kas YAML |
 | `hashserv` | [hashserv.md](hashserv.md) | Manage the persistent bitbake-hashserv daemon |
+| `cache` | [cache.md](cache.md) | Push finished downloads to the central store, report the push queue, capture hang diagnostics |
 | `prserv` | [prserv.md](prserv.md) | Manage the workspace-scoped bitbake-prserv daemon that keeps package revisions monotonic |
 | `bitbake-override` | [bitbake-override.md](bitbake-override.md) | Swap BSP-bundled bitbake for upstream |
 | `stress-parse` | [stress-parse.md](stress-parse.md) | Stress-test bitbake parser fork race |
@@ -125,6 +126,7 @@
 - Boot a QEMU image from the build directory: [run.md](run.md)
 - Reproduce and measure the bitbake parser race: [stress-parse.md](stress-parse.md)
 - Persistent hash equivalence across builds: [hashserv.md](hashserv.md)
+- Push finished downloads to the central store and inspect the push queue: [cache.md](cache.md)
 - Keep package revisions monotonic across a wiped build tree: [prserv.md](prserv.md)
 - Publish a finished build's RPMs as a local package feed: [feed.md](feed.md)
 - Copy a published feed for offline use: [feed.md](feed.md) (`bakar feed mirror`)
@@ -229,6 +231,7 @@ Related: [settings.md](settings.md), [presets.md](presets.md), [configuration.md
 bakar clean             - remove build/ to force a from-scratch build
 bakar clean-cache       - prune stale sstate and ccache entries by age
 bakar hashserv          - manage the persistent bitbake-hashserv daemon
+bakar cache             - push downloads to the central store, show the queue, capture hangs
 bakar prserv            - manage the workspace-scoped bitbake-prserv daemon
 bakar feed              - stage, mirror, index, serve and prune the local package feed
 bakar bitbake-override  - swap BSP-bundled bitbake for upstream
@@ -236,7 +239,7 @@ bakar run               - boot avocado-os QEMU image (meta-avocado only)
 bakar stress-parse      - stress-test bitbake parser fork race
 ```
 
-Related: [clean.md](clean.md), [clean-cache.md](clean-cache.md), [hashserv.md](hashserv.md), [prserv.md](prserv.md), [feed.md](feed.md), [bitbake-override.md](bitbake-override.md), [run.md](run.md), [stress-parse.md](stress-parse.md)
+Related: [clean.md](clean.md), [clean-cache.md](clean-cache.md), [hashserv.md](hashserv.md), [cache.md](cache.md), [prserv.md](prserv.md), [feed.md](feed.md), [bitbake-override.md](bitbake-override.md), [run.md](run.md), [stress-parse.md](stress-parse.md)
 
 ---
 
