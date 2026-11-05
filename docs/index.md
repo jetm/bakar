@@ -5,7 +5,8 @@
 | Command | Doc | One-liner |
 |---------|-----|-----------|
 | `setup` | [setup.md](setup.md) | Prepare the host once: profile, remediate doctor host checks, persist `[host]` config |
-| `init` | [init.md](init.md) | Interactive wizard: scaffold a new workspace and write `.bakar.toml` |
+| `init` | [init.md](init.md) | Interactive wizard: scaffold a new workspace, write `.bakar.toml` and choose features; `--feature`/`--disable`/`--set`/`--yes` for scripts, `--explain` for one feature |
+| Features | [features/index.md](features/index.md) | Guide pages for every feature `bakar init` offers, with what each needs from your host |
 | `build` | [build.md](build.md) | Full pipeline: doctor, sync, gen-kas, kas build |
 | `sync` | [sync.md](sync.md) | Sync sources without building; `bakar sync <kas> [--on HOST] [--dry-run]` moves a release workspace's clones onto their pins, `bakar sync --revert FILE` undoes it |
 | `gen-kas` | [gen-kas.md](gen-kas.md) | Regenerate kas YAML from manifest |

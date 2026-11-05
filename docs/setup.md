@@ -7,7 +7,11 @@ global `[host]` config so `doctor` later verifies against it.
 
 This is a host-level command (once per machine). It is distinct from
 [`bakar init`](init.md), which scaffolds a single workspace (`.bakar.toml`,
-`nxp/`/`ti/` dirs) and touches nothing on the machine itself.
+`nxp/`/`ti/` dirs) and then offers the [feature catalog](features/index.md). When
+you select features, `init` builds its plan from the same host remediations
+`setup` applies and runs them after one confirmation, so you can start from
+either command. `bakar setup` itself is unchanged: it still prepares the host
+without selecting features.
 
 ## Synopsis
 
@@ -128,5 +132,5 @@ to PASS. `doctor` verifies the machine against the `[host]` values `setup` wrote
 
 - [doctor.md](doctor.md) - the read-only checks `setup` remediates
 - [settings.md](settings.md) - the `host.*` keys `setup` persists to global config
-- [init.md](init.md) - the per-workspace scaffolder (run after `setup`)
+- [init.md](init.md) - the per-workspace scaffolder and feature step; it applies the same host remediations in one plan
 - [configuration.md](configuration.md) - config resolution and the `[host]` precedence chain
