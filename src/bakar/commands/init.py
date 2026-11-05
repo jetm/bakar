@@ -239,6 +239,10 @@ def init(
         bool,
         typer.Option("--yes", "-y", help="Apply a plan that needs sudo without prompting (needs passwordless sudo)"),
     ] = False,
+    explain: Annotated[
+        str | None,
+        typer.Option("--explain", help="Explain one feature id: requirements, fixes and guide (read-only)"),
+    ] = None,
 ) -> None:
     """Scaffold a new bakar workspace and choose its features.
 
@@ -255,6 +259,15 @@ def init(
     """
     features = list(feature or [])
     disables = list(disable or [])
+    if explain is not None:
+        others = (family, manifest, machine, distro, image, kas_yaml, features, disables, set_values)
+        if any(others) or no_sync or yes:
+            console.print("[red]--explain takes one feature id and combines only with --workspace[/]")
+            raise typer.Exit(1)
+        from bakar.commands._init_explain import run_explain
+
+        run_explain(explain, workspace or Path("."))
+        return
     if not features and not disables:
         if family is not None:
             _init_non_interactive(family, workspace, manifest, machine, distro, image, kas_yaml)
