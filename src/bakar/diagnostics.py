@@ -2726,16 +2726,35 @@ def check_sstate_mirror_shared_mount(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.INFO, f"http(s) sstate mirror with local sstate directory {sstate}")
 
 
+def _display_mirror(url: str) -> str:
+    """``url`` without userinfo, so a mirror password never reaches check output."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = host + (f":{parts.port}" if parts.port else "")
+        if not parts.scheme or not netloc:
+            return url.rsplit("@", 1)[-1]
+        return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
+    except ValueError:
+        return url.rsplit("@", 1)[-1]
+
+
 def _check_mirror_reachable(name: str, url: str | None, doc: str, fallback: str) -> CheckResult:
     mirror = (url or "").strip()
     if not mirror:
         return _skip(name, Severity.INFO, "no mirror URL configured")
+    shown = _display_mirror(mirror)
+    if not mirror.lower().startswith(("http://", "https://")):
+        # A file:// mirror is a valid SSTATE_MIRRORS source; there is no server to probe.
+        return _ok(name, Severity.INFO, f"mirror {shown} is not an http(s) URL, so it is not probed")
     if probes.http_reachable(mirror, timeout=3.0):
-        return _ok(name, Severity.INFO, f"mirror {mirror} is reachable")
+        return _ok(name, Severity.INFO, f"mirror {shown} is reachable")
     return _fail(
         name,
         Severity.WARN,
-        f"mirror {mirror} did not answer; {fallback}",
+        f"mirror {shown} did not answer; {fallback}",
         fix_hint=doc,
     )
 
@@ -3666,6 +3685,61 @@ def check_central_prserv(cfg: BuildConfig) -> CheckResult:
     )
 
 
+def check_central_endpoints(cfg: BuildConfig) -> CheckResult:
+    """Single-node view of configured central endpoints: warn when one does not answer.
+
+    Cluster mode has its own BLOCK-severity central-hashserv/central-prserv
+    checks, so this one stands down there and only covers a single-node build
+    that still points at a central service.
+    """
+    from bakar import hashserv, prserv
+
+    name = "central-endpoints"
+    if cfg.cluster:
+        return _skip(name, Severity.INFO, "cluster mode is on; central-hashserv and central-prserv cover this")
+    reachable: list[str] = []
+    unreachable: list[str] = []
+    for service, endpoint, default_port, probe in (
+        ("hashserv", cfg.bb_hashserve, hashserv.CENTRAL_DEFAULT_PORT, hashserv.central_listening),
+        ("prserv", cfg.prserv_host, prserv.CENTRAL_DEFAULT_PORT, prserv.central_listening),
+    ):
+        if not endpoint:
+            continue
+        host, port = split_host_port(endpoint, default_port)
+        (reachable if probe(host, port) else unreachable).append(f"{service} at {host}:{port}")
+    if not reachable and not unreachable:
+        return _skip(name, Severity.INFO, "no central hashserv or prserv endpoint configured")
+    if not unreachable:
+        return _ok(name, Severity.WARN, f"central {', '.join(reachable)} reachable")
+    return _fail(
+        name,
+        Severity.WARN,
+        f"central {', '.join(unreachable)} unreachable",
+        fix_hint="bakar settings set build.cluster true",
+    )
+
+
+# bitbake's built-in runqueue schedulers; any other BB_SCHEDULER value must be
+# a class that BB_SCHEDULERS makes importable.
+_BUILTIN_SCHEDULERS: tuple[str, ...] = ("basic", "speed", "completion")
+
+
+def check_scheduler_value(cfg: BuildConfig) -> CheckResult:
+    """Warn when ``scheduler`` names something other than a built-in bitbake scheduler."""
+    name = "scheduler"
+    scheduler = (cfg.scheduler or "").strip()
+    if not scheduler:
+        return _skip(name, Severity.INFO, "no scheduler configured")
+    if scheduler in _BUILTIN_SCHEDULERS:
+        return _ok(name, Severity.WARN, f"scheduler {scheduler} is a bitbake built-in")
+    return _fail(
+        name,
+        Severity.WARN,
+        f"scheduler {scheduler!r} is not one of bitbake's built-in schedulers "
+        f"({', '.join(_BUILTIN_SCHEDULERS)}); a custom scheduler needs BB_SCHEDULERS to name its class",
+    )
+
+
 def check_shared_cache_mounts(cfg: BuildConfig) -> CheckResult:
     """Cluster-mode: verify each effective shared cache dir is a writable NFS mount.
 
@@ -3888,6 +3962,11 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_sstate_mirror_reachable,
     check_dl_mirror_reachable,
     check_store_stale_tarballs,
+    # WARN only: a scheduler bitbake does not ship, and central endpoints a
+    # single-node build points at but cannot reach. central-endpoints is NOT a
+    # _CLUSTER_CHECKS member: it must run when cluster mode is off.
+    check_scheduler_value,
+    check_central_endpoints,
 )
 
 # Docker-dependent checks from ``SHARED_CHECKS``. Filtered out of
@@ -3996,7 +4075,7 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "Cluster",
-        ("central-hashserv", "central-prserv", "shared-mounts"),
+        ("central-hashserv", "central-prserv", "central-endpoints", "shared-mounts"),
     ),
     (
         "Host tuning",
@@ -4028,7 +4107,14 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "Workspace & build config",
-        ("git-global-config", "kas-yaml-syntax", "override-syntax", "bitbake-override", "bitbake-locks"),
+        (
+            "git-global-config",
+            "kas-yaml-syntax",
+            "override-syntax",
+            "bitbake-override",
+            "bitbake-locks",
+            "scheduler",
+        ),
     ),
 )
 
@@ -4090,6 +4176,8 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_sstate_mirror_reachable, "sstate-mirror-reachable", Severity.WARN),
     (check_dl_mirror_reachable, "dl-mirror-reachable", Severity.WARN),
     (check_store_stale_tarballs, "store-stale-tarballs", Severity.WARN),
+    (check_scheduler_value, "scheduler", Severity.WARN),
+    (check_central_endpoints, "central-endpoints", Severity.WARN),
     # NXP-only (BspModel.doctor_extras)
     (check_forks_linux_imx, "forks-linux-imx", Severity.INFO),
     (check_manifest_consistency, "manifest", Severity.INFO),

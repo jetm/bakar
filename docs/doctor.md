@@ -269,6 +269,32 @@ An unreachable sstate mirror means builds rebuild what the mirror would have
 supplied. An unreachable download mirror means builds fall back to upstream
 fetches.
 
+## Scheduler and central-endpoint checks
+
+Two checks validate build settings before bitbake starts. Neither can stop a
+build.
+
+| Check | Severity | Asserts | Fix hint |
+|-------|----------|---------|----------|
+| `scheduler` | WARN | `scheduler` names one of bitbake's built-in schedulers: `basic`, `speed` or `completion` | None; the message notes that a custom scheduler needs `BB_SCHEDULERS` |
+| `central-endpoints` | WARN | With cluster mode off, every configured `bb_hashserve` and `prserv_host` endpoint accepts a TCP connection | `bakar settings set build.cluster true` |
+
+Outcomes:
+
+| Check | Outcome | Status / severity |
+|-------|---------|-------------------|
+| `scheduler` | `scheduler` unset or empty | SKIP / INFO |
+| `scheduler` | `basic`, `speed` or `completion` | PASS / WARN |
+| `scheduler` | Any other value | FAIL / WARN |
+| `central-endpoints` | Cluster mode on (`central-hashserv` and `central-prserv` cover it) | SKIP / INFO |
+| `central-endpoints` | Neither `bb_hashserve` nor `prserv_host` set (no network call is made) | SKIP / INFO |
+| `central-endpoints` | Every configured endpoint answers | PASS / WARN |
+| `central-endpoints` | One or more endpoints do not answer (each is named) | FAIL / WARN |
+
+`central-endpoints` uses the same TCP probes as the cluster-mode
+`central-hashserv` and `central-prserv` checks, but runs only when cluster mode
+is off, where an unreachable endpoint is advisory rather than blocking.
+
 ## Uninative wiring checks
 
 Uninative is oe-core's prebuilt glibc plus dynamic loader that every `-native`
