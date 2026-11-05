@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-11-05
+
+### Added
+
+- Added support for building a layer repository's kas entry (a kas file with a url-less repository that pins meta-avocado), for example a BSP layer such as meta-peridio
+- Added release routing for layer-repository kas files, so the release is taken from the branch of the pinned meta-avocado dependency and the build uses the matching `[workspaces]` entry. Entries pinned only by commit, or by a branch that cannot serve as a directory name, are refused with an explanation of how to fix them
+- Added the reuse-by-default policy for layer entries built in a release workspace. The workspace's shared meta-avocado clones are never moved or modified. A missing pin, an include from a third repository or an ambiguous entry is refused before kas runs, and a missing pin is reported with the fetch command to run
+- Layer-repository entries now get their own build directory, named after the layer (plus the checkout directory in a linked worktree), instead of building into the source checkout. `bakar triage` inspects the same directory
+- Added `bakar build --on` dispatch for layer-repository kas files. The layer is delivered as a git commit into a dedicated bare repository on the host, separate from the workspace's meta-avocado clone, and built from a worktree of it. Dry runs are allowed for layer entries. A `-w` naming a different workspace is refused, and all refusals happen before any remote command runs
+- Added the `dispatch.layer_repo_dir` setting to place layer repositories on the host outside the default `.bakar/layers` directory. Hosts running an older bakar are refused, even with `--yes`
+- Made `bakar doctor` validate layer-repository kas entries without moving the shared workspace's clones
+- Added hub download mirror support. Two new `[build]` settings name the hub's downloads store URL and the ssh destination used to push finished downloads. A new tuning overlay puts the hub mirror in front of upstream for all fetch schemes, and falls back to upstream with a single warning when the hub is unreachable
+- Added the `bakar cache` command group:
+  - `push --watch` streams finished downloads to the hub using a persistent queue, so nothing is lost across crashes, restarts or hub outages. It backs off on failures and pauses when the hub is full.
+  - `status` reports queue length, oldest entry age, pause state and last reconcile time.
+  - `capture` gathers read-only diagnostics when BitBake hangs on NFS or lock contention, and classifies the cause as delegation recall, held lock, spin or unclassified.
+- Cache pushes upload only fully fetched, regular top-level files. Transfers never overwrite or delete anything. Push failures are logged with rsync's own error text
+- Cache pushes authenticate with the push key alone, ignoring the user's agent and login keys, so the hub's write-only restriction applies
+- Added three `bakar doctor` checks for shared-cache hubs: push service and queue backlog (advisory), stale git2 tarball temp files on the store host (advisory), and an http(s) `SSTATE_MIRRORS` entry combined with an NFS sstate directory (blocking, since it can stall or corrupt concurrent builds)
+
+### Changed
+
+- Dispatched meta-avocado builds are now delivered to `<root>/<name>/meta-avocado` instead of `<root>/<name>`. Each dispatch's worktree is named after its delivered name. A worktree left at the old location by an earlier bakar is refused and left for the user to retire.
+- Dispatch now sends the host a build directory with the delivered name filled in, so different branches of a machine no longer share a TOPDIR and TMPDIR
+
+### Fixed
+
+- Fixed dispatched i.MX and rzv2n builds failing at parse because the checkout directory name did not match the layers' `BBMASK` entries
+- Fixed host prerequisite failures (missing buildtools, bundled bitbake bin directory, hash equivalence state directory or release routing) being recorded as a generic wrapper crash. The run record now names the actual cause, and the CLI error line and exit status are unchanged
+- Fixed the shared-cache overlay reading the sstate mirror URL from the process environment. It is now read from the datastore, so sstate fetches in setscene tasks use the configured mirror
+
+### Removed
+
+- Removed the ineffective `BB_FETCH_TIMEOUT` setting from the generic, NXP and TI tuning overlays. BitBake does not read it, so build behavior is unchanged and it no longer appears in generated local.conf files
+
 ## [0.40.0] - 2026-10-26
 
 ### Added
@@ -1083,7 +1118,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.40.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.41.0...HEAD
+[0.41.0]: https://github.com/jetm/bakar/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/jetm/bakar/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/jetm/bakar/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/jetm/bakar/compare/v0.37.1...v0.38.0
