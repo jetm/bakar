@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
 import tomllib
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -805,9 +806,21 @@ def _dump_raw(path: Path, data: dict[str, object]) -> None:
     # truncated config.toml that breaks every command on the next load. Mirrors
     # the tmp+replace pattern used for config writes in kas.py.
     tmp = path.with_name(path.name + ".tmp")
-    with tmp.open("wb") as f:
-        tomli_w.dump(data, f)
-    tmp.replace(path)
+    # Keep the file's mode: it can hold credentialed mirror URLs, so the temp
+    # file is created with the final mode rather than chmod'd after the write
+    # (a stale temp from a crash is removed first, since O_CREAT keeps its mode).
+    tmp.unlink(missing_ok=True)
+    mode = (path.stat().st_mode & 0o7777) if path.exists() else 0o666
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        if path.exists():
+            os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as f:
+            tomli_w.dump(data, f)
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def get_setting(key: str, path: Path | None = None) -> str | bool | None:
@@ -882,6 +895,60 @@ def unset_setting(key: str, path: Path | None = None) -> None:
         child = parent.get(part)
         if isinstance(child, dict) and not child:
             del parent[part]
+
+    _dump_raw(config_path, data)
+
+
+def apply_settings(
+    sets: Mapping[str, str],
+    unsets: Iterable[str] = (),
+    path: Path | None = None,
+) -> None:
+    """Validate every change, then apply all of them with one atomic write.
+
+    Every key and value is checked before the file is read, so a bad entry
+    raises ``ValueError`` with the file untouched. A key in both ``sets`` and
+    ``unsets`` is rejected. Both empty: returns without creating the file.
+    """
+    unset_keys = list(unsets)
+    if not sets and not unset_keys:
+        return
+    set_specs = [(spec := _require_known(key), _coerce(spec, raw)) for key, raw in sets.items()]
+    unset_specs = [_require_known(key) for key in unset_keys]
+    overlap = sorted(set(sets) & set(unset_keys))
+    if overlap:
+        raise ValueError(f"setting key appears in both sets and unsets: {overlap[0]!r}")
+
+    config_path = _config_path(path)
+    if not sets and not config_path.exists():
+        return
+    data = _load_raw(config_path)
+
+    for spec, value in set_specs:
+        table: dict[str, object] = data
+        for part in spec.section:
+            existing = table.get(part)
+            if not isinstance(existing, dict):
+                existing = {}
+                table[part] = existing
+            table = existing
+        table[spec.key] = value
+
+    for spec in unset_specs:
+        chain: list[tuple[dict[str, object], str]] = []
+        node: object = data
+        for part in spec.section:
+            if not isinstance(node, dict) or not isinstance(node.get(part), dict):
+                break
+            chain.append((node, part))
+            node = node[part]
+        else:
+            if isinstance(node, dict) and spec.key in node:
+                del node[spec.key]
+                for parent, part in reversed(chain):
+                    child = parent.get(part)
+                    if isinstance(child, dict) and not child:
+                        del parent[part]
 
     _dump_raw(config_path, data)
 
