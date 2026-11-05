@@ -29,7 +29,7 @@ import threading
 import time
 import tomllib
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -4087,14 +4087,21 @@ def group_results(results: list[CheckResult]) -> list[tuple[str, list[CheckResul
     return grouped
 
 
-def run_all(
+def run_all(  # noqa: PLR0913 - keyword-only options on one runner entry point
     cfg: BuildConfig,
     bsp: BspModel | None = None,
     *,
     post_build: bool = False,
     on_check: Callable[[CheckEvent], None] | None = None,
+    only: Collection[str] | None = None,
+    deadline: float | None = None,
 ) -> list[CheckResult]:
     """Run every applicable check, return results in order.
+
+    ``only``, when given, keeps just the checks whose registered name is in
+    it, applied after every other filter. ``deadline`` replaces
+    ``_CHECK_DEADLINE_SECONDS`` for every per-check join and the cache-mount
+    pre-phase join; post-build checks still run with no deadline.
 
     When ``bsp`` is provided, the assembled list is
     ``SHARED_CHECKS + bsp.doctor_extras``. ``bsp=None`` runs only
@@ -4141,6 +4148,9 @@ def run_all(
         checks = tuple(c for c in checks if c not in _CLUSTER_CHECKS)
     if not post_build:
         checks = tuple(c for c in checks if c not in _POST_BUILD_CHECKS)
+    if only is not None:
+        checks = tuple(c for c in checks if _CHECK_NAME.get(c, getattr(c, "__name__", "unknown")) in only)
+    check_deadline = _CHECK_DEADLINE_SECONDS if deadline is None else deadline
     results: list[CheckResult] = []
 
     def _emit(phase: str, name: str, result: CheckResult | None, seconds: float) -> None:
@@ -4191,7 +4201,7 @@ def run_all(
         cache_thread = threading.Thread(target=_run_cache_probe, daemon=True)
         _probe_start = time.monotonic()
         cache_thread.start()
-        cache_thread.join(timeout=_CHECK_DEADLINE_SECONDS)
+        cache_thread.join(timeout=check_deadline)
         cache_mounts_seconds = time.monotonic() - _probe_start
         if cache_thread.is_alive():
             cache_mounts_timed_out = True
@@ -4231,10 +4241,7 @@ def run_all(
                     name="cache-mounts",
                     severity=_CHECK_SEVERITY.get("cache-mounts", Severity.BLOCK),
                     status=Status.FAIL,
-                    message=(
-                        f"did not finish within {_CHECK_DEADLINE_SECONDS:g}s "
-                        "(a filesystem it reads may be unresponsive)"
-                    ),
+                    message=(f"did not finish within {check_deadline:g}s (a filesystem it reads may be unresponsive)"),
                 )
             elif cache_mounts_crashed:
                 result = CheckResult(
@@ -4279,10 +4286,10 @@ def run_all(
                 slot["exc"] = exc
 
         thread = threading.Thread(target=_run, daemon=True)
-        deadline = None if check in _POST_BUILD_CHECKS else _CHECK_DEADLINE_SECONDS
+        join_timeout = None if check in _POST_BUILD_CHECKS else check_deadline
         thread_start = time.monotonic()
         thread.start()
-        thread.join(timeout=deadline)
+        thread.join(timeout=join_timeout)
         elapsed = time.monotonic() - thread_start
 
         if thread.is_alive():
@@ -4290,9 +4297,7 @@ def run_all(
                 name=resolved_name,
                 severity=_CHECK_SEVERITY.get(resolved_name, Severity.WARN),
                 status=Status.FAIL,
-                message=(
-                    f"did not finish within {_CHECK_DEADLINE_SECONDS:g}s (a filesystem it reads may be unresponsive)"
-                ),
+                message=(f"did not finish within {check_deadline:g}s (a filesystem it reads may be unresponsive)"),
             )
         elif "exc" in slot:
             result = CheckResult(
