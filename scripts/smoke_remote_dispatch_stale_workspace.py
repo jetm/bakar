@@ -435,11 +435,13 @@ def _scenarios(run, fx: Fixture) -> None:
 
 
 def _json_rows(out: str) -> list[dict]:
-    start = out.find("[")
-    if start < 0:
+    # stderr is merged into out, and a config warning such as "unknown key ... in [build]"
+    # holds a "[" too, so the JSON array is the first line that is only an opening bracket.
+    match = re.search(r"^\[\s*$", out, re.MULTILINE)
+    if match is None:
         return []
     try:
-        rows = json.loads(out[start:])
+        rows = json.loads(out[match.start() :])
     except json.JSONDecodeError:
         return []
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
