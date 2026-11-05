@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import shlex
 import socket
+import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from bakar import hashserv, prserv
 from bakar.setup.actions.base import RunCommand
-from bakar.user_config import get_setting, set_setting
+from bakar.user_config import apply_settings, get_setting
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
 
 _DEFAULT_PG_HOST = "localhost"
 _DEFAULT_PG_PORT = 5432
+_UNITS = ("avocado-hashserv.service", "avocado-prserv.service")
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,22 @@ class CentralTierConfig:
     hashserv_binary: str = "avocado-hashserv"
     prserv_binary: str = "avocado-prserv"
     config_path: Path | None = None
+
+    @classmethod
+    def from_inputs(
+        cls,
+        bind_host: str,
+        pg_host: str = _DEFAULT_PG_HOST,
+        pg_port: int = _DEFAULT_PG_PORT,
+    ) -> CentralTierConfig:
+        """Build a config whose database URLs follow the chosen postgres address."""
+        return cls(
+            bind_host=bind_host,
+            pg_host=pg_host,
+            pg_port=pg_port,
+            hashserv_database=f"postgres://hashserv:hashserv@{pg_host}:{pg_port}/hashserv",
+            prserv_database=f"postgres://prserv:prserv@{pg_host}:{pg_port}/prserv",
+        )
 
 
 def _postgres_reachable(host: str, port: int, *, timeout: float = 0.5) -> bool:
@@ -87,7 +105,9 @@ def _ensure_db_op(pg_host: str, pg_port: int, dbname: str) -> RunCommand:
         f"-d {dbname} -tAc 'SELECT 1' >/dev/null 2>&1 "
         f"|| createdb -h {shlex.quote(pg_host)} -p {pg_port} -O {dbname} {dbname}"
     )
-    return RunCommand(argv=["sh", "-c", guard], needs_root=False)
+    # The units enabled in the privileged step connect to these databases on
+    # start, so they must exist first.
+    return RunCommand(argv=["sh", "-c", guard], needs_root=False, before_privileged=True)
 
 
 class CentralTierAction:
@@ -96,8 +116,9 @@ class CentralTierAction:
     check_name = "central-tier"
     needs_root = False
 
-    def __init__(self, cfg: CentralTierConfig) -> None:
+    def __init__(self, cfg: CentralTierConfig, *, persist: bool = True) -> None:
         self._cfg = cfg
+        self._persist = persist
 
     @property
     def _bb_hashserve(self) -> str:
@@ -128,6 +149,7 @@ class CentralTierAction:
             and prserv.central_listening(cfg.bind_host, cfg.prserv_port)
             and get_setting("build.bb_hashserve", cfg.config_path) == self._bb_hashserve
             and get_setting("build.prserv_host", cfg.config_path) == self._prserv_host
+            and get_setting("build.cluster", cfg.config_path) in (True, "true")
         )
 
     def operations(self) -> list[RunCommand | WriteFile]:
@@ -166,7 +188,39 @@ class CentralTierAction:
         :class:`ConfigWriteAction`: the runner calls this last. ``path`` defaults to
         ``None`` (the global config), falling back to the config's ``config_path``.
         """
+        if not self._persist:
+            return
         cfg = self._cfg
         target = path if path is not None else cfg.config_path
-        set_setting("build.bb_hashserve", self._bb_hashserve, target)
-        set_setting("build.prserv_host", self._prserv_host, target)
+        apply_settings(
+            {
+                "build.bb_hashserve": self._bb_hashserve,
+                "build.prserv_host": self._prserv_host,
+                "build.cluster": "true",
+            },
+            path=target,
+        )
+
+    def preflight(self) -> list[str]:
+        """Reasons the tier cannot be brought up yet; empty when ready."""
+        reasons: list[str] = []
+        for unit in _UNITS:
+            try:
+                result = subprocess.run(
+                    ["systemctl", "cat", unit],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=10,
+                )
+            except FileNotFoundError:
+                reasons.append(f"systemctl not found; cannot check {unit}")
+            except subprocess.TimeoutExpired:
+                reasons.append(f"systemctl cat {unit} timed out")
+            else:
+                if result.returncode != 0:
+                    reasons.append(f"systemd unit {unit} is not installed")
+        cfg = self._cfg
+        if not _postgres_reachable(cfg.pg_host, cfg.pg_port):
+            reasons.append(f"PostgreSQL at {cfg.pg_host}:{cfg.pg_port} is not reachable")
+        return reasons

@@ -159,6 +159,67 @@ def test_apply_writes_endpoints_to_build_config(tmp_path) -> None:
     build = data["build"]
     assert build["bb_hashserve"] == "10.42.0.1:8686"
     assert build["prserv_host"] == "10.42.0.1:8585"
+    assert build["cluster"] is True
+
+
+def test_apply_writes_all_three_settings_in_one_call(monkeypatch, tmp_path) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(central_tier, "apply_settings", lambda sets, unsets=(), path=None: calls.append(dict(sets)))
+    CentralTierAction(_cfg(tmp_path)).apply()
+    assert calls == [
+        {"build.bb_hashserve": "10.42.0.1:8686", "build.prserv_host": "10.42.0.1:8585", "build.cluster": "true"}
+    ]
+
+
+def test_apply_persist_false_writes_nothing(tmp_path) -> None:
+    config_path = tmp_path / "config.toml"
+    CentralTierAction(_cfg(tmp_path), persist=False).apply(config_path)
+    assert not config_path.exists()
+
+
+def test_is_satisfied_false_when_cluster_unset(monkeypatch, tmp_path) -> None:
+    _all_probes_up(monkeypatch)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[build]\nbb_hashserve = "10.42.0.1:8686"\nprserv_host = "10.42.0.1:8585"\n')
+    assert CentralTierAction(_cfg(tmp_path)).is_satisfied(None) is False
+
+
+def test_from_inputs_threads_pg_port_into_database_urls() -> None:
+    cfg = CentralTierConfig.from_inputs("10.0.0.5", pg_host="db", pg_port=5433)
+    assert cfg.bind_host == "10.0.0.5"
+    assert cfg.hashserv_database == "postgres://hashserv:hashserv@db:5433/hashserv"
+    assert cfg.prserv_database == "postgres://prserv:prserv@db:5433/prserv"
+    assert cfg.hashserv_port == hashserv.CENTRAL_DEFAULT_PORT
+
+
+def test_preflight_reports_missing_units_and_postgres(monkeypatch) -> None:
+    class _Result:
+        returncode = 1
+
+    monkeypatch.setattr(central_tier.subprocess, "run", lambda *a, **k: _Result())
+    monkeypatch.setattr(central_tier, "_postgres_reachable", lambda *a, **k: False)
+    reasons = CentralTierAction(_cfg()).preflight()
+    assert any("avocado-hashserv.service" in r for r in reasons)
+    assert any("avocado-prserv.service" in r for r in reasons)
+    assert "PostgreSQL at localhost:5432 is not reachable" in reasons
+
+
+def test_preflight_empty_when_ready(monkeypatch) -> None:
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(central_tier.subprocess, "run", lambda *a, **k: _Result())
+    monkeypatch.setattr(central_tier, "_postgres_reachable", lambda *a, **k: True)
+    assert CentralTierAction(_cfg()).preflight() == []
+
+
+def test_preflight_missing_systemctl_is_a_reason(monkeypatch) -> None:
+    def _boom(*a, **k):
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(central_tier.subprocess, "run", _boom)
+    monkeypatch.setattr(central_tier, "_postgres_reachable", lambda *a, **k: True)
+    assert len(CentralTierAction(_cfg()).preflight()) == 2
 
 
 def test_operations_enables_both_systemd_units(tmp_path) -> None:
@@ -185,3 +246,13 @@ def test_operations_bootstrap_both_databases_unprivileged() -> None:
     joined = " ".join(arg for op in createdb_ops for arg in op.argv)
     assert "hashserv" in joined
     assert "prserv" in joined
+
+
+def test_database_bootstrap_runs_before_the_privileged_unit_start() -> None:
+    ops = run_commands(CentralTierAction(_cfg()).operations())
+    createdb_ops = [op for op in ops if "createdb" in " ".join(op.argv)]
+    unit_ops = [op for op in ops if op.needs_root]
+    assert len(createdb_ops) == 2
+    assert all(op.before_privileged for op in createdb_ops)
+    assert unit_ops
+    assert not any(op.before_privileged for op in unit_ops)

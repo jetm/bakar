@@ -338,3 +338,42 @@ def test_install_succeeds_persists_buildtools_dir(monkeypatch, tmp_path) -> None
     # the old env/config-driven guard silently skipped.
     assert recorder.calls == [install_argv]
     assert persisted == [("build.buildtools_dir", str(install_dir), None)]
+
+
+def _ordered_plan() -> SetupPlan:
+    early = RunCommand(argv=["prep"], needs_root=False, before_privileged=True)
+    late = RunCommand(argv=["after"], needs_root=False)
+    priv = RunCommand(argv=["enable-units"], needs_root=True)
+    return SetupPlan(actions=[_FakeAction("tier", needs_root=False, ops=[early, priv, late])])
+
+
+def test_before_privileged_op_runs_ahead_of_the_script_and_once(monkeypatch) -> None:
+    order: list[str] = []
+    monkeypatch.setattr(runner, "_run_unprivileged", lambda op: order.append(" ".join(op.argv)))
+    monkeypatch.setattr(runner, "_run_privileged_script", lambda ops: order.append("script"))
+
+    runner.apply_plan(_ordered_plan(), confirmed=True)
+
+    assert order == ["prep", "script", "after"]
+
+
+def test_before_privileged_op_runs_once_without_a_privileged_op(monkeypatch) -> None:
+    order: list[str] = []
+    monkeypatch.setattr(runner, "_run_unprivileged", lambda op: order.append(" ".join(op.argv)))
+    monkeypatch.setattr(runner, "_run_privileged_script", lambda ops: order.append("script"))
+    early = RunCommand(argv=["prep"], needs_root=False, before_privileged=True)
+
+    runner.apply_plan(SetupPlan(actions=[_FakeAction("tier", needs_root=False, ops=[early])]), confirmed=True)
+
+    assert order == ["prep"]
+
+
+def test_declined_plan_runs_no_before_privileged_op(monkeypatch) -> None:
+    order: list[str] = []
+    monkeypatch.setattr(runner, "_run_unprivileged", lambda op: order.append(" ".join(op.argv)))
+    monkeypatch.setattr(runner, "_run_privileged_script", lambda ops: order.append("script"))
+    monkeypatch.setattr(typer, "confirm", lambda *a, **k: False)
+
+    runner.apply_plan(_ordered_plan(), assume_yes=False)
+
+    assert order == []

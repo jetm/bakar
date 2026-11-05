@@ -30,10 +30,14 @@ class RunCommand:
 
     ``needs_root`` distinguishes a privileged op (rendered into the single
     ``sudo`` script) from an unprivileged op (run inline in the user context).
+    ``before_privileged`` makes an unprivileged op run ahead of the sudo script,
+    for a prerequisite the privileged step depends on (a database the services
+    it starts connect to). It is ignored when the plan has no privileged op.
     """
 
     argv: list[str]
     needs_root: bool
+    before_privileged: bool = False
 
 
 @dataclass(frozen=True)
