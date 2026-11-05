@@ -36,6 +36,7 @@ kas-based BSP build orchestrator for Yocto. Runs `kas` directly on the host by d
 - **Advanced tooling** - swap the BSP-bundled bitbake for a local upstream checkout, and stress-test the bitbake parser fork race. See [docs/bitbake-override.md](docs/bitbake-override.md), [docs/stress-parse.md](docs/stress-parse.md).
 - **Host preparation** - `setup` runs once per machine before your first build: it profiles the host, remediates the host-environment `doctor` checks (sysctl drop-in, docker `daemon.json` ulimits/storage-driver, `kas` install, git identity, cache dirs), applies privileged steps through a single confirmed `sudo` of an auditable script, and persists the applied values to the global `[host]` config. When host mode is the effective default, it also installs the `buildtools-extended` toolchain (when missing) and persists its path as `[build] buildtools_dir`, so `bakar --host build` is turnkey; container-only setups skip this. `--dry-run` shows the plan and script without touching anything. See [docs/setup.md](docs/setup.md).
 - **Workspace scaffolding** - `init` wizard (interactive or `--family`) writes `.bakar.toml`. See [docs/init.md](docs/init.md).
+- **Feature checklist** - `bakar init` offers a checklist of optional features (mirrors, caches, hashserv and the central tier, remote dispatch, scope and PSI tuning), verifying each feature's requirements before offering it. A guide page per feature lists what it needs. See [docs/features/index.md](docs/features/index.md).
 - **Native rebuild attribution** - `bakar insights --natives` explains why native and cross recipes rebuilt in a finished run: it compares each rebuilt recipe's signature with its previous one using bitbake's own signature comparison, groups the causes across recipes, and reports what it could not explain. Every build records the signature files of executed native/cross tasks under the sstate directory, so causes stay explainable after the build directory is gone, and `bakar doctor` warns before a build when the bitbake/oe-core/poky revisions moved since the last recorded build. See [docs/insights.md](docs/insights.md).
 - **Read-only inspection** - query any BitBake variable or variable flag (`getvar`, `getvar --flag`, writing the resolved value to stdout and all diagnostics to stderr so `v=$(bakar getvar ...)` works), dump resolved build metadata (`show`), inspect layer stack and override precedence (`layers inspect`/`status`), compare task signatures across builds (`diffsigs`), and walk the full recipe environment (`inspect`). See [docs/getvar.md](docs/getvar.md), [docs/show.md](docs/show.md), [docs/layers.md](docs/layers.md), [docs/inspect.md](docs/inspect.md), [docs/diffsigs.md](docs/diffsigs.md).
 
@@ -50,8 +51,10 @@ pip install bakar
 ## Quickstart
 
 ```bash
-# First time on this machine: prepare the host (sysctl, docker, kas, git identity)
-bakar setup
+# First time on this machine: pick features and prepare the host (sysctl, docker, kas).
+# init applies the same host remediations as `bakar setup`; for a git identity run
+# `bakar setup --git-email <email> --git-name <name>`.
+bakar init
 
 # NXP i.MX manifest-driven build
 bakar build -f imx-6.12.49-2.2.0.xml -m imx8mp-var-dart
