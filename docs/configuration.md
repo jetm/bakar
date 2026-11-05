@@ -166,6 +166,16 @@ ccache = true
 # feed_shared = true
 # feed_dir = "/mnt/big-volume/avocado-feed"
 
+# Central tier. cluster = true is the single opt-in for the cluster doctor
+# checks (central hashserv/prserv liveness, shared-mount validation).
+# bb_hashserve and prserv_host are host:port endpoints of the central
+# hash-equivalence and PR servers; setting them alone does not enable cluster
+# mode. The central-node and central-client roles in `bakar init` set
+# cluster = true together with the endpoints. See features/central-tier.md.
+# cluster = true
+# bb_hashserve = "central.example.com:8686"
+# prserv_host = "central.example.com:8585"
+
 # Doctor host-environment thresholds. Defaults equal the values doctor
 # previously hardcoded, so an absent [host] table is a no-op. A workspace
 # .bakar.toml [host] table overrides these; both override the built-in floor.
@@ -178,6 +188,14 @@ mem_min_gb = 16.0          # minimum available+swap memory floor (GB)
 
 [layers]
 show_hashes = true   # always print layer SHAs after build/sync
+
+# Remote dispatch (`bakar build --on`). worktree_root and layer_repo_dir are
+# absolute paths on the REMOTE host; "~" and relative paths are refused.
+# Set these with `bakar settings set dispatch.<key> <value>`, which validates them.
+[dispatch]
+# worktree_root = "/srv/bakar/worktrees"
+# layer_repo_dir = "/srv/bakar/layers"
+snapshot_untracked_cap_mb = 50   # largest untracked content, in MiB, a dispatch snapshot may carry
 ```
 
 ## vendors.toml

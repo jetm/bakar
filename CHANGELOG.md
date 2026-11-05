@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added the feature step to `bakar init`: a checklist of the features in the catalog, pre-filled from the current config, with disabled features shown with their reasons, value prompts, one plan that includes the host remediations `bakar setup` applies, one confirmation and a replay line
+- Added the `--feature`, `--disable`, `--set KEY=VALUE` and `--yes` options to `bakar init` for non-interactive feature selection
+- Added `bakar init --explain` to report one feature's requirements, the fix for each unmet one and its guide page without changing anything
+- Added four `bakar doctor` checks: `sstate-mirror-reachable`, `dl-mirror-reachable`, `scheduler` and `central-endpoints`
+- Added the feature guide pages under `docs/features/`, each with a "What your host needs" section, indexed by `docs/features/index.md`
+- Documented the `cluster`, `bb_hashserve` and `prserv_host` build settings and the `[dispatch]` table in `docs/configuration.md`
+
+### Changed
+
+- Interactive `bakar init` on an initialized workspace now continues to the feature step instead of stopping. This is breaking for interactive use. `--family` alone keeps the error
+
 ## [0.41.0] - 2026-11-05
 
 ### Added
