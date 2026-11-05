@@ -247,6 +247,28 @@ mirror fetch into a shared sstate directory takes a lock inside it. An inactive
 or lagging pusher is advisory because builds keep passing; the cost is that
 other hosts fetch from upstream instead of the store.
 
+## Mirror reachability checks
+
+Two checks probe the mirrors a host is configured to fetch from. Each sends one
+HTTP request with a 3 second timeout, and neither can stop a build.
+
+| Check | Severity | Asserts | Fix hint |
+|-------|----------|---------|----------|
+| `sstate-mirror-reachable` | WARN | The URL in `sstate_mirror_url` answers an HTTP request | [What your host needs](features/sstate-mirror.md#what-your-host-needs) |
+| `dl-mirror-reachable` | WARN | The URL in `dl_mirror_url` answers an HTTP request | [What your host needs](features/dl-mirror.md#what-your-host-needs) |
+
+Outcomes, identical for both checks:
+
+| Outcome | Status / severity |
+|---------|-------------------|
+| The URL setting is empty (no network call is made) | SKIP / INFO |
+| The URL answers | PASS / INFO |
+| The URL does not answer | FAIL / WARN |
+
+An unreachable sstate mirror means builds rebuild what the mirror would have
+supplied. An unreachable download mirror means builds fall back to upstream
+fetches.
+
 ## Uninative wiring checks
 
 Uninative is oe-core's prebuilt glibc plus dynamic loader that every `-native`

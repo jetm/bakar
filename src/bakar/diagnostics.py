@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING
 # ``mounts.is_path_on_nfs`` through the module, so there is no import cycle and
 # no patch string aimed at this path; the name stays reachable here only for
 # callers that still look it up on ``bakar.diagnostics``.
-from bakar import build_scope, mounts, native_ledger, native_provenance, pin_state
+from bakar import build_scope, mounts, native_ledger, native_provenance, pin_state, probes
 from bakar.bsp_detect import (
     is_meta_avocado_yaml,
     meta_avocado_checkout,
@@ -2726,6 +2726,40 @@ def check_sstate_mirror_shared_mount(cfg: BuildConfig) -> CheckResult:
     return _ok(name, Severity.INFO, f"http(s) sstate mirror with local sstate directory {sstate}")
 
 
+def _check_mirror_reachable(name: str, url: str | None, doc: str, fallback: str) -> CheckResult:
+    mirror = (url or "").strip()
+    if not mirror:
+        return _skip(name, Severity.INFO, "no mirror URL configured")
+    if probes.http_reachable(mirror, timeout=3.0):
+        return _ok(name, Severity.INFO, f"mirror {mirror} is reachable")
+    return _fail(
+        name,
+        Severity.WARN,
+        f"mirror {mirror} did not answer; {fallback}",
+        fix_hint=doc,
+    )
+
+
+def check_sstate_mirror_reachable(cfg: BuildConfig) -> CheckResult:
+    """Warn when the configured sstate mirror does not answer an HTTP probe."""
+    return _check_mirror_reachable(
+        "sstate-mirror-reachable",
+        cfg.sstate_mirror_url,
+        "docs/features/sstate-mirror.md#what-your-host-needs",
+        "builds rebuild what the mirror would have supplied",
+    )
+
+
+def check_dl_mirror_reachable(cfg: BuildConfig) -> CheckResult:
+    """Warn when the configured download mirror does not answer an HTTP probe."""
+    return _check_mirror_reachable(
+        "dl-mirror-reachable",
+        cfg.dl_mirror_url,
+        "docs/features/dl-mirror.md#what-your-host-needs",
+        "builds fall back to upstream fetches",
+    )
+
+
 def check_store_stale_tarballs(cfg: BuildConfig) -> CheckResult:
     """Warn about ``git2_*.tar.gz.tmp`` files left over in the store host's DL_DIR."""
     name = "store-stale-tarballs"
@@ -3850,6 +3884,9 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     # WARN/INFO only, except the http-mirror-over-NFS sstate row (BLOCK).
     check_cache_push_service,
     check_sstate_mirror_shared_mount,
+    # WARN only: a configured mirror that does not answer.
+    check_sstate_mirror_reachable,
+    check_dl_mirror_reachable,
     check_store_stale_tarballs,
 )
 
@@ -3952,6 +3989,8 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "native-rebuild-forecast",
             "cache-push-service",
             "sstate-mirror-shared-mount",
+            "sstate-mirror-reachable",
+            "dl-mirror-reachable",
             "store-stale-tarballs",
         ),
     ),
@@ -4048,6 +4087,8 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_native_forecast, "native-rebuild-forecast", Severity.WARN),
     (check_cache_push_service, "cache-push-service", Severity.WARN),
     (check_sstate_mirror_shared_mount, "sstate-mirror-shared-mount", Severity.BLOCK),
+    (check_sstate_mirror_reachable, "sstate-mirror-reachable", Severity.WARN),
+    (check_dl_mirror_reachable, "dl-mirror-reachable", Severity.WARN),
     (check_store_stale_tarballs, "store-stale-tarballs", Severity.WARN),
     # NXP-only (BspModel.doctor_extras)
     (check_forks_linux_imx, "forks-linux-imx", Severity.INFO),
