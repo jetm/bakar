@@ -53,21 +53,18 @@ def _scaffold_workspace(
         write_workspace_config(path, "generic", settings)
 
 
-def _init_non_interactive(
+def _family_settings(
     family: str,
-    workspace: Path | None,
     manifest: str | None,
     machine: str | None,
     distro: str | None,
     image: str | None,
     kas_yaml: str | None,
-) -> None:
-    """Run non-interactive init: validate family, build settings, scaffold, report."""
+) -> dict[str, str]:
+    """Validate ``family`` and build its workspace settings from flags and BSP defaults."""
     if family not in _FAMILIES:
         console.print(f"[red]unknown family:[/] {family!r} - must be one of {_FAMILIES}")
         raise typer.Exit(1)
-
-    path = workspace or Path(".")
 
     settings: dict[str, str] = {}
     if family in ("nxp", "ti"):
@@ -80,6 +77,21 @@ def _init_non_interactive(
         settings["kas_yaml"] = kas_yaml or "kas-generic.yml"
         settings["machine"] = machine or "qemux86-64"
     # bbsetup: no settings needed.
+    return settings
+
+
+def _init_non_interactive(
+    family: str,
+    workspace: Path | None,
+    manifest: str | None,
+    machine: str | None,
+    distro: str | None,
+    image: str | None,
+    kas_yaml: str | None,
+) -> None:
+    """Run non-interactive init: validate family, build settings, scaffold, report."""
+    settings = _family_settings(family, manifest, machine, distro, image, kas_yaml)
+    path = workspace or Path(".")
 
     try:
         _scaffold_workspace(path, family, settings)
@@ -97,7 +109,7 @@ def _init_interactive(no_sync: bool, workspace: Path | None) -> None:
     if not sys.stdin.isatty():
         console.print(
             "[red]bakar init requires an interactive terminal[/] - stdin is not a TTY. "
-            "Use --family to enable non-interactive mode."
+            "Use --family or --feature to enable non-interactive mode."
         )
         raise typer.Exit(1)
 
@@ -220,17 +232,67 @@ def init(
         bool,
         typer.Option("--no-sync", help="Skip sync after scaffolding (interactive mode only)"),
     ] = False,
+    feature: Annotated[
+        list[str] | None,
+        typer.Option("--feature", help="Feature id to enable (repeatable); enables non-interactive mode"),
+    ] = None,
+    disable: Annotated[
+        list[str] | None,
+        typer.Option("--disable", help="Feature id to turn off (repeatable); enables non-interactive mode"),
+    ] = None,
+    set_values: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--set",
+            help="KEY=VALUE for a selected feature: a settings key or <feature-id>.<input> (repeatable)",
+        ),
+    ] = None,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Apply a plan that needs sudo without prompting (needs passwordless sudo)"),
+    ] = False,
 ) -> None:
-    """Scaffold a new bakar workspace.
+    """Scaffold a new bakar workspace and choose its features.
 
-    Without ``--family``: interactive wizard using questionary prompts.
-    Requires a TTY on stdin.
+    Without ``--family``, ``--feature`` or ``--disable``: interactive wizard
+    using questionary prompts. Requires a TTY on stdin.
 
-    With ``--family``: non-interactive mode - no TTY required. Settings are
-    resolved from the provided flags, falling back to BSP model defaults for
-    nxp/ti. Sync is never run in non-interactive mode.
+    With ``--family`` alone: non-interactive scaffold - no TTY required, no
+    user config written, no host change. Settings come from the provided
+    flags, falling back to BSP model defaults for nxp/ti. Sync is never run.
+
+    With ``--feature`` or ``--disable``: non-interactive feature step. The
+    workspace is scaffolded first when ``--family`` is given and it is not yet
+    initialized; otherwise it must already be initialized.
     """
-    if family is not None:
-        _init_non_interactive(family, workspace, manifest, machine, distro, image, kas_yaml)
-    else:
-        _init_interactive(no_sync, workspace)
+    features = list(feature or [])
+    disables = list(disable or [])
+    if not features and not disables:
+        if family is not None:
+            _init_non_interactive(family, workspace, manifest, machine, distro, image, kas_yaml)
+        else:
+            _init_interactive(no_sync, workspace)
+        return
+
+    from bakar.commands._init_features import run_noninteractive
+
+    path = workspace or Path(".")
+    scaffold = None
+    if not (path / ".bakar.toml").exists():
+        if family is None:
+            console.print("[red]no workspace here[/] - pass --family to create one before selecting features")
+            raise typer.Exit(1)
+        settings = _family_settings(family, manifest, machine, distro, image, kas_yaml)
+
+        def scaffold() -> None:
+            _scaffold_workspace(path, family, settings)
+            console.print(f"[green]workspace scaffolded[/] at {path}")
+
+    run_noninteractive(
+        workspace=path,
+        features=features,
+        disables=disables,
+        set_items=list(set_values or []),
+        yes=yes,
+        scaffold=scaffold,
+    )

@@ -43,7 +43,7 @@ def _print_plan(plan: setup_plan.SetupPlan) -> str:
     if plan.actions:
         console.print("[bold]Planned actions[/]")
         for action in plan.actions:
-            console.print(f"  - {action.describe()}")
+            console.print(f"  - {action.describe()}", markup=False, highlight=False)
     else:
         console.print("[green]Host already prepared[/] - no actions to apply.")
 
