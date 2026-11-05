@@ -87,7 +87,13 @@ def _run_privileged_script(operations: list[RunCommand | WriteFile]) -> None:
     subprocess.run(["sudo", "bash", "-s"], input=script, text=True, check=True)  # pragma: no cover
 
 
-def apply_plan(plan: SetupPlan, *, assume_yes: bool = False, console: Console | None = None) -> None:
+def apply_plan(
+    plan: SetupPlan,
+    *,
+    assume_yes: bool = False,
+    confirmed: bool = False,
+    console: Console | None = None,
+) -> None:
     """Apply ``plan`` to the host, escalating privileges exactly once.
 
     Order:
@@ -100,6 +106,9 @@ def apply_plan(plan: SetupPlan, *, assume_yes: bool = False, console: Console | 
     2. Run every unprivileged operation inline.
     3. Persist applied host knobs via the config-write action's ``apply()``,
        only when step 1 was not declined.
+
+    ``confirmed=True`` means the caller already obtained the user's consent, so
+    the prompt is skipped (sudo still asks for its own password).
 
     Raises :class:`typer.Exit` with a non-zero code when ``assume_yes`` is set
     but passwordless sudo is not available.
@@ -118,17 +127,25 @@ def apply_plan(plan: SetupPlan, *, assume_yes: bool = False, console: Console | 
                     "Re-run without --yes to confirm interactively, or configure passwordless sudo."
                 )
                 raise typer.Exit(code=1)
-        else:
-            confirmed = typer.confirm(f"Apply {len(privileged_ops)} privileged operation(s) via one sudo script?")
-            if not confirmed:
+        elif not confirmed:
+            accepted = typer.confirm(f"Apply {len(privileged_ops)} privileged operation(s) via one sudo script?")
+            if not accepted:
                 _con.print("Declined - no changes made.")
                 return
+        # After the consent gate, so a declined plan changes nothing.
+        for action in plan.actions:
+            for op in action.operations():
+                if not op.needs_root and getattr(op, "before_privileged", False):
+                    _run_unprivileged(op)
         _run_privileged_script(privileged_ops)
 
     for action in plan.actions:
         for op in action.operations():
-            if not op.needs_root:
-                _run_unprivileged(op)
+            if op.needs_root:
+                continue
+            if privileged_ops and getattr(op, "before_privileged", False):
+                continue  # already ran ahead of the privileged script
+            _run_unprivileged(op)
 
     for action in plan.actions:
         _apply_config_write(action)

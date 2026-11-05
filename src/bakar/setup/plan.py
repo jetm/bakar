@@ -69,6 +69,8 @@ from bakar.setup.actions.tools import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from bakar.config import BuildConfig
     from bakar.setup.actions.base import Action
     from bakar.setup.profile import HostProfile
@@ -236,10 +238,11 @@ def _candidate_actions(
     return []
 
 
-def build(
+def build(  # noqa: PLR0913 - keyword-only options; callers pass them by name
     profile: HostProfile,
     *,
     cfg: BuildConfig | None = None,
+    workspace: Path | None = None,
     git_email: str | None = None,
     git_name: str | None = None,
     user_config: object = None,
@@ -261,7 +264,7 @@ def build(
     # install. A self-resolved cfg's host_mode (config.py:725) is the effective
     # value; a caller-supplied cfg carries its own.
     if cfg is None:
-        cfg = config.resolve(config.ResolveRequest(workspace=Path.cwd(), user_config=user_config))
+        cfg = config.resolve(config.ResolveRequest(workspace=workspace or Path.cwd(), user_config=user_config))
         effective_host_mode = bool(getattr(cfg, "host_mode", False))
         # setup prepares the container runtime, so it must always evaluate the
         # docker checks. resolve() auto-detects host_mode=True on a stock host
@@ -331,3 +334,21 @@ def build(
             actions.append(persist)
 
     return SetupPlan(actions=actions, advisories=advisories)
+
+
+def build_init_plan(  # noqa: PLR0913 - mirrors build()'s keyword-only options
+    profile: HostProfile,
+    *,
+    workspace: Path,
+    extra_actions: Sequence[Action],
+    git_email: str | None = None,
+    git_name: str | None = None,
+    user_config: object = None,
+) -> SetupPlan:
+    """Build the host plan for ``workspace`` with ``extra_actions`` appended last.
+
+    The extra actions run after every host remediation so they can rely on the
+    host being provisioned; advisories from the host plan are kept.
+    """
+    plan = build(profile, workspace=workspace, git_email=git_email, git_name=git_name, user_config=user_config)
+    return SetupPlan(actions=[*plan.actions, *extra_actions], advisories=plan.advisories)
