@@ -176,6 +176,7 @@ def _init_interactive_steps(no_sync: bool, workspace: Path | None) -> None:
         from bakar.commands.sync import sync
 
         sync(workspace=path)
+        _install_buildtools_after_sync(path)
         return
 
     if family_str in ("nxp", "ti", "generic"):
@@ -184,6 +185,51 @@ def _init_interactive_steps(no_sync: bool, workspace: Path | None) -> None:
         console.print(
             "Next: run [bold]bitbake-setup init[/] from inside the workspace to populate config/config-upstream.json"
         )
+    _hint_buildtools(path)
+
+
+def _workspace_host_mode(path: Path) -> bool:
+    from bakar.commands._init_requirements import proposed_config
+
+    cfg, _ = proposed_config(path, {}, ())
+    return bool(cfg.host_mode)
+
+
+def _hint_buildtools(path: Path) -> None:
+    """Point at ``bakar setup`` when a host-mode workspace has no buildtools yet."""
+    from bakar import buildtools
+
+    if _workspace_host_mode(path) and not buildtools.detect_buildtools().present:
+        console.print(
+            "To install the buildtools toolchain, run [bold]bakar setup[/] from the workspace after `bakar sync`."
+        )
+
+
+def _install_buildtools_after_sync(path: Path) -> None:
+    """Offer the buildtools install actions once sync has fetched oe-core.
+
+    Only the ``host-preflight`` actions are kept: the rest of the host plan was
+    already reviewed and applied by the feature step.
+    """
+    if not _workspace_host_mode(path):
+        return
+
+    from bakar.commands import _app as _state
+    from bakar.setup import plan as setup_plan
+    from bakar.setup import runner
+    from bakar.setup.plan import SetupPlan
+    from bakar.setup.profile import HostProfile
+
+    plan = setup_plan.build(HostProfile.detect(), workspace=path, user_config=_state._USER_CONFIG)
+    kept = [a for a in plan.actions if a.check_name == "host-preflight"]
+    if not kept:
+        return
+    console.print("Buildtools toolchain:")
+    for action in kept:
+        console.print(f"  - {action.describe()}", markup=False)
+    if not _ask(questionary.confirm("Install the buildtools toolchain?", default=False)):
+        return
+    runner.apply_plan(SetupPlan(actions=kept), confirmed=True)
 
 
 @app.command("init")
@@ -269,6 +315,9 @@ def init(
         run_explain(explain, workspace or Path("."))
         return
     if not features and not disables:
+        if set_values or (yes and family is None):
+            console.print("[red]--set and --yes apply to the feature step[/] - pass --feature or --disable with them")
+            raise typer.Exit(1)
         if family is not None:
             _init_non_interactive(family, workspace, manifest, machine, distro, image, kas_yaml)
         else:
