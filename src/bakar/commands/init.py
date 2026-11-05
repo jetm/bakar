@@ -105,7 +105,11 @@ def _init_non_interactive(
 
 
 def _init_interactive(no_sync: bool, workspace: Path | None) -> None:
-    """Run interactive init wizard: TTY check, questionary prompts, scaffold, optional sync."""
+    """Run the interactive wizard: TTY check, workspace, scaffold if new, features, optional sync.
+
+    Ctrl-C at any prompt prints ``Aborted.`` and exits 1, leaving only what was
+    already scaffolded.
+    """
     if not sys.stdin.isatty():
         console.print(
             "[red]bakar init requires an interactive terminal[/] - stdin is not a TTY. "
@@ -113,70 +117,54 @@ def _init_interactive(no_sync: bool, workspace: Path | None) -> None:
         )
         raise typer.Exit(1)
 
-    family_str: str = _ask(
-        questionary.select(
-            "BSP family:",
-            choices=["nxp", "ti", "bbsetup", "generic"],
-        )
-    )
+    try:
+        _init_interactive_steps(no_sync, workspace)
+    except typer.Abort:
+        console.print("[red]Aborted.[/]")
+        raise typer.Exit(1) from None
 
-    workspace_str: str = _ask(
-        questionary.path(
-            "Workspace directory:",
-            default=".",
-        )
-    )
-    path = Path(workspace_str).expanduser()
 
+def _prompt_family_settings(family_str: str) -> dict[str, str]:
     settings: dict[str, str] = {}
     if family_str in ("nxp", "ti"):
         model = get_model(family_str)
-        settings["manifest"] = _ask(
-            questionary.text(
-                "Manifest:",
-                default=model.default_manifest,
-            )
-        )
-        settings["machine"] = _ask(
-            questionary.text(
-                "Machine:",
-                default=model.default_machine,
-            )
-        )
-        settings["distro"] = _ask(
-            questionary.text(
-                "Distro:",
-                default=model.default_distro,
-            )
-        )
-        settings["image"] = _ask(
-            questionary.text(
-                "Image:",
-                default=model.default_image,
-            )
-        )
+        settings["manifest"] = _ask(questionary.text("Manifest:", default=model.default_manifest))
+        settings["machine"] = _ask(questionary.text("Machine:", default=model.default_machine))
+        settings["distro"] = _ask(questionary.text("Distro:", default=model.default_distro))
+        settings["image"] = _ask(questionary.text("Image:", default=model.default_image))
     elif family_str == "generic":
-        settings["kas_yaml"] = _ask(
-            questionary.text(
-                "kas YAML filename:",
-                default="kas-generic.yml",
-            )
-        )
-        settings["machine"] = _ask(
-            questionary.text(
-                "Machine:",
-                default="qemux86-64",
-            )
-        )
+        settings["kas_yaml"] = _ask(questionary.text("kas YAML filename:", default="kas-generic.yml"))
+        settings["machine"] = _ask(questionary.text("Machine:", default="qemux86-64"))
     # bbsetup: no family-specific prompts.
+    return settings
 
-    try:
-        _scaffold_workspace(path, family_str, settings)
-    except FileExistsError as exc:
-        console.print(f"[red]workspace already initialized:[/] {exc} already exists")
-        raise typer.Exit(1) from exc
 
-    console.print(f"[green]workspace scaffolded[/] at {path}")
+def _init_interactive_steps(no_sync: bool, workspace: Path | None) -> None:
+    from bakar.commands._init_checklist import run_feature_step
+
+    if workspace is not None:
+        path = workspace
+    else:
+        path = Path(_ask(questionary.path("Workspace directory:", default="."))).expanduser()
+
+    scaffolded = False
+    if (path / ".bakar.toml").exists():
+        console.print(f"workspace already initialized at {path}")
+    else:
+        family_str: str = _ask(questionary.select("BSP family:", choices=["nxp", "ti", "bbsetup", "generic"]))
+        settings = _prompt_family_settings(family_str)
+        try:
+            _scaffold_workspace(path, family_str, settings)
+        except FileExistsError as exc:
+            console.print(f"[red]workspace already initialized:[/] {exc} already exists")
+            raise typer.Exit(1) from exc
+        scaffolded = True
+        console.print(f"[green]workspace scaffolded[/] at {path}")
+
+    run_feature_step(path)
+
+    if not scaffolded:
+        return
 
     if no_sync:
         run_sync = False
