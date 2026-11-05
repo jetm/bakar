@@ -10,8 +10,10 @@ them (topology- and RAM-aware) via bakar.tuning.derive_parallelism.
 
 from __future__ import annotations
 
+import importlib.resources
 import re
 import textwrap
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -26,8 +28,6 @@ from bakar.user_config import SETTINGS_SCHEMA, load_user_config, set_setting
 from tests.conftest import make_build_config
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from bakar.config import BuildConfig
 
 pytestmark = pytest.mark.unit
@@ -541,3 +541,41 @@ def test_materialize_overlay_skips_non_tuning_overlays(tmp_path: Path, monkeypat
     written = (cfg.bsp_root / rel).read_text(encoding="utf-8")
 
     assert "os.environ.get('BAKAR_PARALLEL_MAKE')" in written
+
+
+_SHIPPED_OVERLAYS = Path(str(importlib.resources.files("bakar") / "overlays"))
+_THREAD_LINE = re.compile(r"^\s*(BB_NUMBER_THREADS|BB_NUMBER_PARSE_THREADS|PARALLEL_MAKE)\s*=\s*(.*)$", re.MULTILINE)
+_SHIPPED_WITH_THREAD_LINES = sorted(
+    p.name for p in _SHIPPED_OVERLAYS.glob("bakar-tuning-*.yml") if "PARALLEL_MAKE" in p.read_text()
+)
+
+
+def test_the_shipped_overlays_with_thread_lines_are_found() -> None:
+    # A parametrized test over an empty set passes for the wrong reason.
+    assert {"bakar-tuning-generic.yml", "bakar-tuning-nxp.yml", "bakar-tuning-ti.yml"} <= set(
+        _SHIPPED_WITH_THREAD_LINES
+    )
+
+
+@pytest.mark.parametrize("name", _SHIPPED_WITH_THREAD_LINES)
+def test_shipped_overlay_thread_lines_become_literals(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rewrite must match the lines the overlays actually ship.
+
+    PARALLEL_MAKE is expanded inside bitbake-worker, where a passthrough variable is not
+    in os.environ, so the only thing keeping the configured -j in effect is the literal
+    that materialize_overlay writes. The other tests here feed the rewrite a copy of the
+    expression; editing a shipped line so the pattern stops matching would pass them all
+    and silently put every build back on the os.environ lookup.
+    """
+    _clear_parallelism_env(monkeypatch)
+    cfg = _make_cfg(tmp_path, parallel_make=7, bb_number_threads=5)
+
+    rel = materialize_overlay(cfg, _SHIPPED_OVERLAYS / name)
+    written = (cfg.bsp_root / rel).read_text(encoding="utf-8")
+
+    lines = dict(_THREAD_LINE.findall(written))
+    assert lines["PARALLEL_MAKE"] == '"-j 7"'
+    assert lines["BB_NUMBER_THREADS"] == '"5"'
+    assert all("os.environ" not in value for value in lines.values())
