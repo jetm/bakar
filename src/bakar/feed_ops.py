@@ -25,7 +25,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bakar import feed, feed_index, feed_preflight
+from bakar import feed, feed_index, feed_lock, feed_preflight
 from bakar.feed_consolidate import _read_testdata, _split_codename
 
 if TYPE_CHECKING:
@@ -158,15 +158,18 @@ def sync_then_index(
     refused on a blocking result. This does not re-check, because the useful
     place to fail is before a multi-hour build rather than after it.
     """
-    result = feed.sync(
-        cfg,
-        publish=feed.FeedPublish(
-            deploy_dir=deploy_dir(cfg),
-            scripts=feed.meta_avocado_scripts(kas_yaml),
-            release=release,
-            channel=channel,
-            sboms=sboms,
-        ),
-    )
-    result["index"] = feed_index.write_targets_index(Path(str(result["channel_root"])))
+    # Locked once here for stage, render and index together: another writer
+    # slipping in between them would index the wrong channel contents.
+    with feed_lock.feed_lock(feed.resolve_feed_root(cfg)):
+        result = feed.sync(
+            cfg,
+            publish=feed.FeedPublish(
+                deploy_dir=deploy_dir(cfg),
+                scripts=feed.meta_avocado_scripts(kas_yaml),
+                release=release,
+                channel=channel,
+                sboms=sboms,
+            ),
+        )
+        result["index"] = feed_index.write_targets_index(Path(str(result["channel_root"])))
     return result

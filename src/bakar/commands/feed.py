@@ -24,14 +24,16 @@ one reaches the user as a traceback.
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Annotated, cast
 
 import typer
 
 from bakar import feed as feed_mod
-from bakar import feed_index, feed_mirror, feed_ops, feed_preflight, feed_retention, feed_serve
+from bakar import feed_index, feed_lock, feed_mirror, feed_ops, feed_preflight, feed_retention, feed_serve
 from bakar.commands._app import app, console
 from bakar.commands._helpers import WorkspaceOption
 from bakar.commands._workspace import _resolve_daemon_cfg
@@ -94,6 +96,27 @@ TargetOption = Annotated[
     list[str] | None,
     typer.Option("--target", help="Machine name looked up in the source's targets.json (repeatable)"),
 ]
+
+
+@contextlib.contextmanager
+def _locked(feed_root: Path) -> Iterator[None]:
+    """Hold the feed lock for a writer, turning a refusal into a clean exit 1.
+
+    Only acquiring is translated. The body's own failures keep their own
+    handling, and an exception raised inside must not be mistaken for the lock
+    failing, so the ``with`` is entered by hand rather than around the body.
+    """
+    stack = contextlib.ExitStack()
+    try:
+        stack.enter_context(feed_lock.feed_lock(feed_root))
+    except feed_lock.FeedLockTimeout as exc:
+        console.print(f"feed locked: {exc}", markup=False, soft_wrap=True)
+        raise typer.Exit(code=1) from exc
+    except OSError as exc:
+        console.print(f"cannot lock the feed {feed_root}: {exc}", markup=False, soft_wrap=True)
+        raise typer.Exit(code=1) from exc
+    with stack:
+        yield
 
 
 def _report_preflight(results: list) -> bool:
@@ -203,15 +226,16 @@ def sync(
 
     console.print(f"feed: {feed_mod.resolve_feed_root(cfg)}")
     try:
-        result = feed_mod.sync(
-            cfg,
-            publish=feed_mod.FeedPublish(
-                deploy_dir=feed_ops.deploy_dir(cfg),
-                scripts=scripts,
-                release=release,
-                channel=channel,
-            ),
-        )
+        with _locked(feed_mod.resolve_feed_root(cfg)):
+            result = feed_mod.sync(
+                cfg,
+                publish=feed_mod.FeedPublish(
+                    deploy_dir=feed_ops.deploy_dir(cfg),
+                    scripts=scripts,
+                    release=release,
+                    channel=channel,
+                ),
+            )
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         # The staging and render scripts run with check=True. A non-zero exit
         # leaves the snapshot pointer unwritten by design, so the feed is intact;
@@ -259,7 +283,8 @@ def mirror(
         repos=repos,
     )
     try:
-        result = feed_mirror.mirror(request)
+        with _locked(feed_root):
+            result = feed_mirror.mirror(request)
     except (feed_mirror.MirrorError, OSError) as exc:
         console.print(f"feed mirror failed: {exc}")
         raise typer.Exit(code=1) from exc
@@ -299,6 +324,11 @@ def index(
         release = feed_mod.DEFAULT_RELEASE if release is None else release
         channel = feed_mod.DEFAULT_CHANNEL if channel is None else channel
     feed_root = feed_mod.resolve_feed_root(cfg)
+    with _locked(feed_root):
+        _write_index(feed_root, release, channel)
+
+
+def _write_index(feed_root: Path, release: str, channel: str) -> None:
     channel_dir = feed_mod.channel_root(feed_root, release=release, channel=channel)
     if not channel_dir.is_dir():
         # Writing the index would mkdir the channel, so a typo in --channel would
@@ -409,6 +439,11 @@ def gc(
     """Prune old snapshots, stale metadata and orphaned pool entries."""
     cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     feed_root = feed_mod.resolve_feed_root(cfg)
+    with _locked(feed_root):
+        _run_gc(feed_root, release, channel, keep, confirm)
+
+
+def _run_gc(feed_root: Path, release: str, channel: str, keep: int, confirm: bool) -> None:
     channel_dir = feed_mod.channel_root(feed_root, release=release, channel=channel)
 
     # Refuse rather than plan against a channel that is not there. Without a kas
