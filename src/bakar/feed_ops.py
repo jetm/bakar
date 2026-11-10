@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bakar import feed, feed_index, feed_preflight
+from bakar.feed_consolidate import _read_testdata, _split_codename
 
 if TYPE_CHECKING:
     from bakar.config import BuildConfig
@@ -45,6 +46,24 @@ def deploy_dir(cfg: BuildConfig) -> Path:
     would find nothing.
     """
     return cfg.resolved_tmpdir / "deploy" / "rpm"
+
+
+def declared_release_channel(cfg: BuildConfig) -> tuple[str, str] | tuple[None, None]:
+    """Return the ``(release, channel)`` the finished build declares, or ``(None, None)``.
+
+    Read exactly as ``feed_preflight.check_release_channel`` reads it, so a
+    default taken from here can never be one that check then refuses. A missing
+    or unparseable testdata file, a codename that is not a string, and one with
+    no ``/`` all come back as ``(None, None)`` - the caller falls back to the
+    constants rather than guessing half a pair. Local reads only.
+    """
+    declared = _read_testdata(deploy_dir(cfg).parent).get("DISTRO_CODENAME")
+    if not isinstance(declared, str):
+        return None, None
+    release, channel = _split_codename(declared)
+    if release is None or channel is None:
+        return None, None
+    return release, channel
 
 
 def scripts_dir(kas_yaml: Path) -> Path | None:

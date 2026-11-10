@@ -55,6 +55,27 @@ OptionalKasYaml = Annotated[
 
 ReleaseOption = Annotated[str, typer.Option("--release", help="Feed release directory")]
 ChannelOption = Annotated[str, typer.Option("--channel", help="Feed channel directory")]
+# sync and index (given a kas YAML) default to what the build declares, so None
+# means "not given" rather than a value; the other verbs address the feed alone
+# and keep the constants above.
+InferredReleaseOption = Annotated[
+    str | None,
+    typer.Option(
+        "--release",
+        help=f"Feed release directory. Default: the build's declared release; "
+        f"{feed_mod.DEFAULT_RELEASE} when it declares none",
+        show_default=False,
+    ),
+]
+InferredChannelOption = Annotated[
+    str | None,
+    typer.Option(
+        "--channel",
+        help=f"Feed channel directory. Default: the build's declared channel; "
+        f"{feed_mod.DEFAULT_CHANNEL} when it declares none",
+        show_default=False,
+    ),
+]
 PortOption = Annotated[int, typer.Option("--port", help="Port the static server binds")]
 BindOption = Annotated[
     str,
@@ -94,6 +115,28 @@ def _report_preflight(results: list) -> bool:
             f"{len(blockers)} prerequisite(s) missing; nothing was staged. Run `bakar feed doctor` after fixing them."
         )
     return bool(blockers)
+
+
+def _default_release_channel(cfg, release: str | None, channel: str | None) -> tuple[str, str]:
+    """Fill an omitted release or channel from the build's DISTRO_CODENAME.
+
+    A given flag is kept as given; the preflight cross-check then still blocks a
+    pair the build disagrees with. A build declaring no usable codename gets the
+    constants, said once, as the preflight's skip message does.
+    """
+    if release is not None and channel is not None:
+        return release, channel
+    declared_release, declared_channel = feed_ops.declared_release_channel(cfg)
+    if declared_release is None or declared_channel is None:
+        declared_release, declared_channel = feed_mod.DEFAULT_RELEASE, feed_mod.DEFAULT_CHANNEL
+        release = declared_release if release is None else release
+        channel = declared_channel if channel is None else channel
+        console.print(f"build declares no usable codename; using {release}/{channel}")
+        return release, channel
+    return (
+        declared_release if release is None else release,
+        declared_channel if channel is None else channel,
+    )
 
 
 @feed_app.command("doctor")
@@ -142,11 +185,12 @@ def doctor(
 def sync(
     kas_yaml: KasYamlArgument,
     workspace: WorkspaceOption = None,
-    release: ReleaseOption = feed_mod.DEFAULT_RELEASE,
-    channel: ChannelOption = feed_mod.DEFAULT_CHANNEL,
+    release: InferredReleaseOption = None,
+    channel: InferredChannelOption = None,
 ) -> None:
     """Stage a finished build and render every repository it declares."""
     cfg = _resolve_daemon_cfg(workspace, kas_yaml)
+    release, channel = _default_release_channel(cfg, release, channel)
     scripts = feed_ops.scripts_dir(kas_yaml)
 
     # Every prerequisite at once, before anything is staged. The feed depends on
@@ -243,11 +287,17 @@ def mirror(
 def index(
     kas_yaml: OptionalKasYaml = None,
     workspace: WorkspaceOption = None,
-    release: ReleaseOption = feed_mod.DEFAULT_RELEASE,
-    channel: ChannelOption = feed_mod.DEFAULT_CHANNEL,
+    release: InferredReleaseOption = None,
+    channel: InferredChannelOption = None,
 ) -> None:
     """Write ``targets.json`` from what the channel has actually rendered."""
     cfg = _resolve_daemon_cfg(workspace, kas_yaml)
+    if kas_yaml is not None:
+        release, channel = _default_release_channel(cfg, release, channel)
+    else:
+        # No kas YAML names no build, so there is no codename to consult.
+        release = feed_mod.DEFAULT_RELEASE if release is None else release
+        channel = feed_mod.DEFAULT_CHANNEL if channel is None else channel
     feed_root = feed_mod.resolve_feed_root(cfg)
     channel_dir = feed_mod.channel_root(feed_root, release=release, channel=channel)
     if not channel_dir.is_dir():
