@@ -46,8 +46,8 @@ destructive happens.
 | Flag | Applies to | Description |
 |------|------------|-------------|
 | `--workspace`, `-w` | all eight | Workspace root; auto-detected if omitted |
-| `--release` | `sync`, `mirror`, `index`, `status`, `gc` | Feed release directory (default: `2024`) |
-| `--channel` | `sync`, `mirror`, `index`, `status`, `gc` | Feed channel directory (default: `edge`) |
+| `--release` | `sync`, `mirror`, `index`, `status`, `gc` | Feed release directory. For `sync`, and `index` given a kas YAML, the default is the release the finished build declares in its distribution codename; `2024` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
+| `--channel` | `sync`, `mirror`, `index`, `status`, `gc` | Feed channel directory. For `sync`, and `index` given a kas YAML, the default is the channel the finished build declares in its distribution codename; `edge` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
 | `--target` | `mirror` only | Machine name to resolve through the source's `targets.json` (repeatable) |
 | `--repo` | `mirror` only | Repository path to mirror directly, e.g. `sdk/all` (repeatable) |
 | `--port` | `serve`, `status` | Port the static server binds (default: `8080`) |
@@ -261,6 +261,10 @@ bakar feed sync meta-avocado/kas/machine/qemux86-64.yml
 
 # Same, into a non-default release/channel
 bakar feed sync meta-avocado/kas/machine/qemux86-64.yml --release 2026 --channel stable
+
+# Stage a wrynose build with no flags: release and channel come from the
+# distribution codename the build declares. An explicit pair that disagrees with the build is still refused by the preflight.
+bakar feed sync meta-avocado/kas/machine/qemux86-64.yml
 
 # Rewrite the client index from what has rendered
 bakar feed index
