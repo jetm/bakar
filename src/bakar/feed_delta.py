@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -85,6 +86,40 @@ class RecipeEntry:
             self.srcrev or "",
             self.layer_commit,
         )
+
+
+# Stamp tasks that carry the recipe's taskhash, best signal first. The RPM
+# write task is the one that produced the published package; ``do_package`` is
+# the fallback when neither RPM stamp exists.
+_STAMP_TASKS = ("do_package_write_rpm", "do_package_write_rpm_setscene", "do_package")
+_HASH_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def read_task_hash(stamps_dir: Path, recipe: str, pv: str) -> str | None:
+    """Read a recipe's bitbake taskhash from its stamp file names.
+
+    Stamps live at ``<stamps_dir>/<pkgarch>/<recipe>/<pv>.<task>.<taskhash>``.
+    The first task in ``_STAMP_TASKS`` with a stamp decides; if its stamps carry
+    more than one distinct hash the answer is ambiguous and nothing is returned.
+    Returns None when no stamp matches, so the caller keeps its explicit null
+    ``task_hash``. A hash is never invented; ``.sigdata.`` twins are not stamps.
+    """
+    if not stamps_dir.is_dir():
+        return None
+    found: dict[str, set[str]] = {task: set() for task in _STAMP_TASKS}
+    for recipe_dir in stamps_dir.glob(f"*/{recipe}"):
+        if not recipe_dir.is_dir():
+            continue
+        for stamp in recipe_dir.iterdir():
+            for task in _STAMP_TASKS:
+                prefix = f"{pv}.{task}."
+                if stamp.name.startswith(prefix) and _HASH_RE.fullmatch(stamp.name[len(prefix) :]):
+                    found[task].add(stamp.name[len(prefix) :])
+    for task in _STAMP_TASKS:
+        if found[task]:
+            hashes = found[task]
+            return next(iter(hashes)) if len(hashes) == 1 else None
+    return None
 
 
 def entry_from_package_files(  # noqa: PLR0913 - keyword-only fields of one record
