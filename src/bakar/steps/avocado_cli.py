@@ -37,6 +37,16 @@ class OverlayRepo:
 
 
 @dataclass(frozen=True)
+class UrlRepo:
+    """One served delta sub-repository as the project should list it by URL."""
+
+    name: str
+    url: str
+    stages: tuple[str, ...]
+    package_count: int
+
+
+@dataclass(frozen=True)
 class AvocadoRunResult:
     ok: bool
     failed_command: str | None = None
@@ -58,6 +68,19 @@ def render_overlay_stanza(project_dir: Path, repos: Sequence[OverlayRepo]) -> st
         rel = os.path.relpath(repo.path, project_dir)
         lines.append(f"  {repo.name}:")
         lines.append(f"    path: {rel}")
+        lines.append(f"    stages: [{', '.join(repo.stages)}]")
+    return "\n".join(lines) + "\n"
+
+
+def render_url_stanza(repos: Sequence[UrlRepo]) -> str:
+    """Return the ``repos:`` map of ``url:`` entries for the non-empty ``repos``, or ``""`` when none."""
+    entries = [r for r in repos if r.package_count > 0]
+    if not entries:
+        return ""
+    lines = ["repos:"]
+    for repo in entries:
+        lines.append(f"  {repo.name}:")
+        lines.append(f"    url: {repo.url}")
         lines.append(f"    stages: [{', '.join(repo.stages)}]")
     return "\n".join(lines) + "\n"
 

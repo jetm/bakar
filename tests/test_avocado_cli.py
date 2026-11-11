@@ -13,7 +13,9 @@ import yaml
 from bakar.steps.avocado_cli import (
     AVOCADO_COMMANDS,
     OverlayRepo,
+    UrlRepo,
     render_overlay_stanza,
+    render_url_stanza,
     run_avocado_commands,
 )
 
@@ -92,6 +94,41 @@ def test_stanza_parses_as_a_map_keyed_by_feed_name(tmp_path: Path) -> None:
             "delta-sdk": {"path": "../d/s", "stages": ["sdk"]},
         }
     }
+
+
+def _url_repos() -> list[UrlRepo]:
+    return [
+        UrlRepo(
+            name="delta-target", url="http://127.0.0.1:8080/2026/edge/target/m", stages=("rootfs",), package_count=2
+        ),
+        UrlRepo(name="delta-sdk", url="http://127.0.0.1:8080/2026/edge/sdk/m", stages=("sdk",), package_count=0),
+        UrlRepo(name="delta-ext", url="http://h:9/x", stages=("ext", "runtime"), package_count=1),
+    ]
+
+
+def test_url_stanza_exact_output_skips_empty_repos() -> None:
+    assert render_url_stanza(_url_repos()) == (
+        "repos:\n"
+        "  delta-target:\n"
+        "    url: http://127.0.0.1:8080/2026/edge/target/m\n"
+        "    stages: [rootfs]\n"
+        "  delta-ext:\n"
+        "    url: http://h:9/x\n"
+        "    stages: [ext, runtime]\n"
+    )
+
+
+def test_url_stanza_parses_as_a_map_keyed_by_feed_name() -> None:
+    assert yaml.safe_load(render_url_stanza(_url_repos())) == {
+        "repos": {
+            "delta-target": {"url": "http://127.0.0.1:8080/2026/edge/target/m", "stages": ["rootfs"]},
+            "delta-ext": {"url": "http://h:9/x", "stages": ["ext", "runtime"]},
+        }
+    }
+
+
+def test_url_stanza_is_empty_when_every_repo_is_empty() -> None:
+    assert render_url_stanza([UrlRepo(name="a", url="http://h", stages=("t",), package_count=0)]) == ""
 
 
 def test_stanza_is_empty_when_every_repo_is_empty(tmp_path: Path) -> None:
