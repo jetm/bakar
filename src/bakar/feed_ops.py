@@ -21,11 +21,14 @@ import it without a cycle.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bakar import feed, feed_consolidate, feed_index, feed_lock, feed_preflight
+from bakar import feed, feed_consolidate, feed_filter, feed_index, feed_lock, feed_preflight
 
 if TYPE_CHECKING:
     from bakar.config import BuildConfig
@@ -148,13 +151,31 @@ def describe_failure(exc: BaseException) -> str:
     return str(exc)
 
 
-def sync_then_index(
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SyncParams:
+    """Optional knobs for :func:`sync_then_index`; the defaults reproduce the old behavior.
+
+    ``only_packages`` is a set of RPM names the caller computed from the build
+    output of the recipes it named. It is applied through a filtered hardlink
+    view of the deploy dir, never read from ``recipe-map.json``, which is written
+    after the publish.
+    """
+
+    feed_root: Path | None = None
+    stage_root: Path | None = None
+    only_packages: frozenset[str] | None = None
+    snapshot: str | None = None
+    index: bool = True
+
+
+def sync_then_index(  # noqa: PLR0913 - existing keyword-only callers pass release/channel/sboms
     cfg: BuildConfig,
     kas_yaml: Path,
     *,
     release: str = feed.DEFAULT_RELEASE,
     channel: str = feed.DEFAULT_CHANNEL,
     sboms: list[Path] | None = None,
+    params: SyncParams | None = None,
 ) -> dict[str, object]:
     """Stage a finished build, render what it declares, then rewrite the index.
 
@@ -168,22 +189,46 @@ def sync_then_index(
     would write - and ``write_targets_index`` MKDIRS its channel rather than
     refusing - a second, empty channel beside the one the sync just filled.
 
+    ``params`` carries the optional roots, package subset, snapshot id and the
+    index switch. Only the values it sets are forwarded to ``feed.sync``, so a
+    default call hands it exactly what it received before ``params`` existed.
+
     Preconditions: the caller has already run :func:`preflight_results` and
     refused on a blocking result. This does not re-check, because the useful
     place to fail is before a multi-hour build rather than after it.
     """
+    params = params or SyncParams()
+    deploy = deploy_dir(cfg)
+    view: Path | None = None
+    if params.only_packages is not None:
+        # Same parent as the deploy dir so the hardlinks stay on one filesystem.
+        view = Path(tempfile.mkdtemp(prefix="feed-view-", dir=deploy.parent))
+        deploy = feed_filter.build_filtered_view(deploy, view, params.only_packages)
+    optional = {
+        "feed_root": params.feed_root,
+        "stage_root": params.stage_root,
+        "snapshot": params.snapshot,
+    }
     # Locked once here for stage, render and index together: another writer
-    # slipping in between them would index the wrong channel contents.
-    with feed_lock.feed_lock(feed.resolve_feed_root(cfg)):
-        result = feed.sync(
-            cfg,
-            publish=feed.FeedPublish(
-                deploy_dir=deploy_dir(cfg),
-                scripts=feed.meta_avocado_scripts(kas_yaml),
-                release=release,
-                channel=channel,
-                sboms=sboms,
-            ),
-        )
-        result["index"] = feed_index.write_targets_index(Path(str(result["channel_root"])))
+    # slipping in between them would index the wrong channel contents. The lock
+    # follows the root the sync writes to, which a caller can override.
+    lock_root = params.feed_root if params.feed_root is not None else feed.resolve_feed_root(cfg)
+    try:
+        with feed_lock.feed_lock(lock_root):
+            result = feed.sync(
+                cfg,
+                publish=feed.FeedPublish(
+                    deploy_dir=deploy,
+                    scripts=feed.meta_avocado_scripts(kas_yaml),
+                    release=release,
+                    channel=channel,
+                    sboms=sboms,
+                ),
+                **{k: v for k, v in optional.items() if v is not None},
+            )
+            if params.index:
+                result["index"] = feed_index.write_targets_index(Path(str(result["channel_root"])))
+    finally:
+        if view is not None:
+            shutil.rmtree(view, ignore_errors=True)
     return result
