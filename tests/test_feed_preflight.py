@@ -301,6 +301,18 @@ def test_no_codename_is_skipped_rather_than_guessed(deploy: Path) -> None:
     assert result.severity is Severity.INFO
 
 
+@pytest.mark.parametrize("codename", ["2026/../../x", "2026//srv/x", "../x/local", "2026/a/b"])
+def test_a_path_shaped_codename_is_skipped_like_the_sync_default_skips_it(deploy: Path, codename: str) -> None:
+    """The preflight and the sync default read the codename through one reader, so a
+    codename the default refuses is not then reported as a mismatch against a pair
+    that was never taken from it."""
+    _with_codename(deploy, codename)
+
+    result = feed_preflight.check_release_channel(deploy, "2024", "edge")
+
+    assert result.status is Status.SKIP
+
+
 def test_absent_testdata_is_skipped_not_failed(deploy: Path) -> None:
     assert feed_preflight.check_release_channel(deploy, "2024", "edge").status is Status.SKIP
 

@@ -64,8 +64,8 @@ bakar build -m imx8mp-var-dart    # machine override in bbsetup workspace
 | `--detach` | | Run the whole pipeline in a `bakar-detach-*` systemd user unit and print a JSON handle on stdout. Refused with `--dry-run`/`--dry-run-script` and without a systemd user manager. With `--on` it detaches the remote build. See [Detached builds](#detached-builds---detach). |
 | `--yes` | `-y` | Proceed despite a local/remote bakar version mismatch for `--on` dispatch. Dispatch has no other prompt or override: it prints its plan and never deletes anything on the remote |
 | `--feed` | | On build success, stage the RPMs into the local package feed and rewrite its index. A failed build never syncs, and neither does `--dry-run`. See [feed.md](feed.md) |
-| `--feed-release` | | Feed release directory for `--feed` (default `2024`; see `bakar feed sync`) |
-| `--feed-channel` | | Feed channel directory for `--feed` (default `edge`; see `bakar feed sync`) |
+| `--feed-release` | | Feed release directory for `--feed` (default: the build's declared codename release, else `2024`; see `bakar feed sync`) |
+| `--feed-channel` | | Feed channel directory for `--feed` (default: the build's declared codename channel, else `edge`; see `bakar feed sync`) |
 | `--cve` | | On build success, run `avocado-cve-report` to correlate the runtime packages with unpatched CVEs. Needs `kas/feature/cve-check.yml` stacked onto the build; skips with a note when the build carries no cve-check results. Neither a failed build nor `--dry-run` produces a report |
 | `--sbom` | | On build success, filter the per-image SPDX document into a publishable inventory under `deploy/avocado-sbom`. Needs `kas/feature/sbom.yml` stacked onto the build and a meta-avocado checkout carrying the publication filter; refuses up front when the filter is absent, because the unfiltered document carries vulnerability data |
 | `--no-capture-graph` | | Skip the post-build `bitbake -g` dependency-graph capture, including the cooker-idle wait before it. Same effect as `[build] capture_graph = false` |

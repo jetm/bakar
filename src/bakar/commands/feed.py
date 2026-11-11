@@ -151,19 +151,10 @@ def _default_release_channel(cfg, release: str | None, channel: str | None) -> t
     pair the build disagrees with. A build declaring no usable codename gets the
     constants, said once, as the preflight's skip message does.
     """
-    if release is not None and channel is not None:
-        return release, channel
-    declared_release, declared_channel = feed_ops.declared_release_channel(cfg)
-    if declared_release is None or declared_channel is None:
-        declared_release, declared_channel = feed_mod.DEFAULT_RELEASE, feed_mod.DEFAULT_CHANNEL
-        release = declared_release if release is None else release
-        channel = declared_channel if channel is None else channel
+    release, channel, used_constants = feed_ops.default_release_channel(cfg, release, channel)
+    if used_constants:
         console.print(f"build declares no usable codename; using {release}/{channel}")
-        return release, channel
-    return (
-        declared_release if release is None else release,
-        declared_channel if channel is None else channel,
-    )
+    return release, channel
 
 
 @feed_app.command("doctor")

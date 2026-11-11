@@ -106,6 +106,31 @@ def _split_codename(codename: str | None) -> tuple[str | None, str | None]:
     return (release or None), (channel or None)
 
 
+def declared_release_channel(deploy_root: Path) -> tuple[str | None, str | None]:
+    """Return the ``(release, channel)`` a build's testdata declares, or ``(None, None)``.
+
+    The single reader for the build's ``DISTRO_CODENAME``: the sync default and
+    the preflight cross-check both call it, so a default taken from here can
+    never be a pair the check then refuses. A missing or unparseable testdata
+    file, a codename that is not a string, one with no ``/``, and one whose
+    parts are not each a single plain path component all come back as
+    ``(None, None)`` - the caller falls back to the constants rather than guess.
+    The pair becomes ``feed_root/release/channel``, so ``2026/../../x`` or
+    ``2026//srv/x`` would otherwise render, index and gc outside the feed.
+    Local reads only.
+    """
+    declared = _read_testdata(deploy_root).get(_CODENAME_KEY)
+    if not isinstance(declared, str):
+        return None, None
+    release, channel = _split_codename(declared)
+    if release is None or channel is None:
+        return None, None
+    for part in (release, channel):
+        if part in {".", ".."} or "/" in part or "\\" in part:
+            return None, None
+    return release, channel
+
+
 def discover_trees(search_roots: list[Path]) -> list[DiscoveredTree]:
     """Return every distinct build tree under ``search_roots``, in path order.
 

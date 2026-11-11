@@ -14,7 +14,6 @@ from rich.markup import escape
 from rich.table import Table
 
 import bakar.commands._app as _state
-from bakar import feed as feed_mod
 from bakar.bsp_detect import (
     is_meta_avocado_yaml,
     layer_repo_of,
@@ -427,8 +426,8 @@ def build(
     detach: DetachOption = False,
     yes: YesOption = False,
     feed: FeedOption = False,
-    feed_release: FeedReleaseOption = feed_mod.DEFAULT_RELEASE,
-    feed_channel: FeedChannelOption = feed_mod.DEFAULT_CHANNEL,
+    feed_release: FeedReleaseOption = None,
+    feed_channel: FeedChannelOption = None,
     cve: CveOption = False,
     sbom: SbomOption = False,
     no_capture_graph: NoCaptureGraphOption = False,

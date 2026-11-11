@@ -25,8 +25,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bakar import feed, feed_index, feed_lock, feed_preflight
-from bakar.feed_consolidate import _read_testdata, _split_codename
+from bakar import feed, feed_consolidate, feed_index, feed_lock, feed_preflight
 
 if TYPE_CHECKING:
     from bakar.config import BuildConfig
@@ -51,25 +50,34 @@ def deploy_dir(cfg: BuildConfig) -> Path:
 def declared_release_channel(cfg: BuildConfig) -> tuple[str, str] | tuple[None, None]:
     """Return the ``(release, channel)`` the finished build declares, or ``(None, None)``.
 
-    Read exactly as ``feed_preflight.check_release_channel`` reads it, so a
-    default taken from here can never be one that check then refuses. A missing
-    or unparseable testdata file, a codename that is not a string, and one with
-    no ``/`` all come back as ``(None, None)`` - the caller falls back to the
-    constants rather than guessing half a pair. Local reads only.
+    Read through ``feed_consolidate.declared_release_channel``, the same reader
+    the preflight cross-check uses. Local reads only.
     """
-    declared = _read_testdata(deploy_dir(cfg).parent).get("DISTRO_CODENAME")
-    if not isinstance(declared, str):
-        return None, None
-    release, channel = _split_codename(declared)
-    if release is None or channel is None:
-        return None, None
-    # The pair becomes feed_root/release/channel, so a codename taken from a
-    # layer must name exactly two plain directories: "2026/../../x" or
-    # "2026//srv/x" would otherwise render, index and gc outside the feed.
-    for part in (release, channel):
-        if not part or part in {".", ".."} or "/" in part or "\\" in part:
-            return None, None
-    return release, channel
+    return feed_consolidate.declared_release_channel(deploy_dir(cfg).parent)  # type: ignore[return-value]
+
+
+def default_release_channel(cfg: BuildConfig, release: str | None, channel: str | None) -> tuple[str, str, bool]:
+    """Fill an omitted release or channel from the build's declared codename.
+
+    A given value is kept as given; the preflight cross-check then still blocks a
+    pair the build disagrees with. Returns ``(release, channel, used_constants)``;
+    ``used_constants`` is true when a value had to come from the module constants
+    because the build declares no usable codename, so the caller can say so once.
+    """
+    if release is not None and channel is not None:
+        return release, channel, False
+    declared_release, declared_channel = declared_release_channel(cfg)
+    if declared_release is None or declared_channel is None:
+        return (
+            feed.DEFAULT_RELEASE if release is None else release,
+            feed.DEFAULT_CHANNEL if channel is None else channel,
+            True,
+        )
+    return (
+        declared_release if release is None else release,
+        declared_channel if channel is None else channel,
+        False,
+    )
 
 
 def scripts_dir(kas_yaml: Path) -> Path | None:

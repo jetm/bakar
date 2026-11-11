@@ -161,14 +161,13 @@ def check_release_channel(deploy_dir: Path, release: str, channel: str) -> Check
     every symptom appears on the client side minutes later.
 
     Skipped rather than guessed when the build records no usable codename -
-    ``_split_codename`` deliberately refuses a codename with no separator, and
+    the shared reader deliberately refuses a codename with no separator, and
     inventing a channel for it would be the same error one level down.
     """
-    from bakar.feed_consolidate import _read_testdata, _split_codename
+    from bakar.feed_consolidate import declared_release_channel
 
     # testdata sits under deploy/images/<machine>/, a sibling of deploy/rpm.
-    declared = _read_testdata(deploy_dir.parent).get("DISTRO_CODENAME")
-    want_release, want_channel = _split_codename(declared)
+    want_release, want_channel = declared_release_channel(deploy_dir.parent)
 
     if want_release is None or want_channel is None:
         return CheckResult(

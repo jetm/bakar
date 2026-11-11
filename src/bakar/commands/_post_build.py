@@ -256,8 +256,8 @@ def _resolve_feed_request(
     *,
     feed: bool,
     dry_run: bool,
-    release: str,
-    channel: str,
+    release: str | None,
+    channel: str | None,
 ) -> _FeedRequest | None:
     """Return the feed request for this build, or None when --feed must not run.
 
@@ -280,6 +280,12 @@ def _resolve_feed_request(
     if dry_run:
         console.print("[yellow]--dry-run: skipping --feed[/] (no build ran, so there is nothing new to stage).")
         return None
+
+    # An omitted release or channel comes from the build's declared codename, the
+    # same default `bakar feed sync` uses, so the two paths cannot disagree.
+    release, channel, used_constants = feed_ops.default_release_channel(cfg, release, channel)
+    if used_constants:
+        console.print(f"build declares no usable codename; using {release}/{channel}")
 
     # release/channel are passed so the codename cross-check runs here too: a
     # --feed-release that disagrees with the build's DISTRO_CODENAME renders into

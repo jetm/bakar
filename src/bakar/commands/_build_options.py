@@ -176,13 +176,21 @@ FeedOption = Annotated[
 ]
 
 FeedReleaseOption = Annotated[
-    str,
-    typer.Option("--feed-release", help="Feed release directory for --feed (see `bakar feed sync`)."),
+    str | None,
+    typer.Option(
+        "--feed-release",
+        help="Feed release directory for --feed (see `bakar feed sync`). Defaults to the build's "
+        "declared DISTRO_CODENAME release, else 2024 when it declares none.",
+    ),
 ]
 
 FeedChannelOption = Annotated[
-    str,
-    typer.Option("--feed-channel", help="Feed channel directory for --feed (see `bakar feed sync`)."),
+    str | None,
+    typer.Option(
+        "--feed-channel",
+        help="Feed channel directory for --feed (see `bakar feed sync`). Defaults to the build's "
+        "declared DISTRO_CODENAME channel, else edge when it declares none.",
+    ),
 ]
 
 CveOption = Annotated[

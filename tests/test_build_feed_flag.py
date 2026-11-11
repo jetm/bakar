@@ -217,6 +217,41 @@ def test_feed_request_carries_the_requested_release_and_channel(monkeypatch, cfg
     assert request == build_mod._FeedRequest(kas_yaml=cfg.kas_yaml, release="dev", channel="local")
 
 
+def test_omitted_feed_release_and_channel_default_from_the_build_codename(monkeypatch, cfg) -> None:
+    """`bakar build --feed` must pick the pair `bakar feed sync` picks, not 2024/edge."""
+    seen: dict = {}
+
+    def preflight(_cfg, _yaml, *, release, channel):
+        seen.update(release=release, channel=channel)
+        return []
+
+    monkeypatch.setattr(feed_ops, "preflight_results", preflight)
+    monkeypatch.setattr(feed_ops, "declared_release_channel", lambda _cfg: ("2026-wrynose", "local"))
+
+    request = build_mod._resolve_feed_request(cfg, feed=True, dry_run=False, release=None, channel=None)
+
+    assert request == build_mod._FeedRequest(kas_yaml=cfg.kas_yaml, release="2026-wrynose", channel="local")
+    assert seen == {"release": "2026-wrynose", "channel": "local"}
+
+
+def test_an_explicit_feed_release_is_kept_and_only_the_channel_is_inferred(monkeypatch, cfg) -> None:
+    monkeypatch.setattr(feed_ops, "preflight_results", lambda *a, **k: [])
+    monkeypatch.setattr(feed_ops, "declared_release_channel", lambda _cfg: ("2026-wrynose", "local"))
+
+    request = build_mod._resolve_feed_request(cfg, feed=True, dry_run=False, release="dev", channel=None)
+
+    assert (request.release, request.channel) == ("dev", "local")
+
+
+def test_a_build_with_no_codename_keeps_the_constant_feed_defaults(monkeypatch, cfg) -> None:
+    monkeypatch.setattr(feed_ops, "preflight_results", lambda *a, **k: [])
+    monkeypatch.setattr(feed_ops, "declared_release_channel", lambda _cfg: (None, None))
+
+    request = build_mod._resolve_feed_request(cfg, feed=True, dry_run=False, release=None, channel=None)
+
+    assert (request.release, request.channel) == (feed_mod.DEFAULT_RELEASE, feed_mod.DEFAULT_CHANNEL)
+
+
 def test_blocking_preflight_refuses_before_the_build(monkeypatch, capsys, cfg) -> None:
     """A missing createrepo_c must cost milliseconds to learn, not a whole build."""
     missing = CheckResult(
