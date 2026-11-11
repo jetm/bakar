@@ -75,27 +75,13 @@ def test_find_meta_avocado_dir_raises_outside_repo(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_run_script_with_swtpm(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stem", ["qemux86-64", "qemuarm64"])
+def test_resolve_run_script_is_the_one_runner_for_every_machine(tmp_path: Path, stem: str) -> None:
     sources = tmp_path / "sources"
-    kas_yaml = _make_kas_yaml(sources)
-    script = resolve_run_script(kas_yaml, swtpm=True)
-    expected = (sources / "meta-avocado").resolve() / "meta-avocado-qemu" / "scripts" / "run-qemux86-64-swtpm"
+    kas_yaml = _make_kas_yaml(sources, stem=stem)
+    script = resolve_run_script(kas_yaml)
+    expected = (sources / "meta-avocado").resolve() / "meta-avocado-qemu" / "scripts" / "run-qemu"
     assert script == expected
-
-
-def test_resolve_run_script_without_swtpm(tmp_path: Path) -> None:
-    sources = tmp_path / "sources"
-    kas_yaml = _make_kas_yaml(sources)
-    script = resolve_run_script(kas_yaml, swtpm=False)
-    expected = (sources / "meta-avocado").resolve() / "meta-avocado-qemu" / "scripts" / "run-qemux86-64"
-    assert script == expected
-
-
-def test_resolve_run_script_arm64(tmp_path: Path) -> None:
-    sources = tmp_path / "sources"
-    kas_yaml = _make_kas_yaml(sources, stem="qemuarm64")
-    script = resolve_run_script(kas_yaml, swtpm=False)
-    assert script.name == "run-qemuarm64"
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +111,7 @@ def test_run_qemu_raises_when_build_missing(tmp_path: Path) -> None:
     # Create script but no build dir
     script_dir = sources / "meta-avocado" / "meta-avocado-qemu" / "scripts"
     script_dir.mkdir(parents=True)
-    (script_dir / "run-qemux86-64-swtpm").write_text("#!/bin/bash\n")
+    (script_dir / "run-qemu").write_text("#!/bin/bash\n")
 
     log = MagicMock()
     with pytest.raises(RuntimeError, match="Build output not found"):
@@ -141,7 +127,7 @@ def test_run_qemu_restores_termios_on_tty(tmp_path: Path) -> None:
 
     script_dir = sources / "meta-avocado" / "meta-avocado-qemu" / "scripts"
     script_dir.mkdir(parents=True, exist_ok=True)
-    (script_dir / "run-qemux86-64-swtpm").write_text("#!/bin/bash\n")
+    (script_dir / "run-qemu").write_text("#!/bin/bash\n")
     (cfg.bsp_root / "build").mkdir(parents=True)
 
     log = MagicMock()
@@ -173,7 +159,7 @@ def test_run_qemu_invokes_script_with_bsp_root_cwd(tmp_path: Path) -> None:
 
     script_dir = sources / "meta-avocado" / "meta-avocado-qemu" / "scripts"
     script_dir.mkdir(parents=True)
-    script = script_dir / "run-qemux86-64-swtpm"
+    script = script_dir / "run-qemu"
     script.write_text("#!/bin/bash\n")
     (cfg.bsp_root / "build").mkdir(parents=True)
 
@@ -186,9 +172,40 @@ def test_run_qemu_invokes_script_with_bsp_root_cwd(tmp_path: Path) -> None:
 
     assert rc == 0
     mock_popen.assert_called_once_with(
-        ["bash", str(script)],
+        ["bash", str(script), "qemux86-64", "--tpm"],
         cwd=cfg.bsp_root,
     )
+
+
+@pytest.mark.parametrize(
+    ("stem", "swtpm", "expected_tail"),
+    [
+        ("qemux86-64", False, ["qemux86-64"]),
+        ("qemuarm64", True, ["qemuarm64"]),
+        ("qemuarm64", False, ["qemuarm64"]),
+    ],
+)
+def test_run_qemu_passes_tpm_only_where_the_runner_supports_it(
+    tmp_path: Path, stem: str, swtpm: bool, expected_tail: list[str]
+) -> None:
+    """run-qemu rejects --tpm for every machine but qemux86-64, so bakar must not send it."""
+    from bakar.steps.run_qemu import run_qemu
+
+    sources = tmp_path / "sources"
+    kas_yaml = _make_kas_yaml(sources, stem=stem)
+    cfg = _meta_avocado_cfg(sources)
+    script_dir = sources / "meta-avocado" / "meta-avocado-qemu" / "scripts"
+    script_dir.mkdir(parents=True)
+    script = script_dir / "run-qemu"
+    script.write_text("#!/bin/bash\n")
+    (cfg.bsp_root / "build").mkdir(parents=True)
+
+    mock_proc = MagicMock()
+    mock_proc.wait.return_value = 0
+    with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+        run_qemu(cfg, MagicMock(), swtpm=swtpm, kas_yaml=kas_yaml)
+
+    mock_popen.assert_called_once_with(["bash", str(script), *expected_tail], cwd=cfg.bsp_root)
 
 
 # ---------------------------------------------------------------------------

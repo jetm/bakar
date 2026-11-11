@@ -31,11 +31,19 @@ def _find_meta_avocado_dir(kas_yaml: Path) -> Path:
     raise ValueError(f"{kas_yaml} is not inside a meta-avocado checkout")
 
 
-def resolve_run_script(kas_yaml: Path, *, swtpm: bool) -> Path:
-    """Return the path to the run script for the given machine YAML."""
+def resolve_run_script(kas_yaml: Path) -> Path:
+    """Return the path to meta-avocado's single QEMU runner.
+
+    One ``run-qemu <machine> [--tpm]`` script serves every machine; the machine
+    comes from the kas YAML's stem, not from the script's name.
+    """
     meta_avocado_dir = _find_meta_avocado_dir(kas_yaml)
-    suffix = "-swtpm" if swtpm else ""
-    return meta_avocado_dir / "meta-avocado-qemu" / "scripts" / f"run-{kas_yaml.stem}{suffix}"
+    return meta_avocado_dir / "meta-avocado-qemu" / "scripts" / "run-qemu"
+
+
+# run-qemu rejects --tpm for every other machine ("--tpm is only supported for
+# qemux86-64"), so the default-on --swtpm must not turn into an argument there.
+_TPM_MACHINES = frozenset({"qemux86-64"})
 
 
 def run_qemu(cfg: BuildConfig, log: RunLogger, *, swtpm: bool, kas_yaml: Path) -> int:
@@ -44,7 +52,11 @@ def run_qemu(cfg: BuildConfig, log: RunLogger, *, swtpm: bool, kas_yaml: Path) -
     stdin/stdout/stderr are inherited so QEMU runs interactively.
     The run scripts assume cwd is the bsp_root (e.g. sources/build-qemux86-64).
     """
-    script = resolve_run_script(kas_yaml, swtpm=swtpm)
+    script = resolve_run_script(kas_yaml)
+    machine = kas_yaml.stem
+    argv = ["bash", str(script), machine]
+    if swtpm and machine in _TPM_MACHINES:
+        argv.append("--tpm")
     if not script.exists():
         raise FileNotFoundError(f"Run script not found: {script}")
 
@@ -61,7 +73,7 @@ def run_qemu(cfg: BuildConfig, log: RunLogger, *, swtpm: bool, kas_yaml: Path) -
     if sys.stdin.isatty():
         saved_attrs = termios.tcgetattr(sys.stdin.fileno())
     try:
-        proc = subprocess.Popen(["bash", str(script)], cwd=cfg.bsp_root)
+        proc = subprocess.Popen(argv, cwd=cfg.bsp_root)
         rc = proc.wait()
     finally:
         if saved_attrs is not None:
