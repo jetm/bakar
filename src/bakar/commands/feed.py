@@ -115,6 +115,10 @@ def _locked(feed_root: Path) -> Iterator[None]:
     except OSError as exc:
         console.print(f"cannot lock the feed {feed_root}: {exc}", markup=False, soft_wrap=True)
         raise typer.Exit(code=1) from exc
+    except ValueError as exc:
+        # A malformed BAKAR_FEED_LOCK_TIMEOUT; the message already names the variable.
+        console.print(f"cannot lock the feed {feed_root}: {exc}", markup=False, soft_wrap=True)
+        raise typer.Exit(code=1) from exc
     with stack:
         yield
 

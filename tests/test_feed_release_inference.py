@@ -256,6 +256,26 @@ def test_declared_release_channel_no_codename_returns_none(cfg, testdata) -> Non
     assert feed_ops.declared_release_channel(cfg) == (None, None)
 
 
+@pytest.mark.parametrize(
+    "codename",
+    ["2026/../../x", "2026//srv/x", "../x/local", "2026/a/b", "./x/local", "2026/.", "2026/.."],
+    ids=[
+        "dotdot-channel",
+        "absolute-channel",
+        "dotdot-release",
+        "nested-channel",
+        "dot-release",
+        "dot-channel",
+        "dotdot-only",
+    ],
+)
+def test_declared_release_channel_refuses_a_codename_that_is_not_two_path_components(cfg, codename: str) -> None:
+    """The pair becomes ``feed_root/release/channel``, so a layer's codename must not steer it elsewhere."""
+    _build(cfg, _codename(codename))
+
+    assert feed_ops.declared_release_channel(cfg) == (None, None)
+
+
 def test_declared_release_channel_needs_no_network(cfg) -> None:
     _build(cfg, _codename(_WRYNOSE))
 

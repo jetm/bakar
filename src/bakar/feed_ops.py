@@ -63,6 +63,12 @@ def declared_release_channel(cfg: BuildConfig) -> tuple[str, str] | tuple[None, 
     release, channel = _split_codename(declared)
     if release is None or channel is None:
         return None, None
+    # The pair becomes feed_root/release/channel, so a codename taken from a
+    # layer must name exactly two plain directories: "2026/../../x" or
+    # "2026//srv/x" would otherwise render, index and gc outside the feed.
+    for part in (release, channel):
+        if not part or part in {".", ".."} or "/" in part or "\\" in part:
+            return None, None
     return release, channel
 
 

@@ -339,6 +339,26 @@ def test_writer_command_exits_nonzero_on_timeout_and_writes_nothing(
     applied.assert_not_called()
 
 
+@pytest.mark.parametrize("raw", ["15m", "-1", "nan", "inf"])
+def test_writer_command_rejects_a_bad_timeout_cleanly(
+    cli: CliRunner, cfg, feed_root: Path, monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """A bad BAKAR_FEED_LOCK_TIMEOUT is a clean exit 1 naming the variable, never a traceback or an endless wait."""
+    monkeypatch.setenv("BAKAR_FEED_LOCK_TIMEOUT", raw)
+    with (
+        mock.patch("bakar.commands.feed._resolve_daemon_cfg", return_value=cfg),
+        mock.patch("bakar.commands.feed.feed_retention.plan_retention") as planned,
+        mock.patch("bakar.commands.feed.feed_retention.apply_retention") as applied,
+    ):
+        result = cli.invoke(app, ["feed", "gc", "--confirm"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "BAKAR_FEED_LOCK_TIMEOUT" in result.output.replace("\n", "")
+    planned.assert_not_called()
+    applied.assert_not_called()
+
+
 def test_status_runs_while_the_lock_is_held(cli: CliRunner, cfg, held: Path, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BAKAR_FEED_LOCK_TIMEOUT", "0.5")
     started = time.monotonic()

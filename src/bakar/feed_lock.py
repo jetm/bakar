@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import math
 import os
 import sys
 import time
@@ -55,8 +56,10 @@ def _timeout() -> float:
         value = float(raw)
     except ValueError:
         raise ValueError(f"{TIMEOUT_ENV} must be a number of seconds, got {raw!r}") from None
-    if value < 0:
-        raise ValueError(f"{TIMEOUT_ENV} must not be negative, got {raw!r}")
+    # nan compares false against everything and inf never elapses, so either
+    # would make the waiter block forever instead of refusing.
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{TIMEOUT_ENV} must be a finite, non-negative number of seconds, got {raw!r}")
     return value
 
 
