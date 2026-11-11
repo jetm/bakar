@@ -328,11 +328,14 @@ def index(
         release = feed_mod.DEFAULT_RELEASE if release is None else release
         channel = feed_mod.DEFAULT_CHANNEL if channel is None else channel
     feed_root = feed_mod.resolve_feed_root(cfg)
+    # Checked before the lock too: taking it creates the feed root, and a mistyped
+    # or unmounted feed_dir must be refused, not turned into a fresh directory.
+    _require_index_channel(feed_root, release, channel)
     with _locked(feed_root):
         _write_index(feed_root, release, channel)
 
 
-def _write_index(feed_root: Path, release: str, channel: str) -> None:
+def _require_index_channel(feed_root: Path, release: str, channel: str) -> Path:
     channel_dir = feed_mod.channel_root(feed_root, release=release, channel=channel)
     if not channel_dir.is_dir():
         # Writing the index would mkdir the channel, so a typo in --channel would
@@ -340,6 +343,11 @@ def _write_index(feed_root: Path, release: str, channel: str) -> None:
         # the channel were merely unbuilt.
         console.print(f"no such channel: {channel_dir}. Run `bakar feed sync` first, or check --release/--channel.")
         raise typer.Exit(code=1)
+    return channel_dir
+
+
+def _write_index(feed_root: Path, release: str, channel: str) -> None:
+    channel_dir = _require_index_channel(feed_root, release, channel)
 
     path = feed_index.write_targets_index(channel_dir)
     machines = list(feed_index.derive_targets(channel_dir))
@@ -443,11 +451,18 @@ def gc(
     """Prune old snapshots, stale metadata and orphaned pool entries."""
     cfg = _resolve_daemon_cfg(workspace, kas_yaml)
     feed_root = feed_mod.resolve_feed_root(cfg)
+    # Refused before the lock: taking it creates the feed root, so a mistyped or
+    # unmounted feed_dir would otherwise get a fresh directory first.
+    _require_gc_channel(feed_root, release, channel)
+    if not confirm:
+        # A preview writes nothing, so it must not wait behind a long sync.
+        _run_gc(feed_root, release, channel, keep, confirm)
+        return
     with _locked(feed_root):
         _run_gc(feed_root, release, channel, keep, confirm)
 
 
-def _run_gc(feed_root: Path, release: str, channel: str, keep: int, confirm: bool) -> None:
+def _require_gc_channel(feed_root: Path, release: str, channel: str) -> Path:
     channel_dir = feed_mod.channel_root(feed_root, release=release, channel=channel)
 
     # Refuse rather than plan against a channel that is not there. Without a kas
@@ -460,6 +475,11 @@ def _run_gc(feed_root: Path, release: str, channel: str, keep: int, confirm: boo
             "or pass the kas YAML (or --workspace) so the feed root resolves to the one you synced."
         )
         raise typer.Exit(code=1)
+    return channel_dir
+
+
+def _run_gc(feed_root: Path, release: str, channel: str, keep: int, confirm: bool) -> None:
+    channel_dir = _require_gc_channel(feed_root, release, channel)
 
     console.print(f"feed:    {feed_root}")
     console.print(f"channel: {channel_dir}")

@@ -7,20 +7,36 @@ they take this lock for the whole of their write sequence. Readers (``status``,
 ``serve``) never take it: the feed is published by atomic pointer swap, so a
 read during a write already sees either the old or the new snapshot.
 
-The lock is ``fcntl.flock`` on ``<feed root>/.bakar-feed.lock``. The kernel
-drops it when the holding process dies, including on SIGKILL, so a crashed
-writer cannot leave the feed locked. The lock file itself is never removed:
-deleting it would let a second process lock a fresh inode while the first still
-holds the old one.
+The lock is a POSIX byte-range lock (``fcntl.lockf``) on
+``<feed root>/.bakar-feed.lock``. The kernel drops it when the holding process
+dies, including on SIGKILL, so a crashed writer cannot leave the feed locked.
+The lock file itself is never removed: deleting it would let a second process
+lock a fresh inode while the first still holds the old one.
 
-Reentrant within a process, because ``flock`` on a second descriptor of the same
-file blocks against the first: a writer that calls another writer (a command
-that also goes through ``sync_then_index``) would deadlock on itself otherwise.
+It is POSIX, not ``flock``, because the feed root is one directory that the
+main node writes locally and other hosts write over NFS. An NFS client sends
+both ``flock`` and ``lockf`` to the server as POSIX byte-range locks, and on the
+server's own filesystem ``flock`` and POSIX locks never conflict. Measured on a
+pc1 (server) and pc2 (client) pair: a server-local ``flock`` holder did not
+exclude a client ``flock`` writer, while POSIX locks on both sides excluded each
+other. A host still running the ``flock`` build is therefore not excluded from a
+POSIX writer on another host, so every host that writes the feed must run this
+build.
+
+POSIX locks belong to the process, not the descriptor: closing any descriptor of
+the lock file drops the lock. Only this module opens the file, and it holds its
+descriptor for the whole of the body.
+
+Reentrant within a process, because a second ``lockf`` of the same file by the
+same process succeeds silently and its release would drop the outer hold: a
+writer that calls another writer (a command that also goes through
+``sync_then_index``) must not take a second hold, so nested calls skip locking.
 """
 
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import math
 import os
@@ -86,9 +102,11 @@ def feed_lock(feed_root: Path) -> Iterator[None]:
         announced = False
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except BlockingIOError:
+            except OSError as exc:
+                if exc.errno not in (errno.EAGAIN, errno.EACCES):
+                    raise
                 if time.monotonic() >= deadline:
                     raise FeedLockTimeout(
                         f"feed {feed_root} is locked by another bakar process; gave up on {path} "

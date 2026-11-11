@@ -232,17 +232,22 @@ is worse than a missing repository.
 Every command that writes the feed holds an exclusive lock on
 `<feed root>/.bakar-feed.lock` for its whole write sequence: `sync` (stage,
 render and index, including the sync that `bakar build --feed` runs), `mirror`,
-`index` and `gc`. A second writer waits, printing `waiting for the feed lock
+`index` and `gc --confirm`. A second writer waits, printing `waiting for the feed lock
 <path>` once, and proceeds when the first finishes. `status` and `serve` only
-read and never take the lock.
+read and never take the lock, and neither does the default `gc` preview, which writes nothing.
 
 - `BAKAR_FEED_LOCK_TIMEOUT` is the number of seconds to wait; the default is 900.
 - On timeout the command exits 1 naming the feed and the lock file, and writes
   nothing. Under `bakar build --feed` the timeout is reported as "the feed was
   not updated" and the build's own exit code is left alone, as for any other feed
   failure; re-run `bakar feed sync` afterwards.
-- The lock is an advisory `flock`, so a writer that is killed (including SIGKILL)
-  releases it by itself. Do not delete `.bakar-feed.lock`.
+- The lock is an advisory POSIX lock (`lockf`), so a writer that is killed
+  (including SIGKILL) releases it by itself. Do not delete `.bakar-feed.lock`.
+- It is a POSIX lock, not `flock`, so a writer on the main node's local disk and
+  a writer on an NFS client exclude each other: NFS clients send both kinds to
+  the server as POSIX locks, and on the server `flock` and POSIX locks do not
+  conflict. Every host that writes the feed must run a build with this lock; a
+  host still on the `flock` build is not excluded from the others.
 - The feed root is created if it does not exist. If it or the lock file cannot be
   written the command fails with the reason rather than running unlocked.
 - The lock covers the feed root only; the stage root beside it is not separately

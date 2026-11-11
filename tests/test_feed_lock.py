@@ -107,6 +107,62 @@ def held(feed_root: Path, tmp_path: Path, procs: list[subprocess.Popen]) -> Iter
 
 # --- real processes ----------------------------------------------------------
 
+# An NFS client's lock reaches the server as a POSIX byte-range lock, and on the
+# server's own filesystem flock and POSIX locks never conflict. Measured on the
+# pc1/pc2 pair: a pc1-local flock holder did not exclude a pc2 flock writer
+# (ACQUIRED), while POSIX locks on both sides excluded each other. So the feed
+# lock must be a POSIX lock, and these probes use one from a separate process.
+_POSIX_HOLDER = """
+import fcntl, sys, time, pathlib
+path, ready, release = (pathlib.Path(a) for a in sys.argv[1:4])
+with path.open("a+") as fh:
+    fcntl.lockf(fh, fcntl.LOCK_EX)
+    ready.write_text("held")
+    while not release.exists():
+        time.sleep(0.02)
+"""
+
+_POSIX_PROBE = """
+import fcntl, sys
+with open(sys.argv[1], "a+") as fh:
+    try:
+        fcntl.lockf(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit(1)
+sys.exit(0)
+"""
+
+
+def test_feed_lock_waits_for_a_posix_lock_held_by_another_process(
+    feed_root: Path, tmp_path: Path, procs: list[subprocess.Popen], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shape of a server-local writer meeting an NFS client's byte-range lock."""
+    feed_root.mkdir()
+    ready, release = tmp_path / "pready", tmp_path / "prelease"
+    procs.append(_spawn(_POSIX_HOLDER, [feed_lock.lock_path(feed_root), ready, release], tmp_path / "ph.log"))
+    _wait_for(ready)
+    monkeypatch.setenv("BAKAR_FEED_LOCK_TIMEOUT", "0.5")
+    try:
+        with pytest.raises(feed_lock.FeedLockTimeout), feed_lock.feed_lock(feed_root):
+            pytest.fail("feed_lock ran its body while another process held a POSIX lock")
+    finally:
+        release.write_text("go")
+
+
+def test_feed_lock_is_visible_to_a_posix_lock_probe_in_another_process(
+    feed_root: Path, held: Path, tmp_path: Path
+) -> None:
+    """While a writer holds the feed lock, a POSIX locker in another process must be refused."""
+    probe = subprocess.run(
+        [sys.executable, "-c", _POSIX_PROBE, str(feed_lock.lock_path(feed_root))],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert probe.returncode == 1, probe.stderr.decode()
+
 
 def test_second_process_waits_until_first_releases(feed_root: Path, tmp_path: Path, procs: list) -> None:
     ready, release, done, got = (tmp_path / n for n in ("ready", "release", "done", "got"))
@@ -281,7 +337,7 @@ def test_each_writer_command_takes_the_lock_around_its_work(
             mirror_work,
         ),
         "index": (["feed", "index"], "bakar.commands.feed.feed_index.write_targets_index", index_work),
-        "gc": (["feed", "gc"], "bakar.commands.feed.feed_retention.plan_retention", _plan_stub(events)),
+        "gc": (["feed", "gc", "--confirm"], "bakar.commands.feed.feed_retention.plan_retention", _plan_stub(events)),
     }
     for name, (argv, target, stub) in invocations.items():
         events.clear()
@@ -337,6 +393,34 @@ def test_writer_command_exits_nonzero_on_timeout_and_writes_nothing(
     assert str(feed_root / ".bakar-feed.lock") in result.output.replace("\n", "")
     planned.assert_not_called()
     applied.assert_not_called()
+
+
+@pytest.mark.parametrize("argv", [["feed", "index"], ["feed", "gc"], ["feed", "gc", "--confirm"]])
+def test_index_and_gc_refuse_a_missing_feed_root_without_creating_it(
+    cli: CliRunner, cfg, feed_root: Path, tmp_path: Path, argv: list[str]
+) -> None:
+    """A mistyped or unmounted feed_dir must be refused, not turned into a fresh local directory."""
+    missing = tmp_path / "not-mounted" / "feed"
+    cfg.effective_feed_dir = missing
+    with mock.patch("bakar.commands.feed._resolve_daemon_cfg", return_value=cfg):
+        result = cli.invoke(app, argv)
+
+    assert result.exit_code == 1
+    assert "no such channel" in result.output.replace("\n", " ")
+    assert not missing.exists()
+    assert not missing.parent.exists()
+
+
+def test_gc_preview_does_not_wait_for_the_feed_lock(
+    cli: CliRunner, cfg, held: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A preview writes nothing, so a long sync holding the lock must not block it."""
+    monkeypatch.setenv("BAKAR_FEED_LOCK_TIMEOUT", "0.5")
+    with mock.patch("bakar.commands.feed._resolve_daemon_cfg", return_value=cfg):
+        result = cli.invoke(app, ["feed", "gc"])
+
+    assert result.exit_code == 0, result.output
+    assert "locked" not in result.output
 
 
 @pytest.mark.parametrize("raw", ["15m", "-1", "nan", "inf"])
