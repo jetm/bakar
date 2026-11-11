@@ -114,6 +114,35 @@ _LATEST_POINTER = "snapshots-latest.json"
 # root's single `_pkgs`.
 _SNAPSHOTS_DIR = "snapshots"
 
+#: Written beside ``repodata/`` by ``feed mirror``. Lives here, not in
+#: ``feed_mirror``, because ``sync_paths`` must recognise it and ``feed`` cannot
+#: import ``feed_mirror`` (which imports ``feed``).
+MIRROR_MARKER = ".bakar-mirror.json"
+
+
+class MirrorMarkerError(RuntimeError):
+    """A sync was aimed at a channel directory a mirror run created."""
+
+
+def _refuse_mirrored_channel(channel_dir: Path) -> None:
+    """Refuse to publish a local build into a repository ``feed mirror`` wrote.
+
+    A mirror holds another publisher's metadata, possibly repodata only with no
+    packages. Rendering a local build over it would interleave two publishers
+    under one head. Any marker under the channel counts, declared repo or not,
+    so the check runs before staging touches the disk.
+    """
+    if not channel_dir.is_dir():
+        return
+    marked = sorted(p.parent for p in channel_dir.rglob(MIRROR_MARKER))
+    if marked:
+        raise MirrorMarkerError(
+            f"refusing to sync into {channel_dir}: {marked[0]} carries {MIRROR_MARKER}, "
+            "so it was created by `bakar feed mirror`; choose another feed root "
+            "(-w or build.feed_dir) or remove the mirrored repository"
+        )
+
+
 # Where per-machine repositories live inside a channel, and therefore where the
 # per-machine snapshot pointer goes. Matches avocado-cli's `machine_short`
 # convention: the leading `avocado-` is already stripped by the repo map, so
@@ -385,6 +414,7 @@ def sync_paths(*, roots: FeedRoots, publish: FeedPublish) -> dict[str, object]:
     head_only = publish.head_only
     snap = None if head_only else (publish.snapshot or snapshot_id())
     channel_dir = channel_root(feed_root, release=release, channel=channel)
+    _refuse_mirrored_channel(channel_dir)
     staged_base = stage_build(
         deploy_dir=deploy_dir,
         stage_root=stage_root,

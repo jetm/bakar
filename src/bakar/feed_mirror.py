@@ -93,7 +93,7 @@ _REPOMD = "repomd.xml"
 _TARGETS = "targets.json"
 _SIGNATURE = "repomd.xml.asc"
 _POINTER = "snapshots-latest.json"
-_MARKER = ".bakar-mirror.json"
+_MARKER = feed_mod.MIRROR_MARKER
 
 #: Downloads run through a thread pool this wide, de-duplicated by destination
 #: path across repositories. Not a flag - concurrency here is an
