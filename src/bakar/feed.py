@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -78,6 +78,10 @@ class FeedPublish:
     channel: str = DEFAULT_CHANNEL
     snapshot: str | None = None
     sboms: list[Path] | None = None
+    # Publish the head subpaths only: no snapshot render, no sbom, no pointer.
+    # A first-build loop wants packages resolvable at the live head without
+    # minting a snapshot a client could pin against.
+    head_only: bool = False
 
 
 # Suffix appended to the feed root's own name to derive the stage root. A suffix
@@ -336,7 +340,14 @@ def write_latest_pointer(
     return written
 
 
-def sync(cfg: BuildConfig, *, publish: FeedPublish) -> dict[str, object]:
+def sync(
+    cfg: BuildConfig,
+    *,
+    publish: FeedPublish,
+    feed_root: Path | None = None,
+    stage_root: Path | None = None,
+    snapshot: str | None = None,
+) -> dict[str, object]:
     """Stage a build and render every repository it declares, head and snapshot.
 
     Ordering is the contract. Each repository is rendered twice - once at its
@@ -350,7 +361,12 @@ def sync(cfg: BuildConfig, *, publish: FeedPublish) -> dict[str, object]:
     catches the subprocess failure for the same reason - the exception must
     propagate before the pointer write is reached.
     """
-    roots = FeedRoots(feed_root=resolve_feed_root(cfg), stage_root=resolve_stage_root(cfg))
+    roots = FeedRoots(
+        feed_root=feed_root if feed_root is not None else resolve_feed_root(cfg),
+        stage_root=stage_root if stage_root is not None else resolve_stage_root(cfg),
+    )
+    if snapshot is not None:
+        publish = replace(publish, snapshot=snapshot)
     return sync_paths(roots=roots, publish=publish)
 
 
@@ -366,7 +382,8 @@ def sync_paths(*, roots: FeedRoots, publish: FeedPublish) -> dict[str, object]:
     feed_root, stage_root = roots.feed_root, roots.stage_root
     deploy_dir, scripts = publish.deploy_dir, publish.scripts
     release, channel = publish.release, publish.channel
-    snap = publish.snapshot or snapshot_id()
+    head_only = publish.head_only
+    snap = None if head_only else (publish.snapshot or snapshot_id())
     channel_dir = channel_root(feed_root, release=release, channel=channel)
     staged_base = stage_build(
         deploy_dir=deploy_dir,
@@ -393,12 +410,13 @@ def sync_paths(*, roots: FeedRoots, publish: FeedPublish) -> dict[str, object]:
             unstaged.append(root)
             continue
         render_repo(scripts=scripts, staged=staged, channel_root=channel_dir, subpath=root)
-        render_repo(
-            scripts=scripts,
-            staged=staged,
-            channel_root=channel_dir,
-            subpath=f"{_SNAPSHOTS_DIR}/{snap}/{root}",
-        )
+        if snap is not None:
+            render_repo(
+                scripts=scripts,
+                staged=staged,
+                channel_root=channel_dir,
+                subpath=f"{_SNAPSHOTS_DIR}/{snap}/{root}",
+            )
         rendered.append(root)
 
     # BEFORE the pointer, for the same reason every repository is rendered before
@@ -406,10 +424,12 @@ def sync_paths(*, roots: FeedRoots, publish: FeedPublish) -> dict[str, object]:
     # it names, and fetches. Publishing afterwards leaves a window in which that
     # derived path 404s - and unlike a missing repository, nothing else in a sync
     # would report it, because the packages resolve perfectly.
-    published_sboms = feed_sbom.publish_sbom(channel_dir, snap, list(publish.sboms or []))
-
     machines = pointer_machines(rendered)
-    pointers = write_latest_pointer(channel_dir, snap, machines=machines)
+    published_sboms: list[Path] = []
+    pointers: list[Path] = []
+    if snap is not None:
+        published_sboms = feed_sbom.publish_sbom(channel_dir, snap, list(publish.sboms or []))
+        pointers = write_latest_pointer(channel_dir, snap, machines=machines)
     return {
         "snapshot": snap,
         "channel_root": channel_dir,
