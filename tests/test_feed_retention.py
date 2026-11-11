@@ -548,3 +548,58 @@ def test_a_symlinked_pool_entry_is_never_offered_for_deletion(feed: Path, tmp_pa
     plan = feed_retention.plan_retention(channel, feed_root=feed, keep=1)
 
     assert not any(p.name == f"{digest}.rpm" for p in plan.orphan_pool)
+
+
+def _mark_mirror(repo_root: Path, **payload: object) -> None:
+    (repo_root / ".bakar-mirror.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_metadata_only_repo_not_audited(tmp_path: Path) -> None:
+    """A metadata-only mirror names packages it never fetched, by design.
+
+    Auditing it reports every package as dangling and `gc --confirm` exits 1.
+    """
+    root = tmp_path / "feed"
+    channel = root / "2024" / "edge"
+    channel.mkdir(parents=True)
+    missing = hashlib.sha256(b"never fetched").hexdigest()
+    repo = channel / "target" / "qemux86-64"
+    _render(repo, [missing], depth=2)
+    _mark_mirror(repo, mode="metadata-only", source="edge/target/qemux86-64")
+
+    dangling, unreadable = feed_retention.audit_references(root)
+
+    assert dangling == []
+    assert unreadable == []
+
+
+@pytest.mark.parametrize("payload", [{"mode": "full"}, {"source": "edge/x"}])
+def test_full_or_unmoded_mirror_still_audited(tmp_path: Path, payload: dict[str, str]) -> None:
+    """A marker with mode full, or none (written before the key existed), is a full mirror."""
+    root = tmp_path / "feed"
+    channel = root / "2024" / "edge"
+    channel.mkdir(parents=True)
+    missing = hashlib.sha256(b"never written to the pool").hexdigest()
+    repo = channel / "target" / "qemux86-64"
+    _render(repo, [missing], depth=2)
+    _mark_mirror(repo, **payload)
+
+    dangling, _ = feed_retention.audit_references(root)
+
+    assert len(dangling) == 1
+    assert dangling[0][1].name == f"{missing}.rpm"
+
+
+def test_unreadable_marker_does_not_hide_a_dangling_reference(tmp_path: Path) -> None:
+    """An unparseable marker cannot prove metadata-only, so the repository is audited."""
+    root = tmp_path / "feed"
+    channel = root / "2024" / "edge"
+    channel.mkdir(parents=True)
+    missing = hashlib.sha256(b"never written to the pool").hexdigest()
+    repo = channel / "target" / "qemux86-64"
+    _render(repo, [missing], depth=2)
+    (repo / ".bakar-mirror.json").write_text("{not json", encoding="utf-8")
+
+    dangling, _ = feed_retention.audit_references(root)
+
+    assert len(dangling) == 1

@@ -58,6 +58,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from bakar.feed import MIRROR_MARKER
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
@@ -544,6 +546,21 @@ def apply_retention(plan: RetentionPlan, *, feed_root: Path, confirm: bool = Fal
     )
 
 
+def _is_metadata_only(repo_root: Path) -> bool:
+    """True when ``repo_root`` is a metadata-only mirror, by its marker.
+
+    Such a repository names packages it never fetched, so they are absent by
+    design. Any doubt - no marker, no ``mode`` key (written before the key
+    existed), an unreadable or malformed marker - answers False, so the
+    repository stays audited and a real dangling reference is still reported.
+    """
+    try:
+        marker = json.loads((repo_root / MIRROR_MARKER).read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        return False
+    return isinstance(marker, dict) and marker.get("mode") == "metadata-only"
+
+
 def audit_references(root: Path) -> tuple[list[tuple[Path, Path]], list[Path]]:
     """Return (dangling references, primaries that could not be read).
 
@@ -558,6 +575,8 @@ def audit_references(root: Path) -> tuple[list[tuple[Path, Path]], list[Path]]:
     unreadable: list[Path] = []
 
     for repodata in _repodata_dirs(root):
+        if _is_metadata_only(repodata.parent):
+            continue
         live = live_metadata(repodata)
         if live is None:
             continue
