@@ -22,7 +22,7 @@ from bakar.commands import app
 
 pytestmark = pytest.mark.unit
 
-_VERBS = ("sync", "index", "serve", "stop", "status", "gc")
+_VERBS = ("sync", "refresh", "index", "serve", "stop", "status", "gc")
 
 
 @pytest.fixture
@@ -622,3 +622,190 @@ def test_preflight_omits_the_root_checks_when_no_roots_are_given() -> None:
     assert "createrepo_c" in names
     assert "feed root" not in names
     assert "stage root" not in names
+
+
+# --- refresh ---------------------------------------------------------------
+
+
+def _refresh_patches(cfg):
+    """Stub everything that builds, resolves a workspace, or binds a socket."""
+    return (
+        mock.patch("bakar.commands.feed._resolve_refresh_cfg", return_value=cfg),
+        mock.patch("bakar.commands.feed._feed_refresh.run_refresh"),
+        mock.patch("bakar.commands.feed._feed_refresh_output.preflight_blocks", return_value=False),
+        mock.patch("bakar.commands.feed._feed_refresh_output.check_port", return_value=None),
+        mock.patch("bakar.commands.feed._feed_refresh_output.present_refresh", return_value=0),
+    )
+
+
+def test_refresh_without_recipe_fails_before_build(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    resolve, run, preflight, port, present = _refresh_patches(cfg)
+
+    with resolve as resolved, run as ran, preflight as preflighted, port, present:
+        result = cli.invoke(app, ["feed", "refresh", str(_yaml(tmp_path)), "--project", str(project)])
+
+    assert result.exit_code == 2
+    assert "--recipe" in result.output
+    ran.assert_not_called()
+    resolved.assert_not_called()
+    preflighted.assert_not_called()
+
+
+def test_refresh_missing_project_dir_fails_before_build(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    resolve, run, preflight, port, present = _refresh_patches(cfg)
+
+    with resolve as resolved, run as ran, preflight, port, present:
+        absent = tmp_path / "no-such-project"
+        result = cli.invoke(
+            app, ["feed", "refresh", str(_yaml(tmp_path)), "--recipe", "busybox", "--project", str(absent)]
+        )
+        unset = cli.invoke(app, ["feed", "refresh", str(_yaml(tmp_path)), "--recipe", "busybox"])
+
+    assert result.exit_code == 2
+    assert "not a directory" in result.output
+    assert unset.exit_code == 2
+    assert "--project" in unset.output
+    ran.assert_not_called()
+    resolved.assert_not_called()
+
+
+def test_refresh_accepts_global_container_flag(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    """The refresh resolves through ``resolve_global_config`` so ``--container`` reaches kas."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    seen = []
+
+    def spy(request):
+        seen.append(request)
+        return cfg
+
+    with (
+        mock.patch("bakar.commands.feed._normalize_dispatch", return_value=("generic", None, _yaml(tmp_path), None)),
+        mock.patch("bakar.commands.feed._resolve_workspace", return_value=tmp_path),
+        mock.patch("bakar.commands.feed.resolve_global_config", side_effect=spy),
+        mock.patch("bakar.commands.feed.feed_ops.scripts_dir", return_value=None),
+        mock.patch("bakar.commands.feed._feed_refresh.run_refresh") as ran,
+        mock.patch("bakar.commands.feed._feed_refresh_output.preflight_blocks", return_value=False),
+        mock.patch("bakar.commands.feed._feed_refresh_output.check_port", return_value=None),
+        mock.patch("bakar.commands.feed._feed_refresh_output.present_refresh", return_value=0),
+    ):
+        result = cli.invoke(
+            app,
+            ["--container", "feed", "refresh", str(_yaml(tmp_path)), "--recipe", "busybox", "--project", str(project)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 1
+    assert seen[0].workspace == tmp_path
+    request = ran.call_args.args[0]
+    assert request.recipes == ("busybox",)
+    assert request.delta_root.parent == cfg.effective_feed_dir.parent
+    assert request.delta_root != cfg.effective_feed_dir
+    assert request.work_root != request.delta_root
+
+
+def test_refresh_stops_before_build_when_preflight_blocks(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    resolve, run, _preflight, port, present = _refresh_patches(cfg)
+
+    with (
+        resolve,
+        run as ran,
+        mock.patch("bakar.commands.feed._feed_refresh_output.preflight_blocks", return_value=True),
+        port,
+        present,
+        mock.patch("bakar.commands.feed.feed_ops.scripts_dir", return_value=None),
+    ):
+        result = cli.invoke(
+            app, ["feed", "refresh", str(_yaml(tmp_path)), "--recipe", "busybox", "--project", str(project)]
+        )
+
+    assert result.exit_code == 1
+    ran.assert_not_called()
+
+
+def test_refresh_refused_port_exits_before_build(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    resolve, run, preflight, _port, present = _refresh_patches(cfg)
+
+    with (
+        resolve,
+        run as ran,
+        preflight,
+        present,
+        mock.patch("bakar.commands.feed.feed_ops.scripts_dir", return_value=None),
+        mock.patch("bakar.commands.feed._feed_refresh_output.check_port", return_value="cannot serve: busy"),
+    ):
+        result = cli.invoke(
+            app,
+            ["feed", "refresh", str(_yaml(tmp_path)), "--recipe", "busybox", "--project", str(project), "--serve"],
+        )
+
+    assert result.exit_code == 1
+    assert "cannot serve: busy" in result.output
+    ran.assert_not_called()
+
+
+def test_refresh_failure_is_reported_not_raised(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    from bakar.commands._feed_refresh import RefreshFailedError
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    resolve, run, preflight, port, present = _refresh_patches(cfg)
+
+    with (
+        resolve,
+        run as ran,
+        preflight,
+        port,
+        present as presented,
+        mock.patch("bakar.commands.feed.feed_ops.scripts_dir", return_value=None),
+    ):
+        ran.side_effect = RefreshFailedError("build failed (exit 1)")
+        result = cli.invoke(
+            app, ["feed", "refresh", str(_yaml(tmp_path)), "--recipe", "busybox", "--project", str(project)]
+        )
+
+    assert result.exit_code == 1
+    assert "build failed (exit 1)" in result.output
+    presented.assert_not_called()
+
+
+# --- mirror --metadata-only ------------------------------------------------
+
+
+def test_mirror_metadata_only_reaches_the_request(cli: CliRunner, cfg) -> None:
+    with _patch_cfg(cfg), mock.patch("bakar.commands.feed.feed_mirror.mirror") as mirrored:
+        mirrored.return_value = mock.Mock(
+            feed_root=cfg.effective_feed_dir,
+            source_channel="https://x/2024/edge",
+            repos=[],
+            unpublished=[],
+            packages_downloaded=0,
+            bytes_downloaded=0,
+            packages_reused=0,
+        )
+        result = cli.invoke(app, ["feed", "mirror", "https://x", "--repo", "sdk/all", "--metadata-only"])
+
+    assert result.exit_code == 0, result.output
+    assert mirrored.call_args.args[0].metadata_only is True
+
+
+def test_mirror_defaults_to_full_download(cli: CliRunner, cfg) -> None:
+    with _patch_cfg(cfg), mock.patch("bakar.commands.feed.feed_mirror.mirror") as mirrored:
+        mirrored.return_value = mock.Mock(
+            feed_root=cfg.effective_feed_dir,
+            source_channel="https://x/2024/edge",
+            repos=[],
+            unpublished=[],
+            packages_downloaded=0,
+            bytes_downloaded=0,
+            packages_reused=0,
+        )
+        cli.invoke(app, ["feed", "mirror", "https://x", "--repo", "sdk/all"])
+
+    assert mirrored.call_args.args[0].metadata_only is False

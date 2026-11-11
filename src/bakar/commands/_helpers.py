@@ -261,7 +261,7 @@ GLOBAL_MODE_EXCLUSIONS: dict[str, str] = {
     "clean-cache": "garbage-collects sstate/downloads on disk; launches no kas",
     "cluster-info": "probes the sccache-dist scheduler over the network; no kas, no host/container choice",
     "drift": "compares pin state with checkouts from local repo data; launches no kas",
-    "feed": "manages the package feed on disk and over HTTP; launches no kas",
+    "feed": "manages the package feed; only `feed refresh` launches kas, via resolve_global_config",
     "for-all": "runs a user shell command in each source repo on the host; launches no kas",
     "gen-kas": "converts a manifest into a kas YAML file; launches no kas",
     "hashserv": "starts and stops the hash-equivalence server; no kas",

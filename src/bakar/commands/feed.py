@@ -34,14 +34,15 @@ import typer
 
 from bakar import feed as feed_mod
 from bakar import feed_index, feed_lock, feed_mirror, feed_ops, feed_preflight, feed_retention, feed_serve
+from bakar.commands import _feed_refresh, _feed_refresh_output
 from bakar.commands._app import app, console
-from bakar.commands._helpers import WorkspaceOption
-from bakar.commands._workspace import _resolve_daemon_cfg
+from bakar.commands._helpers import WorkspaceOption, resolve_global_config
+from bakar.commands._workspace import _normalize_dispatch, _resolve_daemon_cfg, _resolve_workspace
 from bakar.diagnostics import Status, markup_safe
 from bakar.fmt import fmt_bytes_iec
 
 feed_app = typer.Typer(
-    help="Manage the local package feed (doctor/sync/mirror/index/serve/stop/status/gc).",
+    help="Manage the local package feed (doctor/sync/refresh/mirror/index/serve/stop/status/gc).",
     no_args_is_help=True,
 )
 
@@ -95,6 +96,30 @@ RepoOption = Annotated[
 TargetOption = Annotated[
     list[str] | None,
     typer.Option("--target", help="Machine name looked up in the source's targets.json (repeatable)"),
+]
+MetadataOnlyOption = Annotated[
+    bool,
+    typer.Option(
+        "--metadata-only",
+        help="Mirror repository metadata only; no package files are downloaded",
+    ),
+]
+RecipeOption = Annotated[
+    list[str] | None,
+    typer.Option("--recipe", help="Recipe to build and publish into the delta (repeatable, required)"),
+]
+ProjectOption = Annotated[
+    Path | None,
+    typer.Option("--project", help="avocado project directory the printed repository stanzas are relative to"),
+]
+ServeOption = Annotated[bool, typer.Option("--serve", help="Serve the delta over HTTP after publishing")]
+AdvertiseOption = Annotated[
+    str | None,
+    typer.Option("--advertise", help="Host printed in the url stanza; defaults to the bound address"),
+]
+SnapshotOption = Annotated[bool, typer.Option("--snapshot", help="Mint a snapshot, as `feed sync` does")]
+RunOption = Annotated[
+    bool, typer.Option("--run-avocado", help="Run the printed avocado unlock, install and build commands")
 ]
 
 
@@ -250,6 +275,110 @@ def sync(
         console.print(f"declared but not built: {', '.join(cast('list[str]', result['unstaged']))}")
 
 
+def _resolve_refresh_cfg(workspace: Path | None, kas_yaml: Path):
+    """Resolve the build config with the global ``--host``/``--container`` flags applied.
+
+    ``refresh`` launches kas, unlike the other feed verbs, so it cannot use
+    ``_resolve_daemon_cfg`` (plain ``resolve``).
+    """
+    import bakar.commands._app as _state
+    from bakar.config import ResolveRequest
+
+    family, _bsp, kas_yaml, _manifest = _normalize_dispatch(kas_yaml, None)
+    ws = _resolve_workspace(workspace, kas_yaml=kas_yaml, family=family)
+    return resolve_global_config(
+        ResolveRequest(workspace=ws, bsp_family=family, kas_yaml=kas_yaml, user_config=_state._USER_CONFIG)
+    )
+
+
+@feed_app.command("refresh")
+def refresh(
+    kas_yaml: KasYamlArgument,
+    recipe: RecipeOption = None,
+    project: ProjectOption = None,
+    workspace: WorkspaceOption = None,
+    release: ReleaseOption = feed_mod.DEFAULT_RELEASE,
+    channel: ChannelOption = feed_mod.DEFAULT_CHANNEL,
+    serve: ServeOption = False,
+    bind: BindOption = feed_serve.DEFAULT_BIND,
+    port: PortOption = feed_serve.DEFAULT_PORT,
+    advertise: AdvertiseOption = None,
+    snapshot: SnapshotOption = False,
+    run: RunOption = False,
+) -> None:
+    """Build the named recipes and publish only their packages as a delta feed.
+
+    Prints the repository stanzas and avocado commands that consume the delta;
+    no project file is modified.
+    """
+    recipes = tuple(recipe or ())
+    if not recipes:
+        console.print("nothing to build: pass at least one --recipe")
+        raise typer.Exit(code=2)
+    if project is None:
+        console.print("pass --project DIR, the avocado project the delta is consumed from")
+        raise typer.Exit(code=2)
+    if not project.is_dir():
+        console.print(f"--project {project} is not a directory")
+        raise typer.Exit(code=2)
+
+    import bakar.commands._app as _state
+
+    cfg = _resolve_refresh_cfg(workspace, kas_yaml)
+    feed_root = feed_mod.resolve_feed_root(cfg)
+    # Siblings of the feed root, never inside it: the feed root is served, and a
+    # refresh wipes both of these.
+    request = _feed_refresh.RefreshRequest(
+        cfg=cfg,
+        kas_yaml=kas_yaml,
+        recipes=recipes,
+        feed_root=feed_root,
+        sync_stage_root=feed_mod.resolve_stage_root(cfg),
+        delta_root=feed_root.parent / f"{feed_root.name}-delta",
+        work_root=feed_root.parent / f"{feed_root.name}-delta-stage",
+        release=release,
+        channel=channel,
+        base_release=release,
+        base_channel=channel,
+        user_config=_state._USER_CONFIG,
+    )
+    opts = _feed_refresh_output.OutputOptions(
+        project_dir=project,
+        serve=serve,
+        bind=bind,
+        port=port,
+        advertise=advertise,
+        snapshot=snapshot,
+        run_avocado=run,
+    )
+    request = _feed_refresh_output.apply_snapshot(request, opts)
+
+    if _feed_refresh_output.preflight_blocks(
+        scripts=feed_ops.scripts_dir(kas_yaml),
+        roots=feed_mod.FeedRoots(feed_root=request.delta_root, stage_root=request.work_root),
+        release=release,
+        channel=channel,
+    ):
+        raise typer.Exit(code=1)
+    refusal = _feed_refresh_output.check_port(opts)
+    if refusal:
+        console.print(refusal)
+        raise typer.Exit(code=1)
+
+    try:
+        result = _feed_refresh.run_refresh(request)
+    except (_feed_refresh.RefreshRefusedError, _feed_refresh.RefreshFailedError) as exc:
+        console.print(f"feed refresh failed: {markup_safe(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        console.print(f"feed refresh failed: {feed_ops.describe_failure(exc)}")
+        raise typer.Exit(code=1) from exc
+
+    code = _feed_refresh_output.present_refresh(request, result, opts)
+    if code:
+        raise typer.Exit(code=code)
+
+
 @feed_app.command("mirror")
 def mirror(
     source_url: SourceUrlArgument,
@@ -258,6 +387,7 @@ def mirror(
     workspace: WorkspaceOption = None,
     release: ReleaseOption = feed_mod.DEFAULT_RELEASE,
     channel: ChannelOption = feed_mod.DEFAULT_CHANNEL,
+    metadata_only: MetadataOnlyOption = False,
 ) -> None:
     """Copy repositories of a published feed into the local feed."""
     targets = tuple(target or ())
@@ -276,6 +406,7 @@ def mirror(
         feed_root=feed_root,
         targets=targets,
         repos=repos,
+        metadata_only=metadata_only,
     )
     try:
         with _locked(feed_root):
