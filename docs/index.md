@@ -45,7 +45,7 @@
 | `prefetch` | [prefetch.md](prefetch.md) | Pre-fetch recipe sources into DL_DIR |
 | `mirror` | [mirror.md](mirror.md) | Seed a premirror `git2_*.tar.gz` tarball from a git URL (host-side) |
 | `sstate-seed` | [sstate-seed.md](sstate-seed.md) | Populate and inspect the native/cross sstate seed |
-| `feed` | [feed.md](feed.md) | Manage the local package feed: stage, mirror, index, serve, and prune a build's RPMs |
+| `feed` | [feed.md](feed.md) | Manage the local package feed: stage, refresh a recipe delta, mirror, index, serve, and prune a build's RPMs |
 | `dump` | [dump.md](dump.md) | Inspect the resolved kas YAML |
 | `hashserv` | [hashserv.md](hashserv.md) | Manage the persistent bitbake-hashserv daemon |
 | `cache` | [cache.md](cache.md) | Push finished downloads to the central store, report the push queue, capture hang diagnostics |
@@ -130,7 +130,8 @@
 - Push finished downloads to the central store and inspect the push queue: [cache.md](cache.md)
 - Keep package revisions monotonic across a wiped build tree: [prserv.md](prserv.md)
 - Publish a finished build's RPMs as a local package feed: [feed.md](feed.md)
-- Copy a published feed for offline use: [feed.md](feed.md) (`bakar feed mirror`)
+- Build chosen recipes and publish only their packages as a delta feed: [feed.md](feed.md) (`bakar feed refresh`)
+- Copy a published feed for offline use: [feed.md](feed.md) (`bakar feed mirror`, or `--metadata-only` for metadata alone)
 - Run a build on an idle remote node (deliver the layer or mirror the tree additively, build over ssh): [build.md](build.md) (`--on <host>`)
 
 ---
@@ -234,7 +235,7 @@ bakar clean-cache       - prune stale sstate and ccache entries by age
 bakar hashserv          - manage the persistent bitbake-hashserv daemon
 bakar cache             - push downloads to the central store, show the queue, capture hangs
 bakar prserv            - manage the workspace-scoped bitbake-prserv daemon
-bakar feed              - stage, mirror, index, serve and prune the local package feed
+bakar feed              - stage, refresh, mirror, index, serve and prune the local package feed
 bakar bitbake-override  - swap BSP-bundled bitbake for upstream
 bakar run               - boot avocado-os QEMU image (meta-avocado only)
 bakar stress-parse      - stress-test bitbake parser fork race

@@ -1,9 +1,10 @@
 # bakar feed
 
 Manage the local package feed: stage a finished build's RPMs, render the
-per-machine repositories, derive the index a client reads, serve the tree over
-HTTP, mirror a published feed for offline use, and prune what accumulates.
-Eight verbs over one feed root, in the same shape as `bakar prserv` - the
+per-machine repositories, build chosen recipes and publish only their packages
+as a delta, derive the index a client reads, serve the tree over HTTP, mirror a
+published feed for offline use, and prune what accumulates. Nine verbs over one
+feed root, in the same shape as `bakar prserv` - the
 workspace is resolved per verb via `--workspace`/`-w` or by walking up from
 the current directory.
 
@@ -12,7 +13,8 @@ the current directory.
 ```text
 bakar feed doctor [KAS_YAML] [OPTIONS]
 bakar feed sync    KAS_YAML  [OPTIONS]
-bakar feed mirror  SOURCE_URL [--target MACHINE]... [--repo PATH]... [OPTIONS]
+bakar feed refresh KAS_YAML --recipe RECIPE... --project DIR [OPTIONS]
+bakar feed mirror  SOURCE_URL [--target MACHINE]... [--repo PATH]... [--metadata-only] [OPTIONS]
 bakar feed index  [KAS_YAML] [OPTIONS]
 bakar feed serve  [KAS_YAML] [OPTIONS]
 bakar feed stop   [KAS_YAML] [OPTIONS]
@@ -20,8 +22,8 @@ bakar feed status [KAS_YAML] [OPTIONS]
 bakar feed gc     [KAS_YAML] [OPTIONS]
 ```
 
-Only `bakar feed sync` requires the kas YAML: the deploy tree it stages belongs
-to one build and the YAML is what names it. Every other verb addresses the feed
+`bakar feed sync` and `bakar feed refresh` require the kas YAML: the deploy tree
+they stage belongs to one build and the YAML is what names it. Every other verb addresses the feed
 itself, which the configuration already locates, so the YAML is optional there.
 Pass it anyway when it is to hand - without it the workspace comes from a CWD
 walk, which can land on a different root than the one a sync used. Every verb
@@ -34,7 +36,8 @@ destructive happens.
 |---------|--------------|
 | `bakar feed doctor` | Check everything a sync needs, without touching the feed |
 | `bakar feed sync` | Stage a finished build and render every repository it declares |
-| `bakar feed mirror` | Copy repositories of a published feed into the local feed |
+| `bakar feed refresh` | Build the named recipes and publish only their packages as a delta feed |
+| `bakar feed mirror` | Copy repositories of a published feed into the local feed, or only their metadata |
 | `bakar feed index` | Write `targets.json` from what the channel has actually rendered |
 | `bakar feed serve` | Serve the feed root over HTTP in the background |
 | `bakar feed stop` | Stop the feed's static server |
@@ -45,13 +48,20 @@ destructive happens.
 
 | Flag | Applies to | Description |
 |------|------------|-------------|
-| `--workspace`, `-w` | all eight | Workspace root; auto-detected if omitted |
-| `--release` | `sync`, `mirror`, `index`, `status`, `gc` | Feed release directory. For `sync`, and `index` given a kas YAML, the default is the release the finished build declares in its distribution codename; `2024` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
-| `--channel` | `sync`, `mirror`, `index`, `status`, `gc` | Feed channel directory. For `sync`, and `index` given a kas YAML, the default is the channel the finished build declares in its distribution codename; `edge` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
+| `--workspace`, `-w` | all nine | Workspace root; auto-detected if omitted |
+| `--release` | `sync`, `refresh`, `mirror`, `index`, `status`, `gc` | Feed release directory. For `sync`, and `index` given a kas YAML, the default is the release the finished build declares in its distribution codename; `2024` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
+| `--channel` | `sync`, `refresh`, `mirror`, `index`, `status`, `gc` | Feed channel directory. For `sync`, and `index` given a kas YAML, the default is the channel the finished build declares in its distribution codename; `edge` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
+| `--recipe` | `refresh` only | Recipe to build and publish into the delta (repeatable, at least one required) |
+| `--project` | `refresh` only | The avocado project directory the printed repository stanzas are relative to (required) |
+| `--serve` | `refresh` only | Serve the delta over HTTP after publishing |
+| `--advertise` | `refresh` only | Host printed in the served stanza; defaults to the bound address |
+| `--snapshot` | `refresh` only | Mint a snapshot in the delta, as `sync` does |
+| `--run-avocado` | `refresh` only | Run the printed `avocado unlock`, `install` and `build` commands in `--project` |
+| `--metadata-only` | `mirror` only | Mirror repository metadata and no package files |
 | `--target` | `mirror` only | Machine name to resolve through the source's `targets.json` (repeatable) |
 | `--repo` | `mirror` only | Repository path to mirror directly, e.g. `sdk/all` (repeatable) |
-| `--port` | `serve`, `status` | Port the static server binds (default: `8080`) |
-| `--bind` | `serve` | Interface to bind (default: `127.0.0.1`, which keeps the feed off the network) |
+| `--port` | `serve`, `status`, `refresh` (with `--serve`) | Port the static server binds (default: `8080`) |
+| `--bind` | `serve`, `refresh` (with `--serve`) | Interface to bind (default: `127.0.0.1`, which keeps the feed off the network) |
 | `--keep` | `gc` | Snapshots to retain by age, minimum `1` (default: `3`) |
 | `--confirm` | `gc` | Actually remove; without it `gc` only previews |
 
@@ -89,6 +99,131 @@ that failed.
 `bakar build --feed` runs a sync and then an index once the build has succeeded,
 with `--feed-release`/`--feed-channel` mirroring the flags here. A failed build
 never syncs, and neither does `--dry-run`.
+
+## bakar feed refresh
+
+Builds the named recipes with kas and publishes only their packages as a delta
+feed, then prints what an avocado project needs to consume it. It is the
+quick loop for a recipe under development: the full `sync` renders every
+repository a machine declares from a finished image build, while `refresh`
+renders just the packages of the recipes you named.
+
+```bash
+bakar feed refresh meta-avocado/kas/machine/qemux86-64.yml \
+  --recipe htop --recipe my-app \
+  --project ~/avocado-project --release 2026 --channel edge
+```
+
+At least one `--recipe` and a `--project` directory that exists are required;
+without them the command exits `2` before resolving anything. The workspace
+comes from `--workspace`/`-w` or the usual walk up from the current directory.
+
+**Where the delta lands.** Both locations are siblings of the feed root, never
+inside it, because the feed root is what `serve` exposes and a refresh wipes
+them:
+
+| Path | Holds |
+|------|-------|
+| `<feed_root>-delta` | The delta feed root; the published repositories are under `<release>/<channel>` |
+| `<feed_root>-delta-stage` | The delta's stage root, which the publish step unions into |
+
+The `<release>/<channel>` directory of each is wiped and rewritten on every
+refresh, so the delta always equals the last request. The ordinary feed and its
+stage root are not touched.
+
+**Pipeline.** The recipes build first; a build that fails leaves the previous
+delta untouched. Then bakar builds a filtered view of the deploy directory that
+holds only the packages of the named recipes (the repo map is kept, because the
+staging script exits when it is missing), and publishes that view head-only: the
+repositories are rendered at the live head, and no snapshot, no SBOM and no
+`snapshots-latest.json` pointer is written, so a client cannot pin against the
+delta. Pass `--snapshot` to mint a snapshot as `sync` does. The delta
+directory also receives two files:
+
+| File | Content |
+|------|---------|
+| `recipe-map.json` | One entry per recipe: its RPM package names, layer, layer commit, `epoch`, `pv`, `pr`, `srcrev`, machine, release and `task_hash` |
+| `delta.json` | The base release and channel the delta was built against, the recipes built, the build's run id and the delta path |
+
+In `recipe-map.json`, `pr` is the RPM release as it appears in the package file
+name (the `PKGR` value in the runtime package data, for example `r0.1` with the
+PR-server suffix), not the recipe's own `PR`. `task_hash` is the bitbake
+taskhash read from the build's stamps and is written as `null` when it cannot be
+read unambiguously; the comparison between two builds of a recipe then falls
+back to `epoch`, `pv`, `pr`, `srcrev` and the layer commit.
+
+**Guards.** Each of these refuses with exit `1` before anything is written, or
+(for the build-dependent ones) before the delta is wiped, and names the way out:
+
+- A second refresh holds `.refresh.lock` in the feed root. Refreshes are not
+  queued, because the second would wipe the delta the first is still building.
+- A build is running in the workspace. A running build rewrites the deploy tree
+  the refresh stages from; wait for it or run `bakar stop`.
+- A repository under the delta channel directory carries `.bakar-mirror.json`,
+  so `bakar feed mirror` created it. A refresh would replace another publisher's
+  metadata; choose another feed root or remove the mirrored repository.
+- The delta stage root resolves (symlinks followed) to the synced feed root or
+  to the stage root `feed sync` uses. A refresh would wipe the packages those
+  hold.
+- A named recipe is in none of the configured layers, or the build produced no
+  packages for it.
+- `avocado-repo.map` in the deploy directory is older than packages already
+  there that this refresh did not build, so a sync from it could omit them.
+  Rebuild an image or the `avocado-complete` target to rewrite the map, then
+  retry.
+
+The map check is shaped by one measured behavior: a build of a leaf recipe does
+not rewrite `avocado-repo.map` (it is written by the `avocado-complete`
+target, not by the recipe). The refresh therefore compares the map only against
+packages that were in the deploy tree before the build; comparing against the
+packages it just built would refuse every refresh.
+
+The preflight that `bakar feed doctor` reports runs before the build, so a
+missing prerequisite costs seconds. With `--serve` the port is also checked
+before the build, and a port already in use exits `1` without building.
+
+**Output.** The sentences meant for a person go to stderr; the stanza and the
+commands go to stdout, so you can paste or pipe them. The stanza is a `repos:`
+map keyed by feed name, one entry per delta repository that holds packages. A
+directory entry carries the repository `path`, relative to `--project`, and its
+`stages`:
+
+```yaml
+repos:
+  bakar-delta-target-qemux86-64:
+    path: ../avocado-feed-delta/2026/edge/target/qemux86-64
+    stages: [rootfs, runtime]
+  bakar-delta-sdk-all:
+    path: ../avocado-feed-delta/2026/edge/sdk/all
+    stages: [sdk]
+```
+
+Feed names are `bakar-delta-` plus the repository path with `/` replaced by
+`-`. Repositories under `sdk/` list the `sdk` stage; all others list `rootfs`
+and `runtime`. The three avocado commands follow the stanza:
+
+```text
+avocado unlock
+avocado install
+avocado build
+```
+
+The paths and repository names above are illustrative; the command prints the
+real ones for your feed root.
+
+With `--serve`, bakar also starts the static server over the delta root on
+`--bind`/`--port` (defaults `127.0.0.1` and `8080`) and prints a second `repos:`
+map of `url:` entries under a `# served alternative to the directory repos above`
+comment. The URL host is the bound address unless `--advertise HOST` names
+another, because an address the server is not listening on is never advertised
+on its own. If nothing comes up on the address, the command exits `1`, prints
+the directory stanza without a URL stanza and skips the avocado run.
+
+With `--run-avocado`, bakar runs `avocado unlock`, `avocado install` and
+`avocado build` in `--project`, one after another, stopping at the first
+failure (exit `1`). Each command has a one-hour limit. Without the flag, no
+avocado process starts, and no file in the project is modified: the stanza is
+printed for you to paste.
 
 ## Mirroring a published feed
 
@@ -147,10 +282,39 @@ orphaned pool files exactly as it does after a `sync`, so re-running `mirror`
 against an updated source and then `gc` reclaims what the previous mirror left
 behind.
 
-Do not mix `sync` and `mirror` for the same repository - `sync` renders it from
-a local build's deploy tree, `mirror` copies it from a remote source's head,
-and the ownership check above refuses to let one overwrite what the other
-created.
+### Metadata-only mirrors
+
+`bakar feed mirror ... --metadata-only` fetches and verifies each repository's
+`repomd.xml`, its signature and the metadata files it names, and downloads no
+package. The repository then resolves and lists what the source publishes, and
+a client that needs the files fetches them elsewhere. Because nothing is
+downloaded, the disk-space preflight is skipped and the summary reports
+`downloaded: 0 packages`.
+
+The marker `.bakar-mirror.json` of every mirrored repository, full or not,
+holds the keys `source`, `revision`, `mirrored`, `repomd_sha256` and `mode`.
+`mode` is `metadata-only` or `full`. A metadata-only mirror writes no snapshot
+pointer, like any mirror.
+
+Because its metadata names packages the mirror never fetched, a metadata-only
+repository would read as full of dangling references to `bakar feed gc`. `gc`
+therefore skips its reference audit for a repository whose marker says
+`metadata-only`. Any doubt (no marker, no `mode` key, an unreadable marker)
+keeps the repository audited, so a real dangling reference is still reported.
+
+### Do not mix sync and mirror
+
+Do not mix `sync` and `mirror` for the same repository. `sync` renders it from
+a local build's deploy tree and `mirror` copies it from a remote source's head.
+The mirror side is guarded by the ownership check above, which refuses to
+overwrite a repository it did not create. The sync side is guarded too: a sync
+(and so `bakar build --feed` and `bakar feed refresh`) refuses to publish into a
+channel directory in which any repository carries `.bakar-mirror.json`, whether
+or not the build declares that repository, and says to choose another feed root
+(`-w` or `[build] feed_dir`) or to remove the mirrored repository. A
+metadata-only mirror holds no packages, so rendering a local build over it
+would leave two publishers under one head and a repository that resolves
+packages it does not hold. Give each publisher its own feed root.
 
 ### Offline-lab walkthrough
 
@@ -273,6 +437,10 @@ marker alongside its `repomd.xml`, recording the source channel it was copied
 from; the ownership guard in "Mirroring a published feed" above reads this file
 back on every later mirror run.
 
+`bakar feed refresh` uses two further siblings of the feed root:
+`<feed_root>-delta` and `<feed_root>-delta-stage`, described under
+"bakar feed refresh".
+
 ## Examples
 
 ```bash
@@ -292,6 +460,15 @@ bakar feed sync meta-avocado/kas/machine/qemux86-64.yml --release 2026 --channel
 # distribution codename the build declares. An explicit pair that disagrees with the build is still refused by the preflight.
 bakar feed sync meta-avocado/kas/machine/qemux86-64.yml
 
+# Build two recipes and publish only their packages as a delta,
+# serving it to an avocado project
+bakar feed refresh meta-avocado/kas/machine/qemux86-64.yml \
+  --recipe htop --recipe my-app --project ~/avocado-project \
+  --release 2026 --channel edge --serve --advertise 192.0.2.10
+
+# Mirror only the metadata of a published feed
+bakar feed mirror https://repo.avocadolinux.org --target qemux86-64 --metadata-only
+
 # Rewrite the client index from what has rendered
 bakar feed index
 
@@ -309,6 +486,13 @@ bakar feed gc --keep 5 --confirm
 
 - The feed depends on `createrepo_c` plus shell tools that `pip` cannot install.
   `bakar feed doctor` is the fastest way to find out which are missing.
+- A layer repository that is a shallow clone breaks the ancestor test that
+  decides whether the loop's cache verdict treats a recipe's cached package as current: the test asks
+  whether the commit a delta recorded for the recipe's layer is an ancestor of
+  the layer's current commit, and a shallow clone may not hold that history.
+  Fetch the full history of a shallow layer clone (`git fetch --unshallow`).
+  The workspace the loop was measured in had no shallow layer: all 45 layer
+  repositories reported not shallow, and the smallest held 7 commits.
 - Extension repositories (the `-ext` suffix) are advertised by the index but
   never staged from a build; their content comes from the extension packaging
   flow.
@@ -326,6 +510,8 @@ bakar feed gc --keep 5 --confirm
   merging scattered RPM deploy trees into one canonical feed under a verification gate
 - [capabilities/feed-retention.md](capabilities/feed-retention.md) -
   bounding pool and snapshot growth for a feed written on every build
+- [capabilities/feed-mirror.md](capabilities/feed-mirror.md) -
+  populating the local feed from a published feed
 - [build.md](build.md) - `--feed`, `--feed-release`, `--feed-channel`
 - [configuration.md](configuration.md) - `feed_dir` and `feed_shared`
 - [doctor.md](doctor.md) - the workspace-wide pre-flight checks

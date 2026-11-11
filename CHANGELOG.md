@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added four `bakar doctor` checks: `sstate-mirror-reachable`, `dl-mirror-reachable`, `scheduler` and `central-endpoints`
 - Added the feature guide pages under `docs/features/`, each with a "What your host needs" section, indexed by `docs/features/index.md`
 - Documented the `cluster`, `bb_hashserve` and `prserv_host` build settings and the `[dispatch]` table in `docs/configuration.md`
+- Added `bakar feed refresh`, which builds the named recipes with kas, publishes only their packages as a head-only delta feed beside the feed root (`<feed>-delta`, staged in `<feed>-delta-stage`), writes `delta.json` and `recipe-map.json`, and prints the `repos:` stanza and the avocado commands that consume it. `--serve`, `--bind`, `--port` and `--advertise` serve the delta and print a URL stanza, `--snapshot` mints a snapshot, and `--run-avocado` runs the printed commands. It refuses while a build is running, over a mirrored repository, beside another refresh, with a stage root that aliases the synced feed, and with a stale `avocado-repo.map`
+- Added `bakar feed mirror --metadata-only`, which mirrors repository metadata and downloads no packages. The `.bakar-mirror.json` marker records `source`, `revision`, `mirrored`, `repomd_sha256` and `mode`; `feed sync` refuses to publish into a channel directory holding a mirrored repository, and `feed gc` skips the reference audit for metadata-only repositories
 
 ### Changed
 
