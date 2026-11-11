@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import shlex
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -92,6 +93,57 @@ def _parse_listtasks(text: str) -> list[str]:
     return tasks
 
 
+def _prepare_run(
+    *,
+    manifest: str | None,
+    machine: str | None,
+    workspace: Path | None,
+    kas_yaml: str | None,
+):
+    """Resolve config and materialize overlay layers for a kas-container run.
+
+    Shared by ``_run_task`` and ``build_targets`` so both dispatch identically.
+    Returns ``(cfg, overlay_source, extra_overlays)``.
+    """
+    main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
+    family, bsp, main_yaml, manifest = _normalize_dispatch(main_yaml, manifest)
+    ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
+    cfg = resolve_global_config(
+        ResolveRequest(
+            workspace=ws,
+            bsp_family=family,
+            spec=BSPSpec(manifest=manifest, machine=machine),
+            kas_yaml=main_yaml,
+            user_config=_state._USER_CONFIG,
+        )
+    )
+    overlay_source = _overlay_for(bsp)
+    # The cache-classify overlay is the one unconditional entry in
+    # _tuning_extra_overlays - every build references it, so materialize it
+    # unconditionally too, unlike the sccache/host layers below.
+    materialize_cache_classify_layer(cfg)
+    if cfg.use_sccache_dist:
+        materialize_sccache_layer(cfg)
+    extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
+    # Host mode needs the meta-bakar-host layer (rpm transaction-plugin guard)
+    # even when sccache is off, where the branch above skips tuning overlays.
+    # Materialize the layer and append its overlay, deduped against whatever the
+    # sccache branch already combined in.
+    if cfg.host_mode:
+        materialize_host_layer(cfg)
+        extra_overlays = [*extra_overlays, *(o for o in _host_extra_overlays(cfg) if o not in extra_overlays)]
+    cfg.runs_dir.mkdir(parents=True, exist_ok=True)
+    return cfg, overlay_source, extra_overlays
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    """Outcome of ``build_targets``: bitbake's exit code and the run id."""
+
+    exit_code: int
+    run_id: str
+
+
 def _run_task(
     target: str,
     task: str | None,
@@ -133,34 +185,9 @@ def _run_task(
     if detach_mode == "offered" and _hints.agent_mode() and task not in ("listtasks", "devshell"):
         _hints.emit(_hints.foreground_nudge())
 
-    main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
-    family, bsp, main_yaml, manifest = _normalize_dispatch(main_yaml, manifest)
-    ws = _resolve_workspace(workspace, kas_yaml=main_yaml, family=family)
-    cfg = resolve_global_config(
-        ResolveRequest(
-            workspace=ws,
-            bsp_family=family,
-            spec=BSPSpec(manifest=manifest, machine=machine),
-            kas_yaml=main_yaml,
-            user_config=_state._USER_CONFIG,
-        )
+    cfg, overlay_source, extra_overlays = _prepare_run(
+        manifest=manifest, machine=machine, workspace=workspace, kas_yaml=kas_yaml
     )
-    overlay_source = _overlay_for(bsp)
-    # The cache-classify overlay is the one unconditional entry in
-    # _tuning_extra_overlays - every build references it, so materialize it
-    # unconditionally too, unlike the sccache/host layers below.
-    materialize_cache_classify_layer(cfg)
-    if cfg.use_sccache_dist:
-        materialize_sccache_layer(cfg)
-    extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
-    # Host mode needs the meta-bakar-host layer (rpm transaction-plugin guard)
-    # even when sccache is off, where the branch above skips tuning overlays.
-    # Materialize the layer and append its overlay, deduped against whatever the
-    # sccache branch already combined in.
-    if cfg.host_mode:
-        materialize_host_layer(cfg)
-        extra_overlays = [*extra_overlays, *(o for o in _host_extra_overlays(cfg) if o not in extra_overlays)]
-    cfg.runs_dir.mkdir(parents=True, exist_ok=True)
 
     command = command_override if command_override is not None else _build_command(target, task, keep_going=keep_going)
 
@@ -197,6 +224,41 @@ def _run_task(
         if _hints.agent_mode():
             _hints.emit(_hints.after_finish(log.run_id, rc))
         raise typer.Exit(code=rc)
+
+
+def build_targets(
+    targets: list[str],
+    *,
+    keep_going: bool = False,
+    manifest: str | None = None,
+    machine: str | None = None,
+    workspace: Path | None = None,
+    kas_yaml: str | None = None,
+) -> BuildResult:
+    """Build several targets in one bitbake invocation and return the outcome.
+
+    Unlike ``_run_task`` this never raises ``typer.Exit``, so a caller can act
+    on a failed build (it gets the exit code and run id back). The command is
+    ``bitbake [-k] <t1> <t2> ...`` streamed live through ``run_shell_live``.
+    """
+    if not targets:
+        raise ValueError("build_targets needs at least one target")
+    cfg, overlay_source, extra_overlays = _prepare_run(
+        manifest=manifest, machine=machine, workspace=workspace, kas_yaml=kas_yaml
+    )
+    parts = ["bitbake"]
+    if keep_going:
+        parts.append("-k")
+    parts += [shlex.quote(t) for t in targets]
+    command = " ".join(parts)
+
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        kas_ctx = KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=extra_overlays)
+        rc = run_shell_live(kas_ctx, command)
+        persist_run_artifacts(cfg, log)
+        if rc != 0:
+            console.print(f"[red]{command} failed (exit {rc}, run {log.run_id}).[/]")
+        return BuildResult(exit_code=rc, run_id=log.run_id)
 
 
 @app.command()
