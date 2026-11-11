@@ -55,6 +55,7 @@ locks, but this module never writes one -
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -183,6 +184,9 @@ class MirrorRequest:
     feed_root: Path
     targets: tuple[str, ...] = ()
     repos: tuple[str, ...] = ()
+    #: Copy repository metadata only: phase 2 and the disk check are skipped,
+    #: so no package payload is written.
+    metadata_only: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -701,18 +705,20 @@ def _publish_destination(channel_dir: Path, repo: str, *relative: str) -> Path:
         raise MirrorError(f"repository {repo!r}: {exc}") from exc
 
 
-def _write_marker(plan: _RepoPlan, *, source_channel: str, channel_dir: Path) -> None:
+def _write_marker(plan: _RepoPlan, *, source_channel: str, channel_dir: Path, metadata_only: bool) -> None:
     """Write ``.bakar-mirror.json`` beside ``repodata/``, naming this run's source."""
     payload = {
         "source": f"{source_channel}/{plan.repo}",
         "revision": plan.revision,
         "mirrored": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "repomd_sha256": hashlib.sha256(plan.repomd_body).hexdigest(),
+        "mode": "metadata-only" if metadata_only else "full",
     }
     marker_path = _publish_destination(channel_dir, plan.repo, _MARKER)
     _write_atomic(marker_path, (json.dumps(payload, sort_keys=True) + "\n").encode())
 
 
-def _publish(plan: _RepoPlan, *, source_channel: str, channel_dir: Path) -> bool:
+def _publish(plan: _RepoPlan, *, source_channel: str, channel_dir: Path, metadata_only: bool = False) -> bool:
     """Phase 3 for one repository: marker, signature, then ``repomd.xml`` - last.
 
     Returns whether the source publishes a detached signature for this
@@ -725,7 +731,7 @@ def _publish(plan: _RepoPlan, *, source_channel: str, channel_dir: Path) -> bool
     so a signature-fetch failure never lands mid-way through this phase's
     writes.
     """
-    _write_marker(plan, source_channel=source_channel, channel_dir=channel_dir)
+    _write_marker(plan, source_channel=source_channel, channel_dir=channel_dir, metadata_only=metadata_only)
 
     local_asc = _publish_destination(channel_dir, plan.repo, _REPODATA, _SIGNATURE)
     signed = plan.signature_body is not None
@@ -810,11 +816,12 @@ def mirror(request: MirrorRequest) -> MirrorResult:
     _check_no_conflicting_checksums(plans)
     _check_no_cross_repo_landing(selected, plans)
     unique_packages = _dedupe_packages(plans)
-    _check_disk_space(channel_dir, unique_packages)
+    if not request.metadata_only:
+        _check_disk_space(channel_dir, unique_packages)
 
     # Phase 2: every unique package, across every repository, resumed or
-    # downloaded concurrently.
-    results = _download_all(source_channel, unique_packages)
+    # downloaded concurrently. Metadata-only runs skip it, so no payload lands.
+    results = {} if request.metadata_only else _download_all(source_channel, unique_packages)
 
     # Phase 3: publish only after every package of every repository verified -
     # marker, then signature, then repomd.xml, per repository.
@@ -824,13 +831,17 @@ def mirror(request: MirrorRequest) -> MirrorResult:
         reused = 0
         downloaded_bytes = 0
         for package in plan.packages:
+            if request.metadata_only:
+                break
             result = results[package.dest]
             if result.downloaded:
                 downloaded += 1
                 downloaded_bytes += result.size
             else:
                 reused += 1
-        signed = _publish(plan, source_channel=source_channel, channel_dir=channel_dir)
+        signed = _publish(
+            plan, source_channel=source_channel, channel_dir=channel_dir, metadata_only=request.metadata_only
+        )
         outcomes.append(
             RepoOutcome(
                 repo=plan.repo,
