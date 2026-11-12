@@ -937,6 +937,43 @@ def test_refresh_os_error_prints_a_message_not_a_traceback(cli: CliRunner, cfg, 
     assert not isinstance(result.exception, OSError)
 
 
+def test_refresh_subprocess_failure_says_previous_delta_in_place(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    resolve, run, preflight, port, present = _refresh_patches(cfg)
+
+    with resolve, run as ran, preflight, port, present:
+        ran.side_effect = subprocess.CalledProcessError(3, ["/scripts/stage-delta.py", "--head"])
+        result = cli.invoke(
+            app, ["feed", "refresh", str(_yaml(tmp_path)), "--recipe", "busybox", "--project", str(project)]
+        )
+
+    assert result.exit_code == 1
+    output = " ".join(result.output.split())
+    assert "stage-delta.py exited 3" in output
+    assert "previous delta is still in place" in output
+    assert "snapshot pointer" not in output
+    assert not isinstance(result.exception, subprocess.CalledProcessError)
+
+
+def test_sync_subprocess_failure_keeps_snapshot_pointer_message(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    _with_repo_map(cfg)
+
+    with (
+        _patch_cfg(cfg),
+        _tools_present(),
+        mock.patch("bakar.commands.feed.feed_mod.meta_avocado_scripts", return_value=_real_scripts(tmp_path)),
+        mock.patch(
+            "bakar.commands.feed.feed_mod.sync",
+            side_effect=subprocess.CalledProcessError(2, ["/scripts/render-pool-local.py", "--staged"]),
+        ),
+    ):
+        result = cli.invoke(app, ["feed", "sync", str(_yaml(tmp_path))])
+
+    assert result.exit_code == 1
+    assert "snapshot pointer was not written" in " ".join(result.output.split())
+
+
 def test_refresh_bad_advertise_fails_before_resolving_or_building(cli: CliRunner, cfg, tmp_path: Path) -> None:
     project = tmp_path / "proj"
     project.mkdir()
