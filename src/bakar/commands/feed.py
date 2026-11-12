@@ -304,6 +304,14 @@ def _resolve_refresh_cfg(workspace: Path | None, kas_yaml: Path):
     )
 
 
+def _target_slug_of(cfg: object) -> object:
+    """The ``target/<slug>`` name for ``cfg``'s machine, from the build's repo map when it exists."""
+    machine = getattr(cfg, "machine", None)
+    if not isinstance(machine, str):
+        return machine
+    return _feed_refresh.target_slug(machine, feed_ops.deploy_dir(cfg))  # type: ignore[arg-type]
+
+
 def _published_snapshot_id(feed_root: Path, *, release: str, channel: str, machine: object) -> str | None:
     """The snapshot id the local published feed's latest pointer names for ``release/channel``, else None.
 
@@ -386,7 +394,7 @@ def refresh(
         base_release=base_release,
         base_channel=base_channel,
         base_snapshot_id=_published_snapshot_id(
-            feed_root, release=base_release, channel=base_channel, machine=getattr(cfg, "machine", None)
+            feed_root, release=base_release, channel=base_channel, machine=_target_slug_of(cfg)
         ),
         user_config=_state._USER_CONFIG,
     )

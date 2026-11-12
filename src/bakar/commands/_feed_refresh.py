@@ -489,6 +489,28 @@ def make_repos_self_contained(channel_dir: Path, stage_channel: Path, sync: dict
     _wipe(channel_dir / "_pkgs")
 
 
+def target_slug(machine: str, deploy: Path) -> str:
+    """The avocado target slug a build publishes under ``target/<slug>``.
+
+    The recipe map and the repository root must name the same target, and
+    ``cfg.machine`` is the MACHINE/package-arch name (``avocado-qemux86-64``),
+    not that slug (``qemux86-64``). The slug is what ``feed.pointer_machines``
+    derives from the build's own ``avocado-repo.map``; with several targets the
+    one equal to, or a suffix of, the machine name wins. A missing or empty map
+    leaves the machine name, the only thing known then.
+    """
+    try:
+        slugs = feed.pointer_machines(feed.parse_repo_map(deploy / feed_filter.REPO_MAP_NAME))
+    except OSError:
+        return machine
+    if len(slugs) == 1:
+        return slugs[0]
+    for slug in slugs:
+        if slug == machine or machine.endswith(f"-{slug}"):
+            return slug
+    return machine
+
+
 def _wipe(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
@@ -538,6 +560,7 @@ def _build_entries(
     pkgdata: dict[str, RecipePkgdata],
     rpms: dict[str, list[str]],
     tmpdir: Path,
+    machine: str,
     locate: Callable[[BuildConfig, str], RecipeLocation | None],
 ) -> list[feed_delta.RecipeEntry]:
     """Build and validate every recipe entry. Raises before anything is published."""
@@ -558,7 +581,7 @@ def _build_entries(
                 epoch=pd.epoch,
                 srcrev=None,
                 layer_commit=commit,
-                machine=req.cfg.machine,
+                machine=machine,
                 release=req.release,
                 task_hash=None,
             )
@@ -644,7 +667,15 @@ def run_refresh(
             raise RefreshFailedError(
                 f"the build produced no packages for {', '.join(missing)}; the previous delta is untouched"
             )
-        entries = _build_entries(req, recipes=recipes, pkgdata=pkgdata, rpms=rpms, tmpdir=tmpdir, locate=locate_recipe)
+        entries = _build_entries(
+            req,
+            recipes=recipes,
+            pkgdata=pkgdata,
+            rpms=rpms,
+            tmpdir=tmpdir,
+            machine=target_slug(req.cfg.machine, deploy),
+            locate=locate_recipe,
+        )
 
         channel_dir = feed.channel_root(req.delta_root, release=req.release, channel=req.channel)
         stage_dir = feed.channel_root(req.work_root, release=req.release, channel=req.channel)

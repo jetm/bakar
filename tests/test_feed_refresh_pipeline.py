@@ -47,14 +47,16 @@ class World:
         self.tmpdir = tmp_path / "tmpdir"
         self.deploy = self.tmpdir / "deploy" / "rpm"
         self.deploy.mkdir(parents=True)
-        (self.deploy / "avocado-repo.map").write_text("core2_64=$releasever/target/qemux86-64/core2_64\n")
+        (self.deploy / "avocado-repo.map").write_text(
+            "repo=$releasever/target/qemux86-64\ncore2_64=$releasever/target/qemux86-64/core2_64\n"
+        )
         # meta-avocado shape: bsp_root is a build-<stem> directory INSIDE the workspace.
         self.workspace = tmp_path / "ws"
         self.cfg = SimpleNamespace(
             workspace=self.workspace,
             bsp_root=self.workspace / "build-qemux86-64",
             resolved_tmpdir=self.tmpdir,
-            machine="qemux86-64",
+            machine="avocado-qemux86-64",  # MACHINE / pkg arch, not the target slug
         )
         self.feed_root = tmp_path / "feed"
         self.req = refresh.RefreshRequest(
@@ -608,3 +610,32 @@ def test_real_createrepo_hrefs_resolve_inside_the_repository_directory(tmp_path:
     assert hrefs == ["noarch/htop-3.5.0-r0.1.noarch.rpm"]
     assert all((repo / h).resolve().is_relative_to(repo.resolve()) and (repo / h).is_file() for h in hrefs)
     assert not (chan / "_pkgs").exists()
+
+
+def test_recipe_map_machine_is_the_target_slug_of_the_published_directory(world: World) -> None:
+    world.recipe("htop")
+    assert world.cfg.machine == "avocado-qemux86-64"
+
+    result = world.run()
+
+    (entry,) = json.loads((result.channel_dir / feed_delta.RECIPE_MAP_NAME).read_text())["entries"]
+    target_dirs = [p.name for p in (result.channel_dir / "target").iterdir() if p.is_dir()]
+    assert target_dirs == ["qemux86-64"]
+    assert entry["machine"] == target_dirs[0]
+
+
+@pytest.mark.parametrize(
+    ("machine", "repos", "expected"),
+    [
+        ("avocado-qemux86-64", ["target/qemux86-64"], "qemux86-64"),
+        ("avocado-qemux86-64", ["target/raspberrypi5", "target/qemux86-64"], "qemux86-64"),
+        ("qemux86-64", ["target/qemux86-64"], "qemux86-64"),
+        ("avocado-qemux86-64", [], "avocado-qemux86-64"),
+    ],
+)
+def test_target_slug_comes_from_the_repo_map(tmp_path: Path, machine: str, repos: list[str], expected: str) -> None:
+    deploy = tmp_path / "rpm"
+    deploy.mkdir()
+    (deploy / "avocado-repo.map").write_text("".join(f"repo=$releasever/{r}\n" for r in repos))
+    assert refresh.target_slug(machine, deploy) == expected
+    assert refresh.target_slug(machine, tmp_path / "no-map") == machine
