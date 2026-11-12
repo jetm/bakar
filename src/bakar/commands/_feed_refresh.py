@@ -18,6 +18,7 @@ import fcntl
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -451,6 +452,43 @@ def _stale_map_message(deploy: Path, own_names: frozenset[str], before: dict[str
     return None
 
 
+def _createrepo(repo: Path) -> None:
+    """Write gzip-compressed ``repodata/`` for the RPMs under ``repo``, hrefs relative to ``repo``."""
+    subprocess.run(["createrepo_c", "--general-compress-type", "gz", str(repo)], check=True)
+
+
+def make_repos_self_contained(channel_dir: Path, stage_channel: Path, sync: dict[str, object]) -> None:
+    """Replace the pooled repositories ``feed.sync`` rendered with self-contained ones.
+
+    ``render-pool-local`` writes ``repodata/`` whose ``location_href`` points at
+    ``../../_pkgs/<aa>/<sha>.rpm``, outside the repository directory. A consumer
+    that mounts one repository directory on its own (avocado-cli mounts a path
+    feed at ``/run/avocado-feeds/paths/<name>``) cannot follow that. Each
+    rendered repository (and each snapshot copy of it) therefore gets its staged
+    RPMs hardlinked in under ``<arch>/`` (copied across filesystems), fresh
+    ``createrepo_c`` metadata with hrefs relative to the repository directory, and
+    the channel's ``_pkgs`` pool is dropped. The ordinary ``feed sync`` is not
+    routed through here and keeps the pooled layout.
+    """
+    snapshot = sync.get("snapshot")
+    for root in (str(r) for r in sync.get("repos", [])):  # type: ignore[attr-defined]
+        staged = stage_channel / root
+        rpms = sorted(staged.rglob("*.rpm")) if staged.is_dir() else []
+        subpaths = [root] if not snapshot else [root, f"snapshots/{snapshot}/{root}"]
+        for sub in subpaths:
+            repo = channel_dir / sub
+            _wipe(repo / "repodata")
+            if not rpms:
+                continue
+            for rpm in rpms:
+                dest = repo / rpm.relative_to(staged)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.unlink(missing_ok=True)
+                feed_filter._link_or_copy(rpm, dest)
+            _createrepo(repo)
+    _wipe(channel_dir / "_pkgs")
+
+
 def _wipe(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
@@ -637,6 +675,11 @@ def run_refresh(
             )
             new_channel = feed.channel_root(new_delta, release=req.release, channel=req.channel)
             new_channel.mkdir(parents=True, exist_ok=True)
+            make_repos_self_contained(
+                new_channel,
+                feed.channel_root(new_stage, release=req.release, channel=req.channel),
+                sync,
+            )
             feed_delta.write_recipe_map(new_channel, entries)
             feed_delta.write_delta(
                 new_channel,

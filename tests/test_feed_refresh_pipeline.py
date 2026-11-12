@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -135,14 +136,34 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
         w.head_only = publish.head_only  # type: ignore[attr-defined]
         w.view_files = sorted(str(p.relative_to(publish.deploy_dir)) for p in publish.deploy_dir.rglob("*.rpm"))  # type: ignore[attr-defined]
         chan = feed.channel_root(feed_root, release=publish.release, channel=publish.channel)
-        # Like the real sync, publishing is additive: packages already there stay.
+        staged = feed.channel_root(stage_root, release=publish.release, channel=publish.channel)
+        # Like the real sync: RPMs are staged per repo root, the delta gets the
+        # pooled shape (repodata only, RPMs in _pkgs), and publishing is additive.
         for rpm in publish.deploy_dir.rglob("*.rpm"):
-            dest = chan / "target" / rpm.parent.name / rpm.name
+            dest = staged / "target" / "qemux86-64" / rpm.parent.name / rpm.name
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(rpm, dest)
-        return {"snapshot": None if publish.head_only else "snap-x", "channel_root": chan}
+            pooled = chan / "_pkgs" / "09" / f"{rpm.name}.sha"
+            pooled.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(rpm, pooled.with_suffix(".rpm"))
+        (chan / "target" / "qemux86-64" / "repodata").mkdir(parents=True, exist_ok=True)
+        (chan / "target" / "qemux86-64" / "repodata" / "pooled-primary.xml.gz").write_bytes(b"pooled")
+        return {
+            "snapshot": None if publish.head_only else "snap-x",
+            "channel_root": chan,
+            "repos": ["target/qemux86-64"],
+        }
 
+    def fake_createrepo(repo: Path) -> None:
+        """Stand-in for createrepo_c: a primary whose hrefs are relative to ``repo``."""
+        w.createrepo_calls.append(repo)  # type: ignore[attr-defined]
+        hrefs = "".join(f'<location href="{p.relative_to(repo)}"/>' for p in sorted(repo.rglob("*.rpm")))
+        (repo / "repodata").mkdir(exist_ok=True)
+        (repo / "repodata" / "primary.xml").write_text(hrefs)
+
+    w.createrepo_calls = []  # type: ignore[attr-defined]
     monkeypatch.setattr(refresh.feed, "sync", fake_sync)
+    monkeypatch.setattr(refresh, "_createrepo", fake_createrepo)
     return w
 
 
@@ -522,3 +543,68 @@ def test_unknown_recipe_with_no_bblayers_conf_names_the_unbuilt_directory(world:
         refresh.run_refresh(world.req, builder=world.builder, recipe_exists=lambda _c, _r: False)
 
     assert world.build_calls == []
+
+
+def test_delta_repositories_are_self_contained_after_a_refresh(world: World) -> None:
+    world.recipe("htop")
+
+    result = world.run()
+
+    repo = result.channel_dir / "target" / "qemux86-64"
+    assert not (result.channel_dir / "_pkgs").exists(), "no pool outside the repository directories"
+    assert not (repo / "repodata" / "pooled-primary.xml.gz").exists(), "the pooled metadata is replaced"
+    # Rendered in the fresh sibling, then swapped into place.
+    assert [c.relative_to(world.req.delta_root.with_name("delta.new")) for c in world.createrepo_calls] == [  # type: ignore[attr-defined]
+        repo.relative_to(world.req.delta_root)
+    ]
+    primary = (repo / "repodata" / "primary.xml").read_text()
+    hrefs = re.findall(r'href="([^"]+)"', primary)
+    assert hrefs == ["core2_64/htop-1.0-r0.1.core2_64.rpm"]
+    for href in hrefs:
+        assert (repo / href).is_file()
+        assert ".." not in href
+
+
+def test_snapshot_publish_makes_the_snapshot_copy_self_contained_too(world: World) -> None:
+    world.recipe("htop")
+
+    result = world.run(_with(world, snapshot=True))
+
+    snap = result.channel_dir / "snapshots" / "snap-x" / "target" / "qemux86-64"
+    assert (snap / "core2_64" / "htop-1.0-r0.1.core2_64.rpm").is_file()
+    assert any(c.parts[-4:] == ("snapshots", "snap-x", "target", "qemux86-64") for c in world.createrepo_calls)  # type: ignore[attr-defined]
+
+
+@pytest.mark.skipif(
+    shutil.which("createrepo_c") is None or shutil.which("rpmbuild") is None,
+    reason="needs createrepo_c and rpmbuild to build a real repository",
+)
+def test_real_createrepo_hrefs_resolve_inside_the_repository_directory(tmp_path: Path) -> None:
+    import gzip
+    import subprocess
+
+    spec = tmp_path / "htop.spec"
+    spec.write_text(
+        "Name: htop\nVersion: 3.5.0\nRelease: r0.1\nSummary: t\nLicense: MIT\nBuildArch: noarch\n"
+        "%description\nt\n%install\nmkdir -p %{buildroot}/usr/share\necho hi > %{buildroot}/usr/share/htop.txt\n"
+        "%files\n/usr/share/htop.txt\n"
+    )
+    subprocess.run(
+        ["rpmbuild", "-bb", "--define", f"_topdir {tmp_path}/top", "--define", f"_rpmdir {tmp_path}/out", str(spec)],
+        check=True,
+        capture_output=True,
+    )
+    stage = tmp_path / "stage" / "2026" / "edge"
+    (stage / "target" / "m" / "noarch").mkdir(parents=True)
+    shutil.copy2(next((tmp_path / "out").rglob("*.rpm")), stage / "target" / "m" / "noarch")
+    chan = tmp_path / "delta" / "2026" / "edge"
+    (chan / "_pkgs").mkdir(parents=True)
+
+    refresh.make_repos_self_contained(chan, stage, {"snapshot": None, "repos": ["target/m"]})
+
+    repo = chan / "target" / "m"
+    (primary,) = (repo / "repodata").glob("*primary.xml.gz")
+    hrefs = re.findall(r'<location href="([^"]+)"', gzip.decompress(primary.read_bytes()).decode())
+    assert hrefs == ["noarch/htop-3.5.0-r0.1.noarch.rpm"]
+    assert all((repo / h).resolve().is_relative_to(repo.resolve()) and (repo / h).is_file() for h in hrefs)
+    assert not (chan / "_pkgs").exists()

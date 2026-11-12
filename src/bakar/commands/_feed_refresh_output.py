@@ -50,7 +50,7 @@ __all__ = [
 
 _NAME_PREFIX = "bakar-delta-"
 _SDK_STAGES = ("sdk",)
-_TARGET_STAGES = ("rootfs", "runtime")
+_TARGET_STAGES = ("rootfs", "runtime", "ext", "initramfs")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

@@ -328,3 +328,13 @@ def test_pooled_delta_prints_stanza_and_commands_and_skips_empty_roots(
     assert "bakar-delta-empty-none" not in cap.out
     assert "no repository in the delta holds packages" not in cap.err
     assert "avocado" in cap.out
+
+
+def test_target_roots_list_the_ext_and_initramfs_stages_and_sdk_roots_only_sdk(
+    tmp_path: Path, spy: Spy, capsys: pytest.CaptureFixture
+) -> None:
+    out.present_refresh(_req(tmp_path), _result(tmp_path), _opts(tmp_path))  # type: ignore[arg-type]
+    stanza = capsys.readouterr().out
+
+    assert "path: ../delta/2026/edge/target/qemux86-64\n    stages: [rootfs, runtime, ext, initramfs]\n" in stanza
+    assert "path: ../delta/2026/edge/sdk/qemux86-64\n    stages: [sdk]\n" in stanza
