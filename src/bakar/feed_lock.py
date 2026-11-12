@@ -79,6 +79,11 @@ def _timeout() -> float:
     return value
 
 
+def validate_timeout() -> None:
+    """Raise ``ValueError`` when ``BAKAR_FEED_LOCK_TIMEOUT`` is malformed, so a caller can refuse early."""
+    _timeout()
+
+
 @contextlib.contextmanager
 def feed_lock(feed_root: Path) -> Iterator[None]:
     """Hold the exclusive lock on ``feed_root`` for the body.

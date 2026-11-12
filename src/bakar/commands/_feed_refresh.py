@@ -628,10 +628,14 @@ def _build_entries(
         loc = candidates[0]
         layer, commit = loc.repo_path.name, _layer_commit(loc, hashes)
         if len(candidates) > 1:
-            commit = None
+            # Layers of one repository (meta-oe and meta-python in meta-openembedded)
+            # share a single commit, so only layers in different repositories make it unknown.
+            if len({c.repo_path for c in candidates}) > 1:
+                commit = None
+            note = " with a null layer_commit because the built one cannot be told apart" if commit is None else ""
             warnings.append(
                 f"recipe {recipe} is provided by layers {', '.join(c.layer for c in candidates)}; "
-                f"recorded layer {loc.layer} with a null layer_commit because the built one cannot be told apart"
+                f"recorded {layer}{note}"
             )
         try:
             probe = feed_delta.entry_from_package_files(
@@ -679,6 +683,10 @@ def run_refresh(
         raise RefreshFailedError("name at least one recipe to build; nothing was built")
     build = builder or bitbake_cmd.build_targets
     workspace = req.cfg.workspace
+    try:
+        feed_lock.validate_timeout()
+    except ValueError as exc:
+        raise RefreshFailedError(f"{exc}; nothing was built") from exc
     with refresh_lock(req.feed_root):
         for root in (req.delta_root, req.work_root):
             check_guards(
@@ -806,7 +814,7 @@ def run_refresh(
                     check_no_mirror_markers(channel_dir)
                     check_no_mirror_markers(stage_dir)
                     _swap_all([(new_channel, channel_dir), (new_stage_channel, stage_dir)])
-            except feed_lock.FeedLockTimeout as exc:
+            except (feed_lock.FeedLockTimeout, ValueError) as exc:
                 raise RefreshFailedError(f"{exc}; the previous delta is untouched") from exc
         finally:
             for scratch in (view, new_delta, new_stage):

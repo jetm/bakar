@@ -745,6 +745,53 @@ def test_recipe_in_several_layers_writes_a_null_layer_commit(world: World) -> No
     assert "layer_commit" in result.warnings[0]
 
 
+def test_layers_of_one_repository_share_its_known_commit(world: World) -> None:
+    world.recipe("htop")
+    repo = world.workspace / "meta-oe"
+    (repo / "recipes").mkdir(parents=True, exist_ok=True)
+    locs = [
+        refresh.RecipeLocation(path=repo / "recipes" / "htop_1.0.bb", layer=name, repo_path=repo)
+        for name in ("meta-oe", "meta-python")
+    ]
+
+    result = refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs)
+
+    (entry,) = result.entries
+    assert (entry.layer, entry.layer_commit) == ("meta-oe", "abc123def456")
+    (warning,) = result.warnings
+    assert "meta-oe" in warning
+    assert "meta-python" in warning
+
+
+def test_warning_names_the_repository_it_writes(world: World) -> None:
+    world.recipe("htop")
+    repo = world.workspace / "meta-openembedded"
+    other = world.workspace / "meta-other"
+    for r in (repo, other):
+        (r / "recipes").mkdir(parents=True, exist_ok=True)
+    locs = [
+        refresh.RecipeLocation(path=repo / "recipes" / "htop_1.0.bb", layer="meta-oe", repo_path=repo),
+        refresh.RecipeLocation(path=other / "recipes" / "htop_1.0.bb", layer="meta-other", repo_path=other),
+    ]
+
+    result = refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs)
+
+    assert "recorded meta-openembedded" in result.warnings[0]
+
+
+@pytest.mark.parametrize("bad", ["soon", "-1", "nan"])
+def test_malformed_lock_timeout_refuses_before_the_build(
+    world: World, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    world.recipe("htop")
+    monkeypatch.setenv("BAKAR_FEED_LOCK_TIMEOUT", bad)
+
+    with pytest.raises(refresh.RefreshFailedError, match=r"BAKAR_FEED_LOCK_TIMEOUT.*nothing was built"):
+        world.run()
+
+    assert world.build_calls == []
+
+
 def test_recipe_in_one_layer_has_no_warning(world: World) -> None:
     world.recipe("htop")
     assert world.run().warnings == ()
