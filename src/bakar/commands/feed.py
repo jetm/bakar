@@ -25,7 +25,6 @@ one reaches the user as a traceback.
 from __future__ import annotations
 
 import contextlib
-import json
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -130,6 +129,13 @@ BaseChannelOption = Annotated[
     typer.Option(
         "--base-channel",
         help="Channel of the published feed the delta is built against; defaults to the resolved --channel",
+    ),
+]
+BaseSnapshotOption = Annotated[
+    str | None,
+    typer.Option(
+        "--base-snapshot",
+        help="Snapshot id of the published feed the delta is built against; recorded as null when omitted",
     ),
 ]
 SnapshotOption = Annotated[bool, typer.Option("--snapshot", help="Mint a snapshot, as `feed sync` does")]
@@ -306,37 +312,6 @@ def _resolve_refresh_cfg(workspace: Path | None, kas_yaml: Path):
     )
 
 
-def _target_slug_of(cfg: object) -> object:
-    """The ``target/<slug>`` name for ``cfg``'s machine, from the build's repo map when it exists."""
-    machine = getattr(cfg, "machine", None)
-    if not isinstance(machine, str):
-        return machine
-    return _feed_refresh.target_slug(machine, feed_ops.deploy_dir(cfg))  # type: ignore[arg-type]
-
-
-def _published_snapshot_id(feed_root: Path, *, release: str, channel: str, machine: object) -> str | None:
-    """The snapshot id the local published feed's latest pointer names for ``release/channel``, else None.
-
-    The pointer is ``<channel>/target/<machine>/snapshots-latest.json`` (see
-    ``feed.write_latest_pointer``). The machine's own pointer wins; when it has
-    none and every other machine's pointer names the same snapshot, that id is
-    used. Disagreeing or unreadable pointers give None rather than a guess.
-    """
-    target = feed_mod.channel_root(feed_root, release=release, channel=channel) / "target"
-    ids: dict[str, str] = {}
-    for pointer in sorted(target.glob("*/snapshots-latest.json")):
-        try:
-            snapshot_id = json.loads(pointer.read_text(encoding="utf-8")).get("id")
-        except OSError, ValueError, AttributeError:
-            continue
-        if isinstance(snapshot_id, str) and snapshot_id:
-            ids[pointer.parent.name] = snapshot_id
-    if isinstance(machine, str) and machine in ids:
-        return ids[machine]
-    distinct = set(ids.values())
-    return distinct.pop() if len(distinct) == 1 else None
-
-
 @feed_app.command("refresh")
 def refresh(
     kas_yaml: KasYamlArgument,
@@ -351,6 +326,7 @@ def refresh(
     advertise: AdvertiseOption = None,
     base_release: BaseReleaseOption = None,
     base_channel: BaseChannelOption = None,
+    base_snapshot: BaseSnapshotOption = None,
     snapshot: SnapshotOption = False,
     run: RunOption = False,
 ) -> None:
@@ -396,9 +372,7 @@ def refresh(
         channel=channel,
         base_release=base_release,
         base_channel=base_channel,
-        base_snapshot_id=_published_snapshot_id(
-            feed_root, release=base_release, channel=base_channel, machine=_target_slug_of(cfg)
-        ),
+        base_snapshot_id=base_snapshot,
         user_config=_state._USER_CONFIG,
     )
     opts = _feed_refresh_output.OutputOptions(

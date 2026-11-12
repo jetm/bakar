@@ -878,11 +878,10 @@ def test_refresh_base_defaults_to_release_and_channel_without_a_pointer(cli: Cli
     assert request.base_snapshot_id is None
 
 
-def test_refresh_base_options_override_and_snapshot_id_comes_from_the_published_pointer(
+def test_refresh_base_options_override_and_snapshot_id_comes_only_from_the_flag(
     cli: CliRunner, cfg, feed_root: Path, tmp_path: Path
 ) -> None:
-    _write_pointer(feed_root, "2023", "stable", "qemux86-64", "snap-base")
-    _write_pointer(feed_root, "2024", "edge", "qemux86-64", "snap-not-the-base")
+    _write_pointer(feed_root, "2023", "stable", "qemux86-64", "snap-local-pointer")
 
     result, request = _refresh_request(
         cli,
@@ -896,34 +895,25 @@ def test_refresh_base_options_override_and_snapshot_id_comes_from_the_published_
         "2023",
         "--base-channel",
         "stable",
+        "--base-snapshot",
+        "snap-given",
     )
 
     assert result.exit_code == 0, result.output
-    assert (request.release, request.channel) == ("2024", "edge")
     assert (request.base_release, request.base_channel) == ("2023", "stable")
-    assert request.base_snapshot_id == "snap-base"
+    assert request.base_snapshot_id == "snap-given"
 
 
-def test_refresh_base_snapshot_prefers_the_cfg_machine_pointer(
+def test_refresh_base_snapshot_is_not_taken_from_the_local_synced_feed(
     cli: CliRunner, cfg, feed_root: Path, tmp_path: Path
 ) -> None:
-    cfg.machine = "qemux86-64"
-    _write_pointer(feed_root, "2024", "edge", "other-machine", "snap-other")
-    _write_pointer(feed_root, "2024", "edge", "qemux86-64", "snap-mine")
+    # The local pointer names what this workspace synced, not the feed a consumer
+    # pins; recording it would claim a base the delta was never checked against.
+    _write_pointer(feed_root, "2024", "edge", "qemux86-64", "snap-local-pointer")
 
-    _result, request = _refresh_request(cli, cfg, tmp_path, "--release", "2024", "--channel", "edge")
+    result, request = _refresh_request(cli, cfg, tmp_path, "--release", "2024", "--channel", "edge")
 
-    assert request.base_snapshot_id == "snap-mine"
-
-
-def test_refresh_base_snapshot_is_none_when_machines_disagree(
-    cli: CliRunner, cfg, feed_root: Path, tmp_path: Path
-) -> None:
-    _write_pointer(feed_root, "2024", "edge", "a", "snap-a")
-    _write_pointer(feed_root, "2024", "edge", "b", "snap-b")
-
-    _result, request = _refresh_request(cli, cfg, tmp_path, "--release", "2024", "--channel", "edge")
-
+    assert result.exit_code == 0, result.output
     assert request.base_snapshot_id is None
 
 
@@ -977,18 +967,3 @@ def test_refresh_cfg_equals_the_cfg_bakar_bitbake_resolves(
     assert refresh_cfg.workspace == bitbake_cfg.workspace
     assert refresh_cfg.resolved_tmpdir == bitbake_cfg.resolved_tmpdir
     assert refresh_cfg.bblayers_conf == bitbake_cfg.bblayers_conf
-
-
-def test_refresh_base_snapshot_uses_the_target_slug_not_the_machine_name(
-    cli: CliRunner, cfg, feed_root: Path, tmp_path: Path
-) -> None:
-    cfg.machine = "avocado-qemux86-64"
-    deploy = cfg.resolved_tmpdir / "deploy" / "rpm"
-    deploy.mkdir(parents=True)
-    (deploy / "avocado-repo.map").write_text("repo=$releasever/target/qemux86-64\n")
-    _write_pointer(feed_root, "2024", "edge", "raspberrypi5", "snap-other")
-    _write_pointer(feed_root, "2024", "edge", "qemux86-64", "snap-mine")
-
-    _result, request = _refresh_request(cli, cfg, tmp_path, "--release", "2024", "--channel", "edge")
-
-    assert request.base_snapshot_id == "snap-mine"

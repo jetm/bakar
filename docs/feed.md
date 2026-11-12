@@ -52,6 +52,7 @@ destructive happens.
 | `--release` | `sync`, `refresh`, `mirror`, `index`, `status`, `gc` | Feed release directory. For `sync`, `refresh`, and `index` given a kas YAML, the default is the release the finished build declares in its distribution codename; `2024` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
 | `--channel` | `sync`, `refresh`, `mirror`, `index`, `status`, `gc` | Feed channel directory. For `sync`, `refresh`, and `index` given a kas YAML, the default is the channel the finished build declares in its distribution codename; `edge` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
 | `--base-release`, `--base-channel` | `refresh` only | Release and channel of the published feed the delta is built against; each defaults to the resolved `--release` / `--channel` |
+| `--base-snapshot` | `refresh` only | Snapshot id of the published feed the delta is built against, recorded in `delta.json`; `null` when omitted. It is never read from the local synced feed |
 | `--recipe` | `refresh` only | Recipe to build and publish into the delta (repeatable, at least one required) |
 | `--project` | `refresh` only | The avocado project directory the printed repository stanzas are relative to (required) |
 | `--serve` | `refresh` only | Serve the delta over HTTP after publishing |
