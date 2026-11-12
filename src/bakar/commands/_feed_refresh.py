@@ -741,13 +741,20 @@ def run_refresh(
             raise RefreshFailedError(
                 f"the build produced no packages for {', '.join(missing)}; the previous delta is untouched"
             )
+        try:
+            machine = target_slug(req.cfg.machine, deploy)
+        except UnicodeDecodeError as exc:
+            raise RefreshFailedError(
+                f"{feed_filter.REPO_MAP_NAME} is not valid UTF-8 ({exc.reason} at byte {exc.start}); "
+                "the previous delta is untouched"
+            ) from exc
         entries, warnings = _build_entries(
             req,
             recipes=recipes,
             pkgdata=pkgdata,
             rpms=rpms,
             tmpdir=tmpdir,
-            machine=target_slug(req.cfg.machine, deploy),
+            machine=machine,
             locations=locations,
         )
 

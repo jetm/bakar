@@ -315,6 +315,17 @@ def test_stale_map_against_preexisting_packages_refuses_before_wipe(world: World
     assert _delta_rpms(world) == before
 
 
+def test_non_utf8_repo_map_is_a_refresh_failure(world: World) -> None:
+    world.recipe("htop")
+    world.run()
+    before = _delta_files(world)
+    (world.deploy / "avocado-repo.map").write_bytes(b"core2_64 \xff\n")
+    with pytest.raises(refresh.RefreshFailedError, match=r"avocado-repo\.map") as info:
+        world.run()
+    assert "previous delta is untouched" in str(info.value)
+    assert _delta_files(world) == before
+
+
 def test_map_older_than_own_packages_is_not_stale(world: World) -> None:
     """Spike 1.2: a leaf build never rewrites the map, so it predates the recipe's own rpms."""
     world.recipe("htop")
