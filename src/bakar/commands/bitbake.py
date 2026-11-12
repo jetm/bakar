@@ -19,8 +19,12 @@ reporting success.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import shlex
+import subprocess
 import sys
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
@@ -54,6 +58,8 @@ from bakar.steps.kas_build import (
     run_shell_capture,
     run_shell_live,
 )
+from bakar.steps.kas_graph_capture import GRAPH_CAPTURE_TIMEOUT_S
+from bakar.triage import translate_container_path
 
 # unsupported: the command has no --detach; offered: it has one the caller did not
 # pass (agent callers get a nudge); requested: --detach was passed.
@@ -74,6 +80,82 @@ def _build_command(target: str, task: str | None, *, keep_going: bool) -> str:
         parts.append("-k")
     parts.append(shlex.quote(target))
     return " ".join(parts)
+
+
+@contextlib.contextmanager
+def _capture_context(cfg, kas_yaml: str | Path) -> Iterator[tuple[KasBuildContext, Path]]:
+    """Build the kas context ``bakar getvar`` builds, yielding it with its run dir."""
+    main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
+    _family, bsp, main_yaml, _manifest = _normalize_dispatch(main_yaml, None)
+    overlay_source = _overlay_for(bsp)
+    extra_overlays = _combine_overlays_with_tuning(user_extras, cfg)
+    cfg.runs_dir.mkdir(parents=True, exist_ok=True)
+    with RunLogger(runs_dir=cfg.runs_dir) as log:
+        yield KasBuildContext(cfg, log, cfg.kas_yaml, overlay_source, extra_overlays=extra_overlays), log.run_dir
+
+
+def _file_lookup_command(recipes: list[str]) -> str:
+    """One shell loop printing ``<recipe>\t<FILE>`` per recipe, empty FILE on failure.
+
+    One loop yields one exit code, so every recipe prints a line whatever
+    happens to it; the `if` keeps a failing lookup from aborting the rest.
+    """
+    names = " ".join(shlex.quote(r) for r in recipes)
+    return (
+        f"for r in {names}; do "
+        'if v=$(bitbake-getvar --value --ignore-undefined -r "$r" FILE 2>/dev/null); '
+        'then printf \'%s\t%s\n\' "$r" "$v"; '
+        "else printf '%s\t\n' \"$r\"; fi; done"
+    )
+
+
+def resolve_recipe_files(
+    cfg,
+    kas_yaml: str | Path,
+    recipes: list[str],
+    *,
+    timeout: float = GRAPH_CAPTURE_TIMEOUT_S,
+    runner: Callable[[KasBuildContext, str, ShellCapture], int] = run_shell_capture,
+) -> dict[str, Path | None]:
+    """Map each recipe to its host ``.bb`` path, or None when it cannot be resolved.
+
+    Runs ``bitbake-getvar -r <recipe> FILE`` for every recipe in one kas shell.
+    Never raises for a per-recipe failure, a timeout or a failure to start:
+    those all map to None so the caller can fall back per recipe.
+    """
+    result: dict[str, Path | None] = dict.fromkeys(recipes)
+    if not recipes:
+        return result
+    # A refresh must not die because a lookup could not run: any failure here
+    # (kas missing, lock held, timeout, bad overlay) degrades to "unresolved".
+    try:
+        with _capture_context(cfg, kas_yaml) as (kas_ctx, run_dir):
+            capture_path = run_dir / "recipe-files.log"
+            rc = runner(
+                kas_ctx,
+                _file_lookup_command(recipes),
+                ShellCapture(
+                    stdout_path=capture_path,
+                    stderr_path=run_dir / "recipe-files.err",
+                    step="recipe_files",
+                    env_overrides={"SHELL": "/bin/bash"},
+                    timeout=timeout,
+                    isolate_process_group=True,
+                ),
+            )
+            text = capture_path.read_text(errors="replace") if capture_path.exists() else ""
+    except OSError, subprocess.TimeoutExpired, typer.Exit, typer.BadParameter:
+        return result
+    if rc != 0:
+        return result
+
+    for line in text.splitlines():
+        name, sep, raw = line.partition("\t")
+        raw = raw.strip()
+        if not sep or name not in result or not raw:
+            continue
+        result[name] = Path(os.path.realpath(translate_container_path(raw, cfg.bsp_root)))
+    return result
 
 
 def _parse_listtasks(text: str) -> list[str]:
