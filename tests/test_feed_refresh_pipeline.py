@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -14,6 +15,7 @@ import pytest
 
 from bakar import feed, feed_delta, layers, run_discovery
 from bakar.commands import _feed_refresh as refresh
+from bakar.commands.bitbake import RecipeFiles
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -972,7 +974,7 @@ def test_provider_none_falls_back_to_the_first_layer_and_says_why(world: World) 
     assert (entry.layer, entry.layer_commit) == ("meta-first", None)
     (warning,) = result.warnings
     assert "span several repositories" in warning
-    assert "bitbake could not say which built it" in warning
+    assert "bitbake could not answer which layer built it" in warning
 
 
 @pytest.mark.parametrize("answer", [{}, {"htop": None}, {"htop": Path("/nowhere/else/htop_1.0.bb")}])
@@ -1063,6 +1065,59 @@ def test_provider_same_repository_candidates_keep_the_known_commit(world: World)
 
     (entry,) = result.entries
     assert (entry.layer, entry.layer_commit) == ("meta-oe", "abc123def456")
+    (warning,) = result.warnings
+    assert "share one repository" in warning
+    assert "bitbake was not asked" in warning
+    assert "could not answer" not in warning
+
+
+def test_same_repository_layers_do_not_trigger_the_bitbake_query(world: World) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world)
+    repo = locs[0].repo_path
+    same_repo = [dataclasses.replace(loc, repo_path=repo) for loc in locs]
+    calls: list[list[str]] = []
+
+    def resolver(_c: object, _k: object, recipes: list[str]) -> dict:
+        calls.append(recipes)
+        return {}
+
+    refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: same_repo, resolve_provider=resolver
+    )
+
+    assert calls == []
+
+
+def test_layers_spanning_repositories_trigger_the_bitbake_query(world: World) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world)
+    calls: list[list[str]] = []
+
+    def resolver(_c: object, _k: object, recipes: list[str]) -> dict:
+        calls.append(recipes)
+        return {}
+
+    refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=resolver)
+
+    assert calls == [["htop"]]
+
+
+def test_unresolved_provider_warning_names_the_lookup_run(world: World) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world)
+    answer = RecipeFiles()
+    answer.run_id = "20261112T010203-42"
+
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=lambda *_: answer
+    )
+
+    (warning,) = result.warnings
+    assert "bitbake could not answer" in warning
+    assert warning.endswith(
+        "; see recipe-files.err in the recipe_files run 20261112T010203-42 (bakar log --run 20261112T010203-42)"
+    )
 
 
 def test_provider_shared_repository_with_unknown_commit_does_not_blame_ambiguity(world: World) -> None:
@@ -1126,7 +1181,9 @@ def test_unresolved_provider_warning_points_at_the_run_log(world: World, answer:
     )
 
     (warning,) = result.warnings
-    assert warning.endswith("; see the recipe_files step of the build's run log (bakar log)")
+    assert "bitbake could not answer" in warning
+    assert "the build's run log" not in warning
+    assert "; see " not in warning
 
 
 def test_resolved_provider_warning_has_no_run_log_hint(world: World) -> None:

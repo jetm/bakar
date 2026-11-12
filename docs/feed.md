@@ -158,10 +158,14 @@ string. When more than one layer provides a recipe, pkgdata cannot say which
 one built it (it carries no recipe path), so the refresh asks bitbake: it runs
 `bitbake-getvar --value --ignore-undefined -r <recipe> FILE` for each such
 recipe in one kas shell, and records the layer whose repository holds that file
-together with that layer's commit. The query costs one kas-shell start (about 22
-seconds on a measured workspace) once per refresh, however many recipes need it,
-and is skipped when no named recipe is provided by more than one layer. A recipe
-that one layer provides is never queried. If the query fails or gives no usable
+together with that layer's commit. The query runs once per refresh, in one kas shell
+(about 22 seconds to start on a measured workspace), but every
+`bitbake-getvar -r` in it is a full recipe parse, so the cost grows with the
+number of recipes asked about. All the answers share one 900 second budget; a
+timeout or a failing shell keeps the answers already given and leaves the rest
+unresolved. The query is skipped when no named recipe is provided by layers of
+more than one repository. A recipe that one layer provides, or whose layers all
+live in one repository, is never queried. If the query fails or gives no usable
 answer, the recipe is recorded under the first layer, with a `null`
 `layer_commit` only when the layers span several repositories (layers of one
 repository share a commit). The refresh prints a warning for each such recipe

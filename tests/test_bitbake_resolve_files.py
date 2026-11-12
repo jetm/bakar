@@ -26,9 +26,9 @@ class FakeRunner:
     def __call__(self, ctx, command, capture):
         self.command = command
         self.capture = capture
+        capture.stdout_path.write_text(self.stdout)
         if self.raises is not None:
             raise self.raises
-        capture.stdout_path.write_text(self.stdout)
         return self.rc
 
 
@@ -46,6 +46,8 @@ def _no_kas(monkeypatch, tmp_path):
 class Cfg:
     bsp_root = Path("/ws")
     workspace = Path("/ws")
+    kas_work_dir = Path("/ws")
+    host_mode = False
 
 
 def _call(runner, recipes=("a", "b")):
@@ -66,26 +68,70 @@ def test_empty_output_maps_all_none():
     assert _call(FakeRunner("")) == {"a": None, "b": None}
 
 
-def test_nonzero_exit_maps_all_none(tmp_path):
-    assert _call(FakeRunner(f"a\t{tmp_path}/a.bb\n", rc=1)) == {"a": None, "b": None}
+def test_nonzero_exit_keeps_the_answers_already_written(tmp_path):
+    assert _call(FakeRunner(f"a\t{tmp_path}/a.bb\n", rc=1)) == {"a": tmp_path / "a.bb", "b": None}
 
 
-def test_timeout_maps_all_none_without_raising():
+def test_nonzero_exit_with_empty_log_maps_all_none():
+    assert _call(FakeRunner("", rc=1)) == {"a": None, "b": None}
+
+
+def test_timeout_keeps_the_answers_already_written(tmp_path):
+    runner = FakeRunner(f"a\t{tmp_path}/a.bb\n", raises=subprocess.TimeoutExpired("kas", 1))
+    assert _call(runner) == {"a": tmp_path / "a.bb", "b": None}
+
+
+def test_timeout_drops_a_line_cut_off_mid_write(tmp_path):
+    runner = FakeRunner(f"a\t{tmp_path}/a.bb\nb\t{tmp_path}/par", raises=subprocess.TimeoutExpired("kas", 1))
+    assert _call(runner) == {"a": tmp_path / "a.bb", "b": None}
+
+
+def test_timeout_with_nothing_written_maps_all_none():
     runner = FakeRunner(raises=subprocess.TimeoutExpired("kas", 1))
     assert _call(runner) == {"a": None, "b": None}
+
+
+def test_result_names_the_lookup_run(tmp_path):
+    got = _call(FakeRunner(""))
+    assert got.run_id == tmp_path.name
+
+
+def test_run_id_is_none_when_the_lookup_never_started(monkeypatch):
+    def broken_ctx(cfg, kas_yaml):
+        raise OSError("no runs dir")
+
+    monkeypatch.setattr(bb, "_capture_context", broken_ctx)
+    got = _call(FakeRunner(""))
+    assert got == {"a": None, "b": None}
+    assert got.run_id is None
 
 
 def test_failure_to_start_maps_all_none():
     assert _call(FakeRunner(raises=OSError("no docker"))) == {"a": None, "b": None}
 
 
-def test_container_path_translated(tmp_path):
+def test_container_path_translated_against_the_kas_work_dir(tmp_path):
+    # meta-avocado: kas-container binds the workspace at /work, while bsp_root is a build-* subdirectory of it.
     class C(Cfg):
-        bsp_root = tmp_path
+        workspace = tmp_path
+        bsp_root = tmp_path / "build-qemu"
+        kas_work_dir = tmp_path
+
+    runner = FakeRunner("a\t/work/meta-openembedded/meta-oe/a.bb\n")
+    got = resolve_recipe_files(C(), "x.yml", ["a"], runner=runner)
+    assert got == {"a": (tmp_path / "meta-openembedded/meta-oe/a.bb").resolve()}
+
+
+def test_host_mode_path_starting_with_work_is_left_alone(tmp_path):
+    class C(Cfg):
+        workspace = tmp_path
+        bsp_root = tmp_path / "build-qemu"
+        kas_work_dir = tmp_path
+        host_mode = True
 
     runner = FakeRunner("a\t/work/meta/a.bb\n")
     got = resolve_recipe_files(C(), "x.yml", ["a"], runner=runner)
-    assert got == {"a": (tmp_path / "meta/a.bb").resolve()}
+    assert got == {"a": Path("/work/meta/a.bb")}
 
 
 def test_unnormalised_path_is_realpathed(tmp_path):
@@ -107,6 +153,12 @@ def test_command_shape():
     assert runner.capture.timeout is not None
 
 
+def test_command_does_not_discard_stderr():
+    runner = FakeRunner("")
+    _call(runner)
+    assert "/dev/null" not in runner.command
+
+
 def _stub_runner(tmp_path, script_body: str):
     """Runner that executes the generated command under bash with a stub bitbake-getvar first on PATH."""
     stubs = tmp_path / "stubs"
@@ -117,8 +169,8 @@ def _stub_runner(tmp_path, script_body: str):
 
     def runner(ctx, command, capture):
         env = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}"}
-        with capture.stdout_path.open("w") as out:
-            return subprocess.run(["bash", "-c", command], env=env, stdout=out, check=False).returncode
+        with capture.stdout_path.open("w") as out, capture.stderr_path.open("w") as err:
+            return subprocess.run(["bash", "-c", command], env=env, stdout=out, stderr=err, check=False).returncode
 
     return runner
 
@@ -149,6 +201,20 @@ def test_executed_command_takes_last_line_after_a_note(tmp_path):
     assert got == {"a": tmp_path / "a.bb"}
 
 
+def test_executed_command_keeps_the_cause_in_the_err_file(tmp_path):
+    body = 'echo "ERROR: no provider for $4" >&2\nexit 1\n'
+    runner = _stub_runner(tmp_path, body)
+    captured = tmp_path / "out.txt"
+
+    class Cap:
+        stdout_path = captured
+        stderr_path = tmp_path / "err.txt"
+
+    assert runner(None, bb._file_lookup_command(["bad"]), Cap) == 0
+    assert captured.read_text() == "bad\t\n"
+    assert "ERROR: no provider" in Cap.stderr_path.read_text()
+
+
 def test_executed_command_failing_recipe_prints_empty_value(tmp_path):
     runner = _stub_runner(tmp_path, _STUB_BY_NAME.replace("@ROOT@", str(tmp_path)))
     got = resolve_recipe_files(Cfg(), "x.yml", ["bad", "ok"], runner=runner)
@@ -161,6 +227,7 @@ def test_executed_command_failing_recipe_line_shape(tmp_path):
 
     class Cap:
         stdout_path = captured
+        stderr_path = tmp_path / "err.txt"
 
     assert runner(None, bb._file_lookup_command(["bad"]), Cap) == 0
     assert captured.read_text() == "bad\t\n"

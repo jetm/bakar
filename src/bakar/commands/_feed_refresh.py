@@ -652,11 +652,14 @@ def _build_entries(
     hashes = layers.collect_layer_hashes(req.cfg)
     entries = []
     warnings: list[str] = []
-    ambiguous = [r for r in recipes if len(locations[r]) > 1]
+    # Layers of one repository share a commit, so only a recipe spanning repositories needs bitbake's answer.
+    ambiguous = [r for r in recipes if len({c.repo_path for c in locations[r]}) > 1]
     resolved: dict[str, Path | None] = {}
     if ambiguous:
         try:
-            resolved = resolve_provider(req.cfg, req.kas_yaml, ambiguous) or {}
+            answer = resolve_provider(req.cfg, req.kas_yaml, ambiguous)
+            # `or {}` would drop an empty answer's run_id, so test for None only.
+            resolved = {} if answer is None else answer
         except Exception as exc:  # noqa: BLE001 - a lookup failure must never fail the refresh
             warnings.append(
                 f"could not ask bitbake which layer built {', '.join(ambiguous)}: {exc}; "
@@ -679,16 +682,20 @@ def _build_entries(
             note = ""
             if commit is None:
                 if built is None and spans:
-                    note = (
-                        " with a null layer_commit because the layers span several repositories "
-                        "and bitbake could not say which built it"
-                    )
+                    note = " with a null layer_commit because the layers span several repositories"
                 else:
                     note = f" with a null layer_commit because the commit of {layer} could not be determined"
-            hint = "" if built is not None else "; see the recipe_files step of the build's run log (bakar log)"
+            tail = ""
+            if not spans:
+                tail = "; the layers share one repository, so bitbake was not asked which built it"
+            elif built is None:
+                tail = "; bitbake could not answer which layer built it"
+                run_id = getattr(resolved, "run_id", None)
+                if run_id:
+                    tail += f"; see recipe-files.err in the recipe_files run {run_id} (bakar log --run {run_id})"
             warnings.append(
                 f"recipe {recipe} is provided by layers {', '.join(c.layer for c in candidates)}; "
-                f"recorded {layer}{note}{hint}"
+                f"recorded {layer}{note}{tail}"
             )
         try:
             probe = feed_delta.entry_from_package_files(

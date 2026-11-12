@@ -105,10 +105,20 @@ def _file_lookup_command(recipes: list[str]) -> str:
     names = " ".join(shlex.quote(r) for r in recipes)
     return (
         f"for r in {names}; do "
-        'if v=$(bitbake-getvar --value --ignore-undefined -r "$r" FILE 2>/dev/null); '
+        'if v=$(bitbake-getvar --value --ignore-undefined -r "$r" FILE); '
         "then v=${v##*$'\\n'}; printf '%s\\t%s\\n' \"$r\" \"$v\"; "
         "else printf '%s\t\n' \"$r\"; fi; done"
     )
+
+
+class RecipeFiles(dict[str, Path | None]):
+    """Recipe to host ``.bb`` path (None when unresolved), plus the lookup's own run.
+
+    ``run_id`` names the run record the lookup opened (its ``recipe-files.err``
+    holds bitbake's complaints); None when the lookup never started.
+    """
+
+    run_id: str | None = None
 
 
 def resolve_recipe_files(
@@ -118,45 +128,51 @@ def resolve_recipe_files(
     *,
     timeout: float = GRAPH_CAPTURE_TIMEOUT_S,
     runner: Callable[[KasBuildContext, str, ShellCapture], int] = run_shell_capture,
-) -> dict[str, Path | None]:
+) -> RecipeFiles:
     """Map each recipe to its host ``.bb`` path, or None when it cannot be resolved.
 
     Runs ``bitbake-getvar -r <recipe> FILE`` for every recipe in one kas shell.
     Never raises for a per-recipe failure, a timeout or a failure to start:
-    those all map to None so the caller can fall back per recipe.
+    those all map to None so the caller can fall back per recipe. A timeout or
+    a non-zero exit keeps the answers already written to the log.
     """
-    result: dict[str, Path | None] = dict.fromkeys(recipes)
+    result = RecipeFiles(dict.fromkeys(recipes))
     if not recipes:
         return result
     # A refresh must not die because a lookup could not run: any failure here
     # (kas missing, lock held, timeout, bad overlay) degrades to "unresolved".
+    text = ""
     try:
         with _capture_context(cfg, kas_yaml) as (kas_ctx, run_dir):
+            result.run_id = run_dir.name
             capture_path = run_dir / "recipe-files.log"
-            rc = runner(
-                kas_ctx,
-                _file_lookup_command(recipes),
-                ShellCapture(
-                    stdout_path=capture_path,
-                    stderr_path=run_dir / "recipe-files.err",
-                    step="recipe_files",
-                    env_overrides={"SHELL": "/bin/bash"},
-                    timeout=timeout,
-                    isolate_process_group=True,
-                ),
-            )
-            text = capture_path.read_text(errors="replace") if capture_path.exists() else ""
+            try:
+                runner(
+                    kas_ctx,
+                    _file_lookup_command(recipes),
+                    ShellCapture(
+                        stdout_path=capture_path,
+                        stderr_path=run_dir / "recipe-files.err",
+                        step="recipe_files",
+                        env_overrides={"SHELL": "/bin/bash"},
+                        timeout=timeout,
+                        isolate_process_group=True,
+                    ),
+                )
+            finally:
+                # A timeout or a non-zero exit still leaves the recipes answered so far in the log.
+                text = capture_path.read_text(errors="replace") if capture_path.exists() else ""
     except OSError, subprocess.TimeoutExpired, typer.Exit, typer.BadParameter:
-        return result
-    if rc != 0:
-        return result
+        pass
 
-    for line in text.splitlines():
+    # Only whole lines count: a run cut off mid-write can leave a truncated path.
+    for line in text.split("\n")[:-1]:
         name, sep, raw = line.partition("\t")
         raw = raw.strip()
         if not sep or name not in result or not raw:
             continue
-        translated = translate_container_path(raw, cfg.bsp_root)
+        # kas-container binds kas_work_dir at /work; host mode has no such mount.
+        translated = raw if cfg.host_mode else translate_container_path(raw, cfg.kas_work_dir)
         # A relative or junk answer must not be resolved against bakar's own cwd.
         if not str(translated).startswith("/"):
             continue
