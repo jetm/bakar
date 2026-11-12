@@ -25,6 +25,7 @@ one reaches the user as a traceback.
 from __future__ import annotations
 
 import contextlib
+import json
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -116,6 +117,18 @@ ServeOption = Annotated[bool, typer.Option("--serve", help="Serve the delta over
 AdvertiseOption = Annotated[
     str | None,
     typer.Option("--advertise", help="Host printed in the url stanza; defaults to the bound address"),
+]
+BaseReleaseOption = Annotated[
+    str | None,
+    typer.Option(
+        "--base-release", help="Release of the published feed the delta is built against; defaults to --release"
+    ),
+]
+BaseChannelOption = Annotated[
+    str | None,
+    typer.Option(
+        "--base-channel", help="Channel of the published feed the delta is built against; defaults to --channel"
+    ),
 ]
 SnapshotOption = Annotated[bool, typer.Option("--snapshot", help="Mint a snapshot, as `feed sync` does")]
 RunOption = Annotated[
@@ -291,6 +304,29 @@ def _resolve_refresh_cfg(workspace: Path | None, kas_yaml: Path):
     )
 
 
+def _published_snapshot_id(feed_root: Path, *, release: str, channel: str, machine: object) -> str | None:
+    """The snapshot id the local published feed's latest pointer names for ``release/channel``, else None.
+
+    The pointer is ``<channel>/target/<machine>/snapshots-latest.json`` (see
+    ``feed.write_latest_pointer``). The machine's own pointer wins; when it has
+    none and every other machine's pointer names the same snapshot, that id is
+    used. Disagreeing or unreadable pointers give None rather than a guess.
+    """
+    target = feed_mod.channel_root(feed_root, release=release, channel=channel) / "target"
+    ids: dict[str, str] = {}
+    for pointer in sorted(target.glob("*/snapshots-latest.json")):
+        try:
+            snapshot_id = json.loads(pointer.read_text(encoding="utf-8")).get("id")
+        except OSError, ValueError, AttributeError:
+            continue
+        if isinstance(snapshot_id, str) and snapshot_id:
+            ids[pointer.parent.name] = snapshot_id
+    if isinstance(machine, str) and machine in ids:
+        return ids[machine]
+    distinct = set(ids.values())
+    return distinct.pop() if len(distinct) == 1 else None
+
+
 @feed_app.command("refresh")
 def refresh(
     kas_yaml: KasYamlArgument,
@@ -303,6 +339,8 @@ def refresh(
     bind: BindOption = feed_serve.DEFAULT_BIND,
     port: PortOption = feed_serve.DEFAULT_PORT,
     advertise: AdvertiseOption = None,
+    base_release: BaseReleaseOption = None,
+    base_channel: BaseChannelOption = None,
     snapshot: SnapshotOption = False,
     run: RunOption = False,
 ) -> None:
@@ -322,10 +360,17 @@ def refresh(
         console.print(f"--project {project} is not a directory")
         raise typer.Exit(code=2)
 
+    bad_advertise = _feed_refresh_output.check_advertise(advertise)
+    if bad_advertise:
+        console.print(markup_safe(bad_advertise))
+        raise typer.Exit(code=2)
+
     import bakar.commands._app as _state
 
     cfg = _resolve_refresh_cfg(workspace, kas_yaml)
     feed_root = feed_mod.resolve_feed_root(cfg)
+    base_release = base_release or release
+    base_channel = base_channel or channel
     # Siblings of the feed root, never inside it: the feed root is served, and a
     # refresh wipes both of these.
     request = _feed_refresh.RefreshRequest(
@@ -338,8 +383,11 @@ def refresh(
         work_root=feed_root.parent / f"{feed_root.name}-delta-stage",
         release=release,
         channel=channel,
-        base_release=release,
-        base_channel=channel,
+        base_release=base_release,
+        base_channel=base_channel,
+        base_snapshot_id=_published_snapshot_id(
+            feed_root, release=base_release, channel=base_channel, machine=getattr(cfg, "machine", None)
+        ),
         user_config=_state._USER_CONFIG,
     )
     opts = _feed_refresh_output.OutputOptions(

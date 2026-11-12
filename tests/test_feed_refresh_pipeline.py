@@ -14,6 +14,7 @@ from bakar import feed, feed_delta, layers, run_discovery
 from bakar.commands import _feed_refresh as refresh
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 pytestmark = pytest.mark.unit
@@ -46,7 +47,14 @@ class World:
         self.deploy = self.tmpdir / "deploy" / "rpm"
         self.deploy.mkdir(parents=True)
         (self.deploy / "avocado-repo.map").write_text("core2_64=$releasever/target/qemux86-64/core2_64\n")
-        self.cfg = SimpleNamespace(bsp_root=tmp_path / "ws", resolved_tmpdir=self.tmpdir, machine="qemux86-64")
+        # meta-avocado shape: bsp_root is a build-<stem> directory INSIDE the workspace.
+        self.workspace = tmp_path / "ws"
+        self.cfg = SimpleNamespace(
+            workspace=self.workspace,
+            bsp_root=self.workspace / "build-qemux86-64",
+            resolved_tmpdir=self.tmpdir,
+            machine="qemux86-64",
+        )
         self.feed_root = tmp_path / "feed"
         self.req = refresh.RefreshRequest(
             cfg=self.cfg,  # type: ignore[arg-type]
@@ -63,20 +71,30 @@ class World:
             base_snapshot_id="snap-1",
         )
         self.build_calls: list[list[str]] = []
+        self.build_workspaces: list[object] = []
+        self.guard_workspaces: list[object] = []
         self.build_exit = 0
         self.events: list[str] = []
+        self.during_build: list[Callable[[], None]] = []
 
-    def recipe(self, name: str, packages: dict[str, str] | None = None, *, layer: str = "meta-oe") -> None:
-        """Create pkgdata (``packages`` maps pkg -> rpm name) and one rpm per package."""
+    def recipe(
+        self, name: str, packages: dict[str, str] | None = None, *, layer: str = "meta-oe", version: str = "1.0"
+    ) -> None:
+        """Create pkgdata (``packages`` maps pkg -> rpm name), a recipe file and one rpm per package.
+
+        The pkgdata recipe file carries ``PACKAGES`` only, as oe-core writes it:
+        the layer cannot come from pkgdata, so it is found from the recipe file.
+        """
         packages = packages or {name: name}
+        recipe_dir = self.workspace / "sources" / layer / "recipes" / name
+        recipe_dir.mkdir(parents=True, exist_ok=True)
+        (recipe_dir / f"{name}_1.0.bb").write_text("")
         arch_dir = self.tmpdir / "pkgdata" / "avocado-qemux86-64"
         (arch_dir / "runtime").mkdir(parents=True, exist_ok=True)
-        (arch_dir / name).write_text(
-            f"PACKAGES: {' '.join(packages)}\nFILE_DIRNAME: /ws/layers/{layer}/recipes/{name}\n"
-        )
+        (arch_dir / name).write_text(f"PACKAGES: {' '.join(packages)}\n")
         for pkg, rpm_name in packages.items():
             (arch_dir / "runtime" / pkg).write_text(f"PKG:{pkg}: {rpm_name}\nPKGE: 0\n")
-            _make_rpm(self.deploy, "core2_64", rpm_name, mtime=2_000_000)
+            _make_rpm(self.deploy, "core2_64", rpm_name, version=version, mtime=2_000_000)
         os.utime(self.deploy / "avocado-repo.map", (3_000_000, 3_000_000))
 
     def stamp(self, recipe: str, pv: str = "1.0") -> None:
@@ -84,9 +102,12 @@ class World:
         d.mkdir(parents=True, exist_ok=True)
         (d / f"{pv}.do_package_write_rpm.{HASH}").write_text("")
 
-    def builder(self, targets: list[str], **_kw: object) -> SimpleNamespace:
+    def builder(self, targets: list[str], **kw: object) -> SimpleNamespace:
         self.events.append("build")
         self.build_calls.append(list(targets))
+        self.build_workspaces.append(kw.get("workspace"))
+        for hook in self.during_build:
+            hook()
         return SimpleNamespace(exit_code=self.build_exit, run_id="run-1")
 
     def run(self, req: refresh.RefreshRequest | None = None, **kw: object) -> refresh.RefreshResult:
@@ -96,7 +117,12 @@ class World:
 @pytest.fixture
 def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
     w = World(tmp_path)
-    monkeypatch.setattr(run_discovery, "live_workspace_runs", lambda *_a, **_k: [])
+
+    def fake_live(path: Path, **_k: object) -> list:
+        w.guard_workspaces.append(path)
+        return []
+
+    monkeypatch.setattr(run_discovery, "live_workspace_runs", fake_live)
     monkeypatch.setattr(refresh.feed_ops, "scripts_dir", lambda _y: tmp_path / "scripts")
     monkeypatch.setattr(
         layers,
@@ -183,7 +209,7 @@ def test_layer_has_recipe_matches_exact_and_versioned_names(tmp_path: Path) -> N
     rdir.mkdir(parents=True)
     (rdir / "htop_3.5.0.bb").write_text("")
     (tmp_path / "ws" / "layers" / "meta-oe" / "recipes-support" / "nano.bb").write_text("")
-    cfg = SimpleNamespace(bsp_root=tmp_path / "ws")
+    cfg = SimpleNamespace(workspace=tmp_path / "ws", bsp_root=tmp_path / "ws")
     assert refresh.layer_has_recipe(cfg, "htop")  # type: ignore[arg-type]
     assert refresh.layer_has_recipe(cfg, "nano")  # type: ignore[arg-type]
     assert not refresh.layer_has_recipe(cfg, "ht")  # type: ignore[arg-type]
@@ -276,3 +302,141 @@ def test_lock_is_released_after_a_refresh(world: World) -> None:
     world.recipe("htop")
     world.run()
     world.run()
+
+
+def test_build_guard_and_reads_use_one_workspace_for_a_meta_avocado_cfg(world: World) -> None:
+    """bsp_root is ``<ws>/build-<stem>``; the build, the guard and the reads must not use it as the workspace."""
+    world.recipe("htop")
+
+    world.run()
+
+    assert world.cfg.bsp_root != world.workspace
+    assert world.build_workspaces == [world.workspace]
+    assert set(world.guard_workspaces) == {world.workspace}
+    # The delta was read from the cfg's own tmpdir, the one that build wrote.
+    assert _delta_rpms(world) == ["htop-1.0-r0.1.core2_64.rpm"]
+
+
+def test_find_recipe_follows_a_symlinked_layer_and_skips_tmp(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    real = tmp_path / "elsewhere" / "meta-avocado"
+    (real / "recipes-x" / "foo").mkdir(parents=True)
+    (real / "recipes-x" / "foo" / "foo_1.0.bb").write_text("")
+    (ws / "sources").mkdir(parents=True)
+    (ws / "sources" / "meta-avocado").symlink_to(real)
+    build = ws / "build-qemux86-64"
+    (build / "tmp" / "work").mkdir(parents=True)
+    (build / "tmp" / "work" / "inside-tmp.bb").write_text("")
+    cfg = SimpleNamespace(workspace=ws, bsp_root=build)
+
+    found = refresh.find_recipe(cfg, "foo")  # type: ignore[arg-type]
+
+    assert found is not None
+    assert found.layer == "meta-avocado"
+    assert found.path.name == "foo_1.0.bb"
+    assert refresh.layer_has_recipe(cfg, "foo")  # type: ignore[arg-type]
+    assert not refresh.layer_has_recipe(cfg, "inside-tmp")  # type: ignore[arg-type]
+
+
+def test_layer_and_srcrev_come_from_the_recipe_file_not_pkgdata(world: World) -> None:
+    world.recipe("htop", version="3.5.0+git0+0123abcd")
+    (entry,) = world.run().entries
+    assert (entry.layer, entry.layer_commit) == ("meta-oe", "abc123def456")
+    assert entry.srcrev == "0123abcd"
+
+
+def test_srcrev_is_none_for_a_release_version(world: World) -> None:
+    world.recipe("htop")
+    (entry,) = world.run().entries
+    assert entry.srcrev is None
+
+
+def test_layer_is_empty_when_the_recipe_cannot_be_located(world: World) -> None:
+    world.recipe("htop")
+    (entry,) = refresh.run_refresh(
+        world.req,
+        builder=world.builder,
+        recipe_exists=lambda _c, _r: True,
+        locate_recipe=lambda _c, _r: None,
+    ).entries
+    assert (entry.layer, entry.layer_commit) == ("", "")
+
+
+def _delta_files(w: World) -> dict[str, bytes]:
+    chan = feed.channel_root(w.req.delta_root, release="2026", channel="edge")
+    return {str(p.relative_to(chan)): p.read_bytes() for p in sorted(chan.rglob("*")) if p.is_file()}
+
+
+def test_failed_publish_keeps_the_previous_delta_whole(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    world.recipe("htop")
+    world.run()
+    before = _delta_files(world)
+    assert feed_delta.DELTA_NAME in before
+
+    def boom(*_a: object, **_k: object) -> dict:
+        raise subprocess.CalledProcessError(1, "repo-stage-rpms.sh")
+
+    monkeypatch.setattr(refresh.feed, "sync", boom)
+    with pytest.raises(subprocess.CalledProcessError):
+        world.run()
+
+    assert _delta_files(world) == before
+    assert not list(world.tmp.glob("delta*.new")), "the half-built sibling is removed"
+
+
+def test_published_but_unrecordable_refresh_never_replaces_the_delta(world: World) -> None:
+    """Two packages of one recipe at different versions: refused before the delta is touched."""
+    world.recipe("htop", {"htop": "htop", "htop-doc": "htop-doc"})
+    world.run()
+    before = _delta_files(world)
+    # htop-doc moves on, htop does not: the recipe's files now disagree.
+    _make_rpm(world.deploy, "core2_64", "htop-doc", version="2.0", mtime=2_000_000)
+
+    with pytest.raises(refresh.RefreshFailedError, match="disagree"):
+        world.run()
+
+    assert _delta_files(world) == before
+
+
+def test_pr_bump_publishes_only_the_newest_build_of_a_package(world: World) -> None:
+    world.recipe("htop")
+    _make_rpm(world.deploy, "core2_64", "htop", release="r1.1", mtime=2_000_000)
+    _make_rpm(world.deploy, "core2_64", "htop", release="r0.9", mtime=2_000_000)
+
+    result = world.run()
+
+    assert world.view_files == ["core2_64/htop-1.0-r1.1.core2_64.rpm"]  # type: ignore[attr-defined]
+    assert _delta_rpms(world) == ["htop-1.0-r1.1.core2_64.rpm"]
+    (entry,) = result.entries
+    assert (entry.pv, entry.pr) == ("1.0", "r1.1")
+
+
+def test_release_comparison_is_numeric_per_segment(world: World) -> None:
+    world.recipe("htop")
+    _make_rpm(world.deploy, "core2_64", "htop", release="r10.1", mtime=2_000_000)
+
+    world.run()
+
+    assert _delta_rpms(world) == ["htop-1.0-r10.1.core2_64.rpm"]
+
+
+def test_dependency_rebuilt_in_this_run_does_not_make_the_map_stale(world: World) -> None:
+    """A runtime dependency rebuilt by this build is newer than the map; it was not stale before."""
+    world.recipe("htop")
+    world.during_build.append(lambda: _make_rpm(world.deploy, "core2_64", "libncurses", mtime=4_000_000))
+
+    world.run()
+
+    assert _delta_rpms(world) == ["htop-1.0-r0.1.core2_64.rpm"]
+
+
+def test_dependency_rewritten_in_this_run_is_not_counted_either(world: World) -> None:
+    world.recipe("htop")
+    _make_rpm(world.deploy, "core2_64", "libncurses", mtime=1_000_000)
+    world.during_build.append(lambda: _make_rpm(world.deploy, "core2_64", "libncurses", mtime=4_000_000))
+
+    world.run()
+
+    assert _delta_rpms(world) == ["htop-1.0-r0.1.core2_64.rpm"]

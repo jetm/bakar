@@ -809,3 +809,106 @@ def test_mirror_defaults_to_full_download(cli: CliRunner, cfg) -> None:
         cli.invoke(app, ["feed", "mirror", "https://x", "--repo", "sdk/all"])
 
     assert mirrored.call_args.args[0].metadata_only is False
+
+
+def _refresh_request(cli: CliRunner, cfg, tmp_path: Path, *extra: str):
+    """Invoke ``feed refresh`` with everything stubbed and return ``(result, request_passed_to_run_refresh)``."""
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    resolve, run, preflight, port, present = _refresh_patches(cfg)
+    args = ["feed", "refresh", str(_yaml(tmp_path)), "--recipe", "busybox", "--project", str(project), *extra]
+    with resolve, run as ran, preflight, port, present:
+        result = cli.invoke(app, args)
+    request = ran.call_args.args[0] if ran.call_args else None
+    return result, request
+
+
+def _write_pointer(feed_root: Path, release: str, channel: str, machine: str, snapshot_id: str) -> None:
+    target = feed_root / release / channel / "target" / machine
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "snapshots-latest.json").write_text(f'{{"id": "{snapshot_id}", "created": "2026-01-01T00:00:00Z"}}\n')
+
+
+def test_refresh_base_defaults_to_release_and_channel_without_a_pointer(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    result, request = _refresh_request(cli, cfg, tmp_path, "--release", "2024", "--channel", "edge")
+
+    assert result.exit_code == 0, result.output
+    assert (request.base_release, request.base_channel) == ("2024", "edge")
+    assert request.base_snapshot_id is None
+
+
+def test_refresh_base_options_override_and_snapshot_id_comes_from_the_published_pointer(
+    cli: CliRunner, cfg, feed_root: Path, tmp_path: Path
+) -> None:
+    _write_pointer(feed_root, "2023", "stable", "qemux86-64", "snap-base")
+    _write_pointer(feed_root, "2024", "edge", "qemux86-64", "snap-not-the-base")
+
+    result, request = _refresh_request(
+        cli,
+        cfg,
+        tmp_path,
+        "--release",
+        "2024",
+        "--channel",
+        "edge",
+        "--base-release",
+        "2023",
+        "--base-channel",
+        "stable",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (request.release, request.channel) == ("2024", "edge")
+    assert (request.base_release, request.base_channel) == ("2023", "stable")
+    assert request.base_snapshot_id == "snap-base"
+
+
+def test_refresh_base_snapshot_prefers_the_cfg_machine_pointer(
+    cli: CliRunner, cfg, feed_root: Path, tmp_path: Path
+) -> None:
+    cfg.machine = "qemux86-64"
+    _write_pointer(feed_root, "2024", "edge", "other-machine", "snap-other")
+    _write_pointer(feed_root, "2024", "edge", "qemux86-64", "snap-mine")
+
+    _result, request = _refresh_request(cli, cfg, tmp_path, "--release", "2024", "--channel", "edge")
+
+    assert request.base_snapshot_id == "snap-mine"
+
+
+def test_refresh_base_snapshot_is_none_when_machines_disagree(
+    cli: CliRunner, cfg, feed_root: Path, tmp_path: Path
+) -> None:
+    _write_pointer(feed_root, "2024", "edge", "a", "snap-a")
+    _write_pointer(feed_root, "2024", "edge", "b", "snap-b")
+
+    _result, request = _refresh_request(cli, cfg, tmp_path, "--release", "2024", "--channel", "edge")
+
+    assert request.base_snapshot_id is None
+
+
+def test_refresh_bad_advertise_fails_before_resolving_or_building(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    resolve, run, preflight, port, present = _refresh_patches(cfg)
+
+    with resolve as resolved, run as ran, preflight as preflighted, port, present:
+        result = cli.invoke(
+            app,
+            [
+                "feed",
+                "refresh",
+                str(_yaml(tmp_path)),
+                "--recipe",
+                "busybox",
+                "--project",
+                str(project),
+                "--advertise",
+                "myhost:9000",
+            ],
+        )
+
+    assert result.exit_code == 2
+    assert "--advertise takes a host only" in result.output
+    ran.assert_not_called()
+    resolved.assert_not_called()
+    preflighted.assert_not_called()
