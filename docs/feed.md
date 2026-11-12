@@ -145,7 +145,7 @@ directory also receives two files:
 | File | Content |
 |------|---------|
 | `recipe-map.json` | One entry per recipe: its RPM package names, layer (the layer repository's directory name, e.g. `meta-openembedded`), layer commit, `epoch`, `pv`, `pr`, `srcrev`, machine, release and `task_hash` |
-| `delta.json` | The base release and channel the delta was built against, the recipes built, the build's run id and the delta path |
+| `delta.json` | The base release, channel and snapshot id the delta was built against (`base.snapshot_id` is `null` unless `--base-snapshot` was given), the recipes built, the build's run id and the delta path |
 
 In `recipe-map.json`, `pr` is the RPM release as it appears in the package file
 name (the `PKGR` value in the runtime package data, for example `r0.1` with the
@@ -408,8 +408,12 @@ render and index, including the sync that `bakar build --feed` runs), `mirror`,
 <path>` once, and proceeds when the first finishes. `status` and `serve` only
 read and never take the lock, and neither does the default `gc` preview, which writes nothing.
 `refresh` writes only the `-delta` and `-delta-stage` siblings of the feed root,
-never the feed root itself, so it holds its own `<feed root>-delta.lock`
-(a sibling file) instead; `mirror --metadata-only` writes the feed root and takes the lock like `mirror`.
+never the feed root itself, so it does not take the feed root's `.bakar-feed.lock`.
+It holds `<feed root>-delta.lock` (a sibling file) for the whole run, which refuses a second
+refresh. From the last mirror-marker check through the swap it also holds the
+`.bakar-feed.lock` of the delta root and of the delta stage root, so a
+`bakar feed mirror` aimed at either waits instead of being wiped.
+`mirror --metadata-only` writes the feed root and takes the lock like `mirror`.
 
 - `BAKAR_FEED_LOCK_TIMEOUT` is the number of seconds to wait; the default is 900.
 - On timeout the command exits 1 naming the feed and the lock file, and writes
@@ -426,7 +430,9 @@ never the feed root itself, so it holds its own `<feed root>-delta.lock`
 - The feed root is created if it does not exist. If it or the lock file cannot be
   written the command fails with the reason rather than running unlocked.
 - The lock covers the feed root only; the stage root beside it is not separately
-  locked.
+  locked. The exception is `refresh`, which locks its delta root and its delta
+  stage root for the swap, waits up to the same timeout, and on a timeout leaves
+  the previous delta in place.
 
 ## Feed layout and configuration
 
