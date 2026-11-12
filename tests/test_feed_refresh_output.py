@@ -264,3 +264,67 @@ def test_preflight_runs_without_deploy_dir_and_reports_blockers(
 def test_preflight_clean_does_not_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(out._refresh, "preflight_results", lambda **kw: [_check(Status.PASS)])
     assert out.preflight_blocks(scripts=tmp_path, roots=None, release="2026", channel="edge") is False
+
+
+def _pooled_result(tmp_path: Path, repos: tuple[str, ...], *, packages: int = 5) -> SimpleNamespace:
+    """The shape ``render-pool-local`` publishes: repodata only, RPMs in ``_pkgs``."""
+    import gzip
+
+    channel_dir = tmp_path / "delta" / "2026" / "edge"
+    pool = channel_dir / "_pkgs" / "09"
+    pool.mkdir(parents=True)
+    (pool / "abc.rpm").write_bytes(b"rpm")
+    primary = (
+        '<?xml version="1.0"?>\n'
+        f'<metadata xmlns="http://linux.duke.edu/metadata/common" packages="{packages}">\n'
+        + "".join(f'<package type="rpm"><name>p{i}</name></package>\n' for i in range(packages))
+        + "</metadata>\n"
+    )
+    for root in repos:
+        if root.startswith("empty/"):
+            (channel_dir / root).mkdir(parents=True)
+            continue
+        repodata = channel_dir / root / "repodata"
+        repodata.mkdir(parents=True)
+        (repodata / "repomd.xml").write_text("<repomd/>")
+        (repodata / "0f3a-primary.xml.gz").write_bytes(gzip.compress(primary.encode()))
+    return SimpleNamespace(channel_dir=channel_dir, sync={"repos": list(repos)}, recipes=("htop",))
+
+
+def test_pooled_repository_is_counted_from_its_primary_metadata(tmp_path: Path) -> None:
+    result = _pooled_result(tmp_path, ("target/qemux86-64",))
+    assert not list((result.channel_dir / "target" / "qemux86-64").rglob("*.rpm"))
+    assert out.repo_package_count(result.channel_dir / "target" / "qemux86-64") == 5
+
+
+def test_package_elements_are_counted_when_the_attribute_is_absent(tmp_path: Path) -> None:
+    import gzip
+
+    repodata = tmp_path / "repo" / "repodata"
+    repodata.mkdir(parents=True)
+    body = '<metadata><package type="rpm"/><package type="rpm"/><package type="src"/></metadata>'
+    (repodata / "x-primary.xml.gz").write_bytes(gzip.compress(body.encode()))
+    assert out.repo_package_count(tmp_path / "repo") == 2
+
+
+def test_rpm_files_are_counted_only_without_repodata(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "Packages").mkdir(parents=True)
+    (repo / "Packages" / "a-1-r0.noarch.rpm").write_bytes(b"rpm")
+    assert out.repo_package_count(repo) == 1
+    assert out.repo_package_count(tmp_path / "missing") == 0
+
+
+def test_pooled_delta_prints_stanza_and_commands_and_skips_empty_roots(
+    tmp_path: Path, spy: Spy, capsys: pytest.CaptureFixture
+) -> None:
+    result = _pooled_result(tmp_path, ("target/qemux86-64", "empty/none"))
+
+    rc = out.present_refresh(_req(tmp_path), result, _opts(tmp_path))  # type: ignore[arg-type]
+
+    cap = capsys.readouterr()
+    assert rc == 0
+    assert "  bakar-delta-target-qemux86-64:\n    path: ../delta/2026/edge/target/qemux86-64\n" in cap.out
+    assert "bakar-delta-empty-none" not in cap.out
+    assert "no repository in the delta holds packages" not in cap.err
+    assert "avocado" in cap.out

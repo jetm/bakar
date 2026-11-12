@@ -12,7 +12,9 @@ tests patch them here and never bind a socket.
 from __future__ import annotations
 
 import dataclasses
+import gzip
 import ipaddress
+import re
 import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TextIO
@@ -121,12 +123,41 @@ def _repo_name(root: str) -> str:
     return _NAME_PREFIX + root.replace("/", "-")
 
 
+_PACKAGES_ATTR = re.compile(rb"<metadata\b[^>]*\bpackages=\"(\d+)\"")
+_PACKAGE_ELEMENT = re.compile(rb"<package\b[^>]*\btype=\"rpm\"")
+
+
+def repo_package_count(path: Path) -> int:
+    """Count the packages a published repository serves.
+
+    A pooled repository (``render-pool-local``) holds only ``repodata/``; its
+    RPMs sit in the channel's ``_pkgs`` pool, so files under the repository
+    directory say nothing. The primary metadata's ``packages`` attribute is the
+    count, with the number of ``<package type="rpm">`` elements as the fallback.
+    ``*.rpm`` files are counted only when there is no readable primary file, and
+    a directory with neither gives 0.
+    """
+    if not path.is_dir():
+        return 0
+    for primary in sorted((path / "repodata").glob("*primary.xml*")):
+        try:
+            raw = primary.read_bytes()
+            data = gzip.decompress(raw) if primary.suffix == ".gz" else raw
+        except OSError, EOFError, gzip.BadGzipFile:
+            continue
+        if primary.suffix not in {".gz", ".xml"}:
+            continue
+        match = _PACKAGES_ATTR.search(data)
+        return int(match.group(1)) if match else len(_PACKAGE_ELEMENT.findall(data))
+    return sum(1 for _ in path.rglob("*.rpm"))
+
+
 def _overlay_repos(result: _refresh.RefreshResult) -> list[OverlayRepo]:
     roots = [str(r) for r in result.sync.get("repos", [])]  # type: ignore[attr-defined]
     repos = []
     for root in roots:
         path = result.channel_dir / root
-        count = sum(1 for _ in path.rglob("*.rpm")) if path.is_dir() else 0
+        count = repo_package_count(path)
         repos.append(OverlayRepo(name=_repo_name(root), path=path, stages=_stages_for(root), package_count=count))
     return repos
 
