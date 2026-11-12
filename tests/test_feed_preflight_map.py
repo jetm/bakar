@@ -1,7 +1,7 @@
-"""Map-staleness check: a leaf-recipe build does not rewrite avocado-repo.map.
+"""Preflight must not block on a stale avocado-repo.map.
 
-Spike 1.2 measured the map's mtime a day older than a finished leaf build, so a
-sync from it can render a feed that omits the newly built packages.
+A leaf-recipe build does not rewrite the map (spike 1.2), so the staleness check
+lives in the refresh pipeline, where it compares only pre-existing packages.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from bakar import feed_preflight
-from bakar.diagnostics import Severity, Status
+from bakar.diagnostics import Status
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -35,44 +35,6 @@ def _deploy(tmp_path: Path, *, map_time: int | None, rpm_time: int | None) -> Pa
         rpm.write_bytes(b"rpm")
         os.utime(rpm, (rpm_time, rpm_time))
     return deploy
-
-
-def test_stale_map_fails(tmp_path: Path) -> None:
-    deploy = _deploy(tmp_path, map_time=_MAP_TIME, rpm_time=_MAP_TIME + 86_400)
-
-    result = feed_preflight.check_map_fresh(deploy)
-
-    assert result.status is Status.FAIL
-    assert result.severity is Severity.BLOCK
-    assert result.name == _NAME
-    assert "older" in result.message
-
-
-def test_fresh_map_passes(tmp_path: Path) -> None:
-    deploy = _deploy(tmp_path, map_time=_MAP_TIME + 10, rpm_time=_MAP_TIME)
-
-    result = feed_preflight.check_map_fresh(deploy)
-
-    assert result.status is Status.PASS
-    assert result.name == _NAME
-
-
-def test_map_equal_to_newest_rpm_passes(tmp_path: Path) -> None:
-    deploy = _deploy(tmp_path, map_time=_MAP_TIME, rpm_time=_MAP_TIME)
-
-    assert feed_preflight.check_map_fresh(deploy).status is Status.PASS
-
-
-def test_no_rpms_passes(tmp_path: Path) -> None:
-    deploy = _deploy(tmp_path, map_time=_MAP_TIME, rpm_time=None)
-
-    assert feed_preflight.check_map_fresh(deploy).status is Status.PASS
-
-
-def test_missing_map_is_left_to_build_output_check(tmp_path: Path) -> None:
-    deploy = _deploy(tmp_path, map_time=None, rpm_time=_MAP_TIME)
-
-    assert feed_preflight.check_map_fresh(deploy).status is Status.PASS
 
 
 def test_preflight_does_not_block_on_stale_map(tmp_path: Path) -> None:

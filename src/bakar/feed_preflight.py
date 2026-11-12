@@ -150,30 +150,6 @@ def check_build_output(deploy_dir: Path) -> CheckResult:
     return _ok("avocado-repo.map", str(repo_map))
 
 
-def check_map_fresh(deploy_dir: Path) -> CheckResult:
-    """The repo map must not predate the newest package in the deploy tree.
-
-    A leaf-recipe build writes its RPMs but not ``avocado-repo.map`` (the map is
-    written by the image-level do_compile), so after a leaf build the map can be
-    a day older than the packages and a sync from it omits them. "Build output"
-    is the newest ``.rpm`` mtime under the deploy dir. A missing map or an empty
-    tree passes here: ``check_build_output`` already reports the former.
-    """
-    repo_map = deploy_dir / "avocado-repo.map"
-    if not repo_map.is_file():
-        return _ok("avocado-repo.map", "absent - reported by the build output check")
-    newest = max((p.stat().st_mtime for p in deploy_dir.rglob("*.rpm")), default=None)
-    map_mtime = repo_map.stat().st_mtime
-    if newest is not None and map_mtime < newest:
-        return _fail(
-            "avocado-repo.map",
-            f"{repo_map} is older than the newest package in {deploy_dir}",
-            "a leaf-recipe build does not rewrite the map. Rebuild an image or the avocado-complete target, "
-            "then retry.",
-        )
-    return _ok("avocado-repo.map", f"{repo_map} is current")
-
-
 def check_release_channel(deploy_dir: Path, release: str, channel: str) -> CheckResult:
     """The requested release/channel must match what the build declares.
 
