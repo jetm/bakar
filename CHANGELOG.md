@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-11-12
+
 ### Added
 
 - Added the feature step to `bakar init`: a checklist of the features in the catalog, pre-filled from the current config, with disabled features shown with their reasons, value prompts, one plan that includes the host remediations `bakar setup` applies, one confirmation and a replay line
@@ -19,10 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `bakar feed mirror --metadata-only`, which mirrors repository metadata and downloads no packages. The `.bakar-mirror.json` marker records `source`, `revision`, `mirrored`, `repomd_sha256` and `mode`; `feed sync` refuses to publish into a channel directory holding a mirrored repository, and `feed gc` skips the reference audit for metadata-only repositories
 - Corrected the `bakar feed refresh` failure message for a head-only refresh, and made a repository map that is not valid UTF-8 fail with a clear refresh error instead of a traceback
 - Changed `bakar feed refresh` to record the layer bitbake names as the recipe provider when several layers provide it, by asking bitbake once per refresh (`bitbake-getvar -r <recipe> FILE`), instead of always the first layer with a null commit. When the query fails it falls back to the first layer and warns
+- Added an offer to install buildtools after the interactive `bakar init` sync in host mode, defaulting to no, and a hint pointing at `bakar setup` when sync is skipped and no buildtools are detected
+- Added an exclusive lock on the feed root for `bakar feed sync`, `mirror`, `index` and `gc --confirm`. A second writer waits and tells the user once, then exits non-zero without writing after `BAKAR_FEED_LOCK_TIMEOUT` seconds (default 900). Every host writing to a shared feed must run this build for the lock to exclude it
 
 ### Changed
 
 - Interactive `bakar init` on an initialized workspace now continues to the feature step instead of stopping. This is breaking for interactive use. `--family` alone keeps the error
+- `bakar feed sync`, `bakar feed index` (when given a kas YAML), `bakar feed refresh` and `bakar build --feed` now take an omitted `--release` or `--channel` (or `--feed-release` / `--feed-channel`) from the build's `DISTRO_CODENAME` instead of the fixed `2024/edge`. An explicit flag is kept, and a pair that disagrees with the build is still refused. A codename that is not a plain `release/channel` pair falls back to the fixed defaults
+- `bakar setup` for the central tier now also enables cluster mode, writing the cluster flag and both endpoints in one atomic update and repairing existing installs on the next run. The database URLs follow the chosen PostgreSQL host and port, and missing systemd units or an unreachable PostgreSQL are reported before services are enabled
+- `bakar feed mirror` now refuses to mirror into a feed root that `feed sync` has already populated
+
+### Fixed
+
+- Fixed `bakar run` failing with "Run script not found" for every machine. It now launches meta-avocado's single `run-qemu` script and passes `--tpm` only for `qemux86-64`
+- Fixed a non-numeric, `nan` or `inf` `BAKAR_FEED_LOCK_TIMEOUT` causing a traceback or an endless wait. It now fails with a clean error
+- Fixed `bakar feed index` and `bakar feed gc` creating the feed root on a mistyped or unmounted `feed_dir` before refusing
 
 ## [0.41.0] - 2026-11-05
 
@@ -1135,7 +1148,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.41.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.42.0...HEAD
+[0.42.0]: https://github.com/jetm/bakar/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/jetm/bakar/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/jetm/bakar/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/jetm/bakar/compare/v0.38.0...v0.39.0
