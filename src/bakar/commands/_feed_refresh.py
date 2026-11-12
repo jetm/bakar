@@ -610,16 +610,22 @@ def _real_resolve_provider(cfg: BuildConfig, kas_yaml: Path, recipes: list[str])
 def _provider_of(built: Path | None, candidates: list[RecipeLocation]) -> RecipeLocation | None:
     """The candidate whose repository holds ``built``, else None.
 
+    With nested checkouts several candidates can contain the file; the one with
+    the longest repository path is the innermost, so it wins.
+
     ``built`` is a realpath (``resolve_recipe_files`` returns resolved paths), so
     each repository is resolved too before comparing: a layer reached through a
     symlink would otherwise never match.
     """
     if built is None:
         return None
+    best: RecipeLocation | None = None
+    best_len = -1
     for cand in candidates:
-        if built.is_relative_to(Path(os.path.realpath(cand.repo_path))):
-            return cand
-    return None
+        root = Path(os.path.realpath(cand.repo_path))
+        if built.is_relative_to(root) and len(root.parts) > best_len:
+            best, best_len = cand, len(root.parts)
+    return best
 
 
 def _build_entries(
@@ -679,9 +685,10 @@ def _build_entries(
                     )
                 else:
                     note = f" with a null layer_commit because the commit of {layer} could not be determined"
+            hint = "" if built is not None else "; see the recipe_files step of the build's run log (bakar log)"
             warnings.append(
                 f"recipe {recipe} is provided by layers {', '.join(c.layer for c in candidates)}; "
-                f"recorded {layer}{note}"
+                f"recorded {layer}{note}{hint}"
             )
         try:
             probe = feed_delta.entry_from_package_files(

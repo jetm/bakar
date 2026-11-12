@@ -99,12 +99,14 @@ def _file_lookup_command(recipes: list[str]) -> str:
 
     One loop yields one exit code, so every recipe prints a line whatever
     happens to it; the `if` keeps a failing lookup from aborting the rest.
+    bitbake-getvar can print a line (a server NOTE) before the value, so only
+    the last line of its output is kept.
     """
     names = " ".join(shlex.quote(r) for r in recipes)
     return (
         f"for r in {names}; do "
         'if v=$(bitbake-getvar --value --ignore-undefined -r "$r" FILE 2>/dev/null); '
-        'then printf \'%s\t%s\n\' "$r" "$v"; '
+        "then v=${v##*$'\\n'}; printf '%s\\t%s\\n' \"$r\" \"$v\"; "
         "else printf '%s\t\n' \"$r\"; fi; done"
     )
 
@@ -154,7 +156,11 @@ def resolve_recipe_files(
         raw = raw.strip()
         if not sep or name not in result or not raw:
             continue
-        result[name] = Path(os.path.realpath(translate_container_path(raw, cfg.bsp_root)))
+        translated = translate_container_path(raw, cfg.bsp_root)
+        # A relative or junk answer must not be resolved against bakar's own cwd.
+        if not str(translated).startswith("/"):
+            continue
+        result[name] = Path(os.path.realpath(translated))
     return result
 
 

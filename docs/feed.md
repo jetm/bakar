@@ -166,8 +166,8 @@ answer, the recipe is recorded under the first layer, with a `null`
 `layer_commit` only when the layers span several repositories (layers of one
 repository share a commit). The refresh prints a warning for each such recipe
 naming every layer and what it recorded, and a failed query only adds a warning;
-it never fails the refresh. Builds on a remote host (`bakar build --on`) are not
-covered by the query.
+it never fails the refresh. The query runs in a local kas shell against the local
+workspace and does not follow a remote build (`bakar build --on`).
 
 **Guards.** Each of these refuses with exit `1` before anything is written, or
 (for the build-dependent ones) before the delta is wiped, and names the way out:

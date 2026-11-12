@@ -1103,3 +1103,42 @@ def test_provider_resolved_repository_without_a_known_commit_does_not_claim_ambi
     assert "could not be determined" in warning
     assert "meta-unhashed" in warning
     assert "could not say which built it" not in warning
+
+
+def test_provider_of_prefers_the_innermost_of_nested_repositories(tmp_path: Path) -> None:
+    outer, inner = tmp_path / "outer", tmp_path / "outer" / "nested"
+    recipe = inner / "recipes" / "htop_1.0.bb"
+    recipe.parent.mkdir(parents=True)
+    outer_loc = refresh.RecipeLocation(path=outer / "x.bb", layer="meta-outer", repo_path=outer)
+    inner_loc = refresh.RecipeLocation(path=recipe, layer="meta-inner", repo_path=inner)
+
+    assert refresh._provider_of(recipe.resolve(), [outer_loc, inner_loc]) is inner_loc
+    assert refresh._provider_of(recipe.resolve(), [inner_loc, outer_loc]) is inner_loc
+
+
+@pytest.mark.parametrize("answer", [{}, {"htop": Path("/nowhere/else/htop_1.0.bb")}])
+def test_unresolved_provider_warning_points_at_the_run_log(world: World, answer: dict) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world)
+
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=lambda *_: answer
+    )
+
+    (warning,) = result.warnings
+    assert warning.endswith("; see the recipe_files step of the build's run log (bakar log)")
+
+
+def test_resolved_provider_warning_has_no_run_log_hint(world: World) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world)
+
+    result = refresh.run_refresh(
+        world.req,
+        builder=world.builder,
+        locate_recipe=lambda _c, _r: locs,
+        resolve_provider=lambda *_: {"htop": locs[1].repo_path / "recipes" / "htop_1.0.bb"},
+    )
+
+    (warning,) = result.warnings
+    assert "bakar log" not in warning
