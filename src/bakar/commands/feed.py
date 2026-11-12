@@ -404,8 +404,10 @@ def refresh(
         console.print(f"feed refresh failed: {markup_safe(str(exc))}")
         raise typer.Exit(code=1) from exc
     except subprocess.CalledProcessError as exc:
-        # A refresh writes no snapshot pointer, so describe_failure's wording
-        # would be wrong here; the delta swap simply has not happened yet.
+        # describe_failure's wording is about the feed root's snapshot pointer.
+        # A refresh only writes into a fresh .new sibling of the delta (under
+        # --snapshot that includes its own snapshots-latest.json), never the
+        # feed root, so that wording would be wrong; the swap has not happened.
         script = Path(exc.cmd[0]).name if exc.cmd else "a feed script"
         console.print(
             f"feed refresh failed: {markup_safe(script)} exited {exc.returncode}. The previous delta is still in place."

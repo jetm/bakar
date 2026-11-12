@@ -162,7 +162,8 @@ def resolve_recipe_files(
             finally:
                 # A timeout or a non-zero exit still leaves the recipes answered so far in the log.
                 text = capture_path.read_text(errors="replace") if capture_path.exists() else ""
-    except OSError, subprocess.TimeoutExpired, typer.Exit, typer.BadParameter:
+    # RuntimeError covers a held workspace lock and the missing-buildtools/bitbake errors.
+    except OSError, RuntimeError, subprocess.TimeoutExpired, typer.Exit, typer.BadParameter:
         pass
 
     # Only whole lines count: a run cut off mid-write can leave a truncated path.

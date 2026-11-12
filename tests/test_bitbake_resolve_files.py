@@ -11,6 +11,8 @@ import pytest
 
 import bakar.commands.bitbake as bb
 from bakar.commands.bitbake import resolve_recipe_files
+from bakar.steps.kas_build import BitbakeBinMissingError, BuildtoolsMissingError
+from bakar.steps.kas_graph_capture import GRAPH_CAPTURE_TIMEOUT_S
 
 
 class FakeRunner:
@@ -106,6 +108,28 @@ def test_run_id_is_none_when_the_lookup_never_started(monkeypatch):
     assert got.run_id is None
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("workspace lock held"),
+        BuildtoolsMissingError("no buildtools"),
+        BitbakeBinMissingError("no bitbake"),
+    ],
+)
+def test_runtime_errors_map_all_none_without_raising(exc):
+    got = _call(FakeRunner(raises=exc))
+    assert got == {"a": None, "b": None}
+    assert got.run_id is not None
+
+
+def test_runtime_error_from_context_setup_maps_all_none(monkeypatch):
+    def broken_ctx(cfg, kas_yaml):
+        raise RuntimeError("bad overlay")
+
+    monkeypatch.setattr(bb, "_capture_context", broken_ctx)
+    assert _call(FakeRunner("")) == {"a": None, "b": None}
+
+
 def test_failure_to_start_maps_all_none():
     assert _call(FakeRunner(raises=OSError("no docker"))) == {"a": None, "b": None}
 
@@ -150,7 +174,7 @@ def test_command_shape():
     assert "bitbake-getvar" in runner.command
     assert runner.capture.env_overrides == {"SHELL": "/bin/bash"}
     assert runner.capture.isolate_process_group is True
-    assert runner.capture.timeout is not None
+    assert runner.capture.timeout == GRAPH_CAPTURE_TIMEOUT_S
 
 
 def test_command_does_not_discard_stderr():

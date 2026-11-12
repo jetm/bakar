@@ -423,8 +423,10 @@ render and index, including the sync that `bakar build --feed` runs), `mirror`,
 read and never take the lock, and neither does the default `gc` preview, which writes nothing.
 `refresh` writes only the `-delta` and `-delta-stage` siblings of the feed root,
 never the feed root itself, so it does not take the feed root's `.bakar-feed.lock`.
-It holds `<feed root>-delta.lock` (a sibling file) for the whole run, which refuses a second
-refresh. From the last mirror-marker check through the swap it also holds the
+It holds `<feed root>-delta.lock` (a sibling file) from the start of the refresh until the delta is
+swapped in and the refresh returns, which refuses a second refresh. With `--run-avocado`, the
+avocado commands run after that, with the lock already released, so a second refresh can replace
+the delta while they run. From the last mirror-marker check through the swap it also holds the
 `.bakar-feed.lock` of the delta root and of the delta stage root, so a
 `bakar feed mirror` aimed at either waits instead of being wiped.
 `mirror --metadata-only` writes the feed root and takes the lock like `mirror`.
