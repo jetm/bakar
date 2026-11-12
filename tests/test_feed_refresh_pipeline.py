@@ -374,7 +374,7 @@ def test_srcrev_is_none_for_a_release_version(world: World) -> None:
     assert entry.srcrev is None
 
 
-def test_layer_is_empty_when_the_recipe_cannot_be_located(world: World) -> None:
+def test_layer_is_null_when_the_recipe_cannot_be_located(world: World) -> None:
     world.recipe("htop")
     (entry,) = refresh.run_refresh(
         world.req,
@@ -382,7 +382,13 @@ def test_layer_is_empty_when_the_recipe_cannot_be_located(world: World) -> None:
         recipe_exists=lambda _c, _r: True,
         locate_recipe=lambda _c, _r: None,
     ).entries
-    assert (entry.layer, entry.layer_commit) == ("", "")
+    assert (entry.layer, entry.layer_commit) == (None, None)
+    (written,) = json.loads(
+        (
+            feed.channel_root(world.req.delta_root, release="2026", channel="edge") / feed_delta.RECIPE_MAP_NAME
+        ).read_text()
+    )["entries"]
+    assert (written["layer"], written["layer_commit"]) == (None, None)
 
 
 def _delta_files(w: World) -> dict[str, bytes]:

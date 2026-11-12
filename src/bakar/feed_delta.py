@@ -65,12 +65,12 @@ def parse_nevra(filename: str) -> Nevra:
 class RecipeEntry:
     recipe: str
     packages: list[str]
-    layer: str
+    layer: str | None
     epoch: int
     pv: str
     pr: str
     srcrev: str | None
-    layer_commit: str
+    layer_commit: str | None
     machine: str
     release: str
     task_hash: str | None
@@ -84,7 +84,7 @@ class RecipeEntry:
             self.pv,
             self.pr,
             self.srcrev or "",
-            self.layer_commit,
+            self.layer_commit or "",
         )
 
 
@@ -154,10 +154,10 @@ def entry_from_package_files(  # noqa: PLR0913 - keyword-only fields of one reco
     recipe: str,
     package_files: list[str],
     packages: list[str],
-    layer: str,
+    layer: str | None,
     epoch: int,
     srcrev: str | None,
-    layer_commit: str,
+    layer_commit: str | None,
     machine: str,
     release: str,
     task_hash: str | None,

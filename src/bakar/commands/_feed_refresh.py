@@ -351,12 +351,13 @@ def read_recipe_pkgdata(tmpdir: Path, recipe: str) -> RecipePkgdata:
     return RecipePkgdata(packages=names, epoch=epoch)
 
 
-def _layer_commit(loc: RecipeLocation, hashes: list[layers.LayerHash]) -> str:
+def _layer_commit(loc: RecipeLocation, hashes: list[layers.LayerHash]) -> str | None:
     """The abbreviated HEAD commit of the git repository holding the recipe's layer.
 
     Asks git for the repository's ``rev-parse --short HEAD``, the same form
     :func:`bakar.layers.collect_layer_hashes` records. When git cannot answer
-    (no repository), falls back to that collector's entry for the repository.
+    (no repository), falls back to that collector's entry for the repository,
+    and returns None when neither knows the commit.
     """
     short = layers._git_short_hash(loc.repo_path)
     if short:
@@ -364,7 +365,7 @@ def _layer_commit(loc: RecipeLocation, hashes: list[layers.LayerHash]) -> str:
     for h in hashes:
         if h.repo in {loc.repo_path.name, loc.layer}:
             return h.short_hash
-    return ""
+    return None
 
 
 def _srcrev_of(pv: str) -> str | None:
@@ -578,7 +579,7 @@ def _build_entries(
         names = [n for n in pd.packages if n in rpms]
         files = [f for n in names for f in rpms[n]]
         loc = locate(req.cfg, recipe)
-        layer, commit = (loc.repo_path.name, _layer_commit(loc, hashes)) if loc else ("", "")
+        layer, commit = (loc.repo_path.name, _layer_commit(loc, hashes)) if loc else (None, None)
         try:
             probe = feed_delta.entry_from_package_files(
                 recipe=recipe,
