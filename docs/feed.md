@@ -154,10 +154,20 @@ taskhash read from the build's stamps and is written as `null` when it cannot be
 read unambiguously; the comparison between two builds of a recipe then falls
 back to `epoch`, `pv`, `pr`, `srcrev` and the layer commit. `layer_commit` is written as `null`
 when the layer repository's commit cannot be determined, never as an empty
-string. A recipe that several layers provide cannot be
-traced to one (pkgdata carries no recipe path), so it is recorded under the first
-layer with a `null` `layer_commit`, and the refresh prints a warning naming every
-layer.
+string. When more than one layer provides a recipe, pkgdata cannot say which
+one built it (it carries no recipe path), so the refresh asks bitbake: it runs
+`bitbake-getvar --value --ignore-undefined -r <recipe> FILE` for each such
+recipe in one kas shell, and records the layer whose repository holds that file
+together with that layer's commit. The query costs one kas-shell start (about 22
+seconds on a measured workspace) once per refresh, however many recipes need it,
+and is skipped when no named recipe is provided by more than one layer. A recipe
+that one layer provides is never queried. If the query fails or gives no usable
+answer, the recipe is recorded under the first layer, with a `null`
+`layer_commit` only when the layers span several repositories (layers of one
+repository share a commit). The refresh prints a warning for each such recipe
+naming every layer and what it recorded, and a failed query only adds a warning;
+it never fails the refresh. Builds on a remote host (`bakar build --on`) are not
+covered by the query.
 
 **Guards.** Each of these refuses with exit `1` before anything is written, or
 (for the build-dependent ones) before the delta is wiped, and names the way out:
