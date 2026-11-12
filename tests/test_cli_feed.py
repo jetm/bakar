@@ -706,6 +706,47 @@ def test_refresh_accepts_global_container_flag(cli: CliRunner, cfg, tmp_path: Pa
     assert request.work_root != request.delta_root
 
 
+def _refresh_defaults_request(
+    cfg, tmp_path: Path, *flags: str, declared: tuple[str | None, str | None] = ("wrynose", "stable")
+):
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    resolve, run, preflight, port, present = _refresh_patches(cfg)
+    with (
+        resolve,
+        run as ran,
+        preflight,
+        port,
+        present,
+        mock.patch("bakar.feed_ops.declared_release_channel", return_value=declared),
+    ):
+        cli = CliRunner()
+        result = cli.invoke(
+            app,
+            ["feed", "refresh", str(_yaml(tmp_path)), "--recipe", "busybox", "--project", str(project), *flags],
+        )
+    assert result.exit_code == 0, result.output
+    return ran.call_args.args[0]
+
+
+def test_refresh_defaults_release_and_channel_from_the_builds_codename(cfg, tmp_path: Path) -> None:
+    request = _refresh_defaults_request(cfg, tmp_path)
+    assert (request.release, request.channel) == ("wrynose", "stable")
+    assert (request.base_release, request.base_channel) == ("wrynose", "stable")
+
+
+def test_refresh_explicit_release_wins_and_base_follows_the_resolved_pair(cfg, tmp_path: Path) -> None:
+    request = _refresh_defaults_request(cfg, tmp_path, "--release", "2026")
+    assert (request.release, request.channel) == ("2026", "stable")
+    assert (request.base_release, request.base_channel) == ("2026", "stable")
+
+
+def test_refresh_explicit_base_pair_is_kept(cfg, tmp_path: Path) -> None:
+    request = _refresh_defaults_request(cfg, tmp_path, "--base-release", "2025", "--base-channel", "edge")
+    assert (request.release, request.channel) == ("wrynose", "stable")
+    assert (request.base_release, request.base_channel) == ("2025", "edge")
+
+
 def test_refresh_stops_before_build_when_preflight_blocks(cli: CliRunner, cfg, tmp_path: Path) -> None:
     project = tmp_path / "proj"
     project.mkdir()

@@ -121,13 +121,15 @@ AdvertiseOption = Annotated[
 BaseReleaseOption = Annotated[
     str | None,
     typer.Option(
-        "--base-release", help="Release of the published feed the delta is built against; defaults to --release"
+        "--base-release",
+        help="Release of the published feed the delta is built against; defaults to the resolved --release",
     ),
 ]
 BaseChannelOption = Annotated[
     str | None,
     typer.Option(
-        "--base-channel", help="Channel of the published feed the delta is built against; defaults to --channel"
+        "--base-channel",
+        help="Channel of the published feed the delta is built against; defaults to the resolved --channel",
     ),
 ]
 SnapshotOption = Annotated[bool, typer.Option("--snapshot", help="Mint a snapshot, as `feed sync` does")]
@@ -341,8 +343,8 @@ def refresh(
     recipe: RecipeOption = None,
     project: ProjectOption = None,
     workspace: WorkspaceOption = None,
-    release: ReleaseOption = feed_mod.DEFAULT_RELEASE,
-    channel: ChannelOption = feed_mod.DEFAULT_CHANNEL,
+    release: InferredReleaseOption = None,
+    channel: InferredChannelOption = None,
     serve: ServeOption = False,
     bind: BindOption = feed_serve.DEFAULT_BIND,
     port: PortOption = feed_serve.DEFAULT_PORT,
@@ -377,6 +379,7 @@ def refresh(
 
     cfg = _resolve_refresh_cfg(workspace, kas_yaml)
     feed_root = feed_mod.resolve_feed_root(cfg)
+    release, channel = _default_release_channel(cfg, release, channel)
     base_release = base_release or release
     base_channel = base_channel or channel
     # Siblings of the feed root, never inside it: the feed root is served, and a

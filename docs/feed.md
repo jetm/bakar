@@ -49,8 +49,9 @@ destructive happens.
 | Flag | Applies to | Description |
 |------|------------|-------------|
 | `--workspace`, `-w` | all nine | Workspace root; auto-detected if omitted |
-| `--release` | `sync`, `refresh`, `mirror`, `index`, `status`, `gc` | Feed release directory. For `sync`, and `index` given a kas YAML, the default is the release the finished build declares in its distribution codename; `2024` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
-| `--channel` | `sync`, `refresh`, `mirror`, `index`, `status`, `gc` | Feed channel directory. For `sync`, and `index` given a kas YAML, the default is the channel the finished build declares in its distribution codename; `edge` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
+| `--release` | `sync`, `refresh`, `mirror`, `index`, `status`, `gc` | Feed release directory. For `sync`, `refresh`, and `index` given a kas YAML, the default is the release the finished build declares in its distribution codename; `2024` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
+| `--channel` | `sync`, `refresh`, `mirror`, `index`, `status`, `gc` | Feed channel directory. For `sync`, `refresh`, and `index` given a kas YAML, the default is the channel the finished build declares in its distribution codename; `edge` applies when it declares none, and for `mirror`, `status`, `gc` and `index` without a kas YAML |
+| `--base-release`, `--base-channel` | `refresh` only | Release and channel of the published feed the delta is built against; each defaults to the resolved `--release` / `--channel` |
 | `--recipe` | `refresh` only | Recipe to build and publish into the delta (repeatable, at least one required) |
 | `--project` | `refresh` only | The avocado project directory the printed repository stanzas are relative to (required) |
 | `--serve` | `refresh` only | Serve the delta over HTTP after publishing |
@@ -399,6 +400,9 @@ render and index, including the sync that `bakar build --feed` runs), `mirror`,
 `index` and `gc --confirm`. A second writer waits, printing `waiting for the feed lock
 <path>` once, and proceeds when the first finishes. `status` and `serve` only
 read and never take the lock, and neither does the default `gc` preview, which writes nothing.
+`refresh` writes only the `-delta` and `-delta-stage` siblings of the feed root,
+never the feed root itself, so it holds its own `<feed root>/.refresh.lock`
+instead; `mirror --metadata-only` writes the feed root and takes the lock like `mirror`.
 
 - `BAKAR_FEED_LOCK_TIMEOUT` is the number of seconds to wait; the default is 900.
 - On timeout the command exits 1 naming the feed and the lock file, and writes
