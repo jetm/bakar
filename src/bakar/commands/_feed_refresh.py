@@ -599,6 +599,29 @@ def _swap_all(pairs: list[tuple[Path, Path]]) -> None:
             _wipe(aside)
 
 
+type ResolveProvider = Callable[[BuildConfig, Path, list[str]], dict[str, Path | None] | None]
+
+
+def _real_resolve_provider(cfg: BuildConfig, kas_yaml: Path, recipes: list[str]) -> dict[str, Path | None]:
+    """Ask bitbake, in one kas shell, which file built each recipe."""
+    return bitbake_cmd.resolve_recipe_files(cfg, kas_yaml, recipes)
+
+
+def _provider_of(built: Path | None, candidates: list[RecipeLocation]) -> RecipeLocation | None:
+    """The candidate whose repository holds ``built``, else None.
+
+    ``built`` is a realpath (``resolve_recipe_files`` returns resolved paths), so
+    each repository is resolved too before comparing: a layer reached through a
+    symlink would otherwise never match.
+    """
+    if built is None:
+        return None
+    for cand in candidates:
+        if built.is_relative_to(Path(os.path.realpath(cand.repo_path))):
+            return cand
+    return None
+
+
 def _build_entries(
     req: RefreshRequest,
     *,
@@ -608,31 +631,54 @@ def _build_entries(
     tmpdir: Path,
     machine: str,
     locations: dict[str, list[RecipeLocation]],
+    resolve_provider: ResolveProvider,
 ) -> tuple[list[feed_delta.RecipeEntry], tuple[str, ...]]:
     """Build and validate every recipe entry, and name recipes several layers provide.
 
     Raises before anything is published. Pkgdata carries no recipe path
     (``PKGDATA_VARS`` has no ``FILE_DIRNAME``), so when several layers provide a
-    recipe the built one cannot be told apart: the first layer's name is
-    recorded, ``layer_commit`` is null rather than a guess, and a warning names
-    every layer.
+    recipe, ``resolve_provider`` is asked once, for all of them, which file
+    bitbake built; the layer whose repository holds it is recorded. Without an
+    answer the first layer's name is recorded and ``layer_commit`` is null
+    rather than a guess when the layers span repositories. A warning names every
+    layer either way.
     """
     hashes = layers.collect_layer_hashes(req.cfg)
     entries = []
     warnings: list[str] = []
+    ambiguous = [r for r in recipes if len(locations[r]) > 1]
+    resolved: dict[str, Path | None] = {}
+    if ambiguous:
+        try:
+            resolved = resolve_provider(req.cfg, req.kas_yaml, ambiguous) or {}
+        except Exception as exc:  # noqa: BLE001 - a lookup failure must never fail the refresh
+            warnings.append(
+                f"could not ask bitbake which layer built {', '.join(ambiguous)}: {exc}; "
+                "recorded the first layer of each"
+            )
     for recipe in recipes:
         pd = pkgdata[recipe]
         names = [n for n in pd.packages if n in rpms]
         files = [f for n in names for f in rpms[n]]
         candidates = locations[recipe]
-        loc = candidates[0]
+        built = _provider_of(resolved.get(recipe), candidates)
+        loc = built or candidates[0]
         layer, commit = loc.repo_path.name, _layer_commit(loc, hashes)
         if len(candidates) > 1:
             # Layers of one repository (meta-oe and meta-python in meta-openembedded)
             # share a single commit, so only layers in different repositories make it unknown.
-            if len({c.repo_path for c in candidates}) > 1:
+            spans = len({c.repo_path for c in candidates}) > 1
+            if built is None and spans:
                 commit = None
-            note = " with a null layer_commit because the built one cannot be told apart" if commit is None else ""
+            note = ""
+            if commit is None:
+                if built is None and spans:
+                    note = (
+                        " with a null layer_commit because the layers span several repositories "
+                        "and bitbake could not say which built it"
+                    )
+                else:
+                    note = f" with a null layer_commit because the commit of {layer} could not be determined"
             warnings.append(
                 f"recipe {recipe} is provided by layers {', '.join(c.layer for c in candidates)}; "
                 f"recorded {layer}{note}"
@@ -662,6 +708,7 @@ def run_refresh(
     *,
     builder: Callable[..., BuildResult] | None = None,
     locate_recipe: Callable[[BuildConfig, str], list[RecipeLocation]] = find_recipes,
+    resolve_provider: ResolveProvider | None = None,
 ) -> RefreshResult:
     """Build the named recipes and replace the delta with exactly their packages.
 
@@ -756,6 +803,7 @@ def run_refresh(
             tmpdir=tmpdir,
             machine=machine,
             locations=locations,
+            resolve_provider=resolve_provider or _real_resolve_provider,
         )
 
         channel_dir = feed.channel_root(req.delta_root, release=req.release, channel=req.channel)

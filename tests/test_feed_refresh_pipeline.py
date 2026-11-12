@@ -733,7 +733,9 @@ def test_recipe_in_several_layers_records_the_first_and_warns_naming_all(world: 
     world.recipe("htop")
     locs = _two_layer_loc(world)
 
-    result = refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs)
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=lambda *_: None
+    )
 
     (entry,) = result.entries
     assert entry.layer == "meta-first"
@@ -749,7 +751,9 @@ def test_recipe_in_several_layers_writes_a_null_layer_commit(world: World) -> No
     world.recipe("htop")
     locs = _two_layer_loc(world)
 
-    result = refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs)
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=lambda *_: None
+    )
 
     (entry,) = result.entries
     assert (entry.layer, entry.layer_commit) == ("meta-first", None)
@@ -765,7 +769,9 @@ def test_layers_of_one_repository_share_its_known_commit(world: World) -> None:
         for name in ("meta-oe", "meta-python")
     ]
 
-    result = refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs)
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=lambda *_: None
+    )
 
     (entry,) = result.entries
     assert (entry.layer, entry.layer_commit) == ("meta-oe", "abc123def456")
@@ -785,7 +791,9 @@ def test_warning_names_the_repository_it_writes(world: World) -> None:
         refresh.RecipeLocation(path=other / "recipes" / "htop_1.0.bb", layer="meta-other", repo_path=other),
     ]
 
-    result = refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs)
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=lambda *_: None
+    )
 
     assert "recorded meta-openembedded" in result.warnings[0]
 
@@ -902,3 +910,196 @@ def test_locate_runs_once_per_recipe(world: World) -> None:
     refresh.run_refresh(world.req, builder=world.builder, locate_recipe=locate)  # type: ignore[arg-type]
 
     assert calls == ["htop"]
+
+
+def _provider_locs(world: World, names: tuple[str, ...] = ("meta-first", "meta-oe")) -> list[refresh.RecipeLocation]:
+    out = []
+    for name in names:
+        repo = world.workspace / name
+        (repo / "recipes").mkdir(parents=True, exist_ok=True)
+        out.append(refresh.RecipeLocation(path=repo / "recipes" / "htop_1.0.bb", layer=name, repo_path=repo))
+    return out
+
+
+def test_provider_resolved_to_the_second_layer_records_its_repository_and_commit(world: World) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world)
+    seen: list[tuple[object, ...]] = []
+
+    def resolver(cfg: object, kas_yaml: object, recipes: list[str]) -> dict[str, Path | None]:
+        seen.append((cfg, kas_yaml, tuple(recipes)))
+        return {"htop": locs[1].repo_path / "recipes" / "htop_1.0.bb"}
+
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=resolver
+    )
+
+    (entry,) = result.entries
+    assert (entry.layer, entry.layer_commit) == ("meta-oe", "abc123def456")
+    assert seen == [(world.cfg, world.req.kas_yaml, ("htop",))]
+    (warning,) = result.warnings
+    assert "meta-first" in warning
+    assert "meta-oe" in warning
+
+
+def test_provider_resolved_through_a_symlinked_repository_still_matches(world: World, tmp_path: Path) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world)
+    link = tmp_path / "link-to-meta-oe"
+    link.symlink_to(locs[1].repo_path)
+    locs[1] = refresh.RecipeLocation(path=locs[1].path, layer="meta-oe", repo_path=link)
+    real_file = locs[1].repo_path.resolve() / "recipes" / "htop_1.0.bb"
+
+    result = refresh.run_refresh(
+        world.req,
+        builder=world.builder,
+        locate_recipe=lambda _c, _r: locs,
+        resolve_provider=lambda *_: {"htop": real_file},
+    )
+
+    assert result.entries[0].layer == "link-to-meta-oe"
+
+
+def test_provider_none_falls_back_to_the_first_layer_and_says_why(world: World) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world)
+
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=lambda *_: None
+    )
+
+    (entry,) = result.entries
+    assert (entry.layer, entry.layer_commit) == ("meta-first", None)
+    (warning,) = result.warnings
+    assert "span several repositories" in warning
+    assert "bitbake could not say which built it" in warning
+
+
+@pytest.mark.parametrize("answer", [{}, {"htop": None}, {"htop": Path("/nowhere/else/htop_1.0.bb")}])
+def test_provider_empty_or_unmatched_answer_keeps_todays_fallback(world: World, answer: dict) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world)
+
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=lambda *_: answer
+    )
+
+    (entry,) = result.entries
+    assert (entry.layer, entry.layer_commit) == ("meta-first", None)
+
+
+def test_provider_raising_falls_back_with_a_warning_and_the_refresh_succeeds(world: World) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world)
+
+    def boom(*_a: object) -> dict:
+        raise RuntimeError("kas shell exploded")
+
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=boom
+    )
+
+    (entry,) = result.entries
+    assert (entry.layer, entry.layer_commit) == ("meta-first", None)
+    assert any("kas shell exploded" in w for w in result.warnings)
+    assert result.channel_dir.is_dir()
+
+
+def test_provider_single_layer_recipe_never_calls_the_resolver(world: World) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world, ("meta-oe",))
+    calls: list[object] = []
+
+    result = refresh.run_refresh(
+        world.req,
+        builder=world.builder,
+        locate_recipe=lambda _c, _r: locs,
+        resolve_provider=lambda *a: calls.append(a) or {},
+    )
+
+    assert calls == []
+    assert result.warnings == ()
+
+
+def test_provider_is_asked_once_for_only_the_ambiguous_recipes(world: World) -> None:
+    world.recipe("htop")
+    world.recipe("nano")
+    req = refresh.RefreshRequest(
+        **{
+            **{f.name: getattr(world.req, f.name) for f in refresh.dataclasses.fields(world.req)},
+            "recipes": ("htop", "nano"),
+        }
+    )
+    two = _provider_locs(world)
+    one = _provider_locs(world, ("meta-oe",))
+    calls: list[tuple[str, ...]] = []
+
+    def resolver(_c: object, _k: object, recipes: list[str]) -> dict:
+        calls.append(tuple(recipes))
+        return {}
+
+    refresh.run_refresh(
+        req,
+        builder=world.builder,
+        locate_recipe=lambda _c, r: two if r == "htop" else one,
+        resolve_provider=resolver,
+    )
+
+    assert calls == [("htop",)]
+
+
+def test_provider_same_repository_candidates_keep_the_known_commit(world: World) -> None:
+    world.recipe("htop")
+    repo = world.workspace / "meta-oe"
+    (repo / "recipes").mkdir(parents=True, exist_ok=True)
+    locs = [
+        refresh.RecipeLocation(path=repo / "recipes" / "htop_1.0.bb", layer=name, repo_path=repo)
+        for name in ("meta-oe", "meta-python")
+    ]
+
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=lambda *_: None
+    )
+
+    (entry,) = result.entries
+    assert (entry.layer, entry.layer_commit) == ("meta-oe", "abc123def456")
+
+
+def test_provider_shared_repository_with_unknown_commit_does_not_blame_ambiguity(world: World) -> None:
+    world.recipe("htop")
+    repo = world.workspace / "meta-unhashed"
+    (repo / "recipes").mkdir(parents=True, exist_ok=True)
+    locs = [
+        refresh.RecipeLocation(path=repo / "recipes" / "htop_1.0.bb", layer=name, repo_path=repo)
+        for name in ("meta-a", "meta-b")
+    ]
+
+    result = refresh.run_refresh(
+        world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs, resolve_provider=lambda *_: None
+    )
+
+    (entry,) = result.entries
+    assert entry.layer_commit is None
+    (warning,) = result.warnings
+    assert "could not be determined" in warning
+    assert "told apart" not in warning
+    assert "could not say" not in warning
+
+
+def test_provider_resolved_repository_without_a_known_commit_does_not_claim_ambiguity(world: World) -> None:
+    world.recipe("htop")
+    locs = _provider_locs(world, ("meta-first", "meta-unhashed"))
+
+    result = refresh.run_refresh(
+        world.req,
+        builder=world.builder,
+        locate_recipe=lambda _c, _r: locs,
+        resolve_provider=lambda *_: {"htop": locs[1].path},
+    )
+
+    (entry,) = result.entries
+    assert (entry.layer, entry.layer_commit) == ("meta-unhashed", None)
+    (warning,) = result.warnings
+    assert "could not be determined" in warning
+    assert "meta-unhashed" in warning
+    assert "could not say which built it" not in warning
