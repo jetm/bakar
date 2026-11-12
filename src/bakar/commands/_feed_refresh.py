@@ -3,8 +3,8 @@
 A refresh wipes and rewrites the delta channel directory, so it must not run
 beside another refresh, beside a build that is writing the same workspace, over a
 mirrored repository, or with a stage root that is really the synced feed. Every
-refusal here raises before the caller writes anything; the lock file is the only
-file created ahead of them.
+refusal here raises before the caller writes anything; the lock file, a sibling
+of the synced feed root, is the only file created ahead of them.
 
 :func:`run_refresh` is the pipeline behind the guards: build the named recipes,
 publish only their packages head-only into the delta root, and record what was
@@ -38,29 +38,36 @@ if TYPE_CHECKING:
     from bakar.diagnostics import CheckResult
     from bakar.user_config import UserConfig
 
-LOCK_NAME = ".refresh.lock"
+LOCK_SUFFIX = "-delta.lock"
 
 
 class RefreshRefusedError(RuntimeError):
     """A refresh guard refused; the message names the cause and the way out."""
 
 
+def lock_path(feed_dir: Path) -> Path:
+    """The refresh lock for ``feed_dir``: a sibling file, so the synced root is never written."""
+    return feed_dir.parent / f"{feed_dir.name}{LOCK_SUFFIX}"
+
+
 @contextmanager
 def refresh_lock(feed_dir: Path) -> Iterator[None]:
-    """Hold an exclusive non-blocking ``flock`` on ``<feed_dir>/.refresh.lock``.
+    """Hold an exclusive non-blocking ``flock`` on the sibling :func:`lock_path` of ``feed_dir``.
 
     The lock cannot exist before its file does, so the file is opened (created
-    when absent) and locked in one step, and nothing else is written first. A
-    second holder is refused rather than queued: the second refresh would wipe
+    when absent) and locked in one step, and nothing else is written first. It
+    sits beside the synced feed root rather than inside it: the refresh must not
+    write into that root, and the file would otherwise be served with the feed.
+    A second holder is refused rather than queued: the second refresh would wipe
     the delta the first is still building.
     """
-    feed_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = feed_dir / LOCK_NAME
-    with lock_path.open("a+", encoding="utf-8") as fh:
+    path = lock_path(feed_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as fh:
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise RefreshRefusedError(f"another refresh holds {lock_path}; wait for it to finish, then retry") from exc
+            raise RefreshRefusedError(f"another refresh holds {path}; wait for it to finish, then retry") from exc
         try:
             yield
         finally:

@@ -107,7 +107,7 @@ def test_lock_held_by_another_process_is_refused_without_writing(tmp_path: Path)
 def test_lock_is_real_flock_and_released_on_exit(tmp_path: Path) -> None:
     feed_dir = tmp_path / "feed"
     with refresh.refresh_lock(feed_dir):
-        probe = (feed_dir / ".refresh.lock").open("a+")
+        probe = refresh.lock_path(feed_dir).open("a+")
         with pytest.raises(BlockingIOError):
             fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
         probe.close()
@@ -115,10 +115,19 @@ def test_lock_is_real_flock_and_released_on_exit(tmp_path: Path) -> None:
         pass
 
 
-def test_lock_is_the_only_file_created(tmp_path: Path) -> None:
+def test_lock_lives_beside_the_feed_root_and_never_writes_into_it(tmp_path: Path) -> None:
+    feed_dir = tmp_path / "feed"
+    feed_dir.mkdir()
+    with refresh.refresh_lock(feed_dir):
+        assert _snapshot(feed_dir) == []
+        assert refresh.lock_path(feed_dir) == tmp_path / "feed-delta.lock"
+        assert refresh.lock_path(feed_dir).is_file()
+
+
+def test_lock_does_not_create_an_absent_feed_root(tmp_path: Path) -> None:
     feed_dir = tmp_path / "feed"
     with refresh.refresh_lock(feed_dir):
-        assert _snapshot(feed_dir) == [".refresh.lock"]
+        assert not feed_dir.exists()
 
 
 def test_refused_lock_leaves_holder_released_after_guard_failure(tmp_path: Path) -> None:

@@ -161,7 +161,8 @@ layer, and the refresh prints a warning naming every layer.
 **Guards.** Each of these refuses with exit `1` before anything is written, or
 (for the build-dependent ones) before the delta is wiped, and names the way out:
 
-- A second refresh holds `.refresh.lock` in the feed root. Refreshes are not
+- A second refresh holds the refresh lock, `<feed root>-delta.lock`, a file beside
+  the feed root (never inside it). Refreshes are not
   queued, because the second would wipe the delta the first is still building.
 - A build is running in the workspace. A running build rewrites the deploy tree
   the refresh stages from; wait for it or run `bakar stop`.
@@ -406,8 +407,8 @@ render and index, including the sync that `bakar build --feed` runs), `mirror`,
 <path>` once, and proceeds when the first finishes. `status` and `serve` only
 read and never take the lock, and neither does the default `gc` preview, which writes nothing.
 `refresh` writes only the `-delta` and `-delta-stage` siblings of the feed root,
-never the feed root itself, so it holds its own `<feed root>/.refresh.lock`
-instead; `mirror --metadata-only` writes the feed root and takes the lock like `mirror`.
+never the feed root itself, so it holds its own `<feed root>-delta.lock`
+(a sibling file) instead; `mirror --metadata-only` writes the feed root and takes the lock like `mirror`.
 
 - `BAKAR_FEED_LOCK_TIMEOUT` is the number of seconds to wait; the default is 900.
 - On timeout the command exits 1 naming the feed and the lock file, and writes
