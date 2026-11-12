@@ -75,9 +75,11 @@ def test_missing_map_is_left_to_build_output_check(tmp_path: Path) -> None:
     assert feed_preflight.check_map_fresh(deploy).status is Status.PASS
 
 
-def test_preflight_blocks_on_stale_map(tmp_path: Path) -> None:
+def test_preflight_does_not_block_on_stale_map(tmp_path: Path) -> None:
+    # The staleness check belongs to the refresh command only: `bakar build --feed`
+    # runs preflight before the build that would rewrite the map.
     deploy = _deploy(tmp_path, map_time=_MAP_TIME, rpm_time=_MAP_TIME + 86_400)
 
     results = feed_preflight.preflight(build=feed_preflight.PreflightBuild(deploy_dir=deploy))
 
-    assert any(r.name == _NAME and r.status is Status.FAIL for r in feed_preflight.blocking(results))
+    assert not any(r.name == _NAME and r.status is Status.FAIL for r in results)

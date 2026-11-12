@@ -395,6 +395,8 @@ def sync(
         stage_root=stage_root if stage_root is not None else resolve_stage_root(cfg),
     )
     if snapshot is not None:
+        if publish.head_only:
+            raise ValueError("snapshot cannot be combined with head_only: a head-only publish writes no snapshot")
         publish = replace(publish, snapshot=snapshot)
     return sync_paths(roots=roots, publish=publish)
 

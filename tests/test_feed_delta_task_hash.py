@@ -99,3 +99,26 @@ def test_unresolved_hash_keeps_explicit_null_and_fallback_key(tmp_path: Path) ->
     )
     assert entry.task_hash is None
     assert entry.delta_key() == ("0", "3.5.0", "r0.1", "", "f28a144aa0a0")
+
+
+def test_git_recipe_pkgv_resolves_against_pv_stamp(tmp_path: Path) -> None:
+    _stamp(tmp_path, f"3.5.0+git.do_package_write_rpm.{H_EXEC}")
+    assert feed_delta.read_task_hash(tmp_path, "htop", "3.5.0+git0+0123abcd") == H_EXEC
+
+
+def test_git_recipe_falls_back_to_base_before_plus(tmp_path: Path) -> None:
+    _stamp(tmp_path, f"3.5.0.do_package_write_rpm.{H_EXEC}")
+    assert feed_delta.read_task_hash(tmp_path, "htop", "3.5.0+git0+0123abcd") == H_EXEC
+
+
+def test_exact_pkgv_stamp_is_preferred_over_derived_candidates(tmp_path: Path) -> None:
+    _stamp(tmp_path, f"3.5.0+git0+0123abcd.do_package_write_rpm.{H_EXEC}")
+    _stamp(tmp_path, f"3.5.0+git.do_package_write_rpm.{H_OTHER}")
+    assert feed_delta.read_task_hash(tmp_path, "htop", "3.5.0+git0+0123abcd") == H_EXEC
+
+
+def test_ambiguous_hashes_within_the_matching_candidate_return_none(tmp_path: Path) -> None:
+    _stamp(tmp_path, f"3.5.0+git.do_package_write_rpm.{H_EXEC}")
+    _stamp(tmp_path, f"3.5.0+git.do_package_write_rpm.{H_OTHER}")
+    _stamp(tmp_path, f"3.5.0.do_package_write_rpm.{H_PACKAGE}")
+    assert feed_delta.read_task_hash(tmp_path, "htop", "3.5.0+git0+0123abcd") is None

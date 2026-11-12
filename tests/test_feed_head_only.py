@@ -82,3 +82,15 @@ def test_sync_passes_caller_roots_and_snapshot(tmp_path) -> None:
     kw = sp.call_args.kwargs
     assert kw["roots"] == roots
     assert kw["publish"].snapshot == "S1"
+
+
+def test_sync_rejects_snapshot_with_head_only(tmp_path) -> None:
+    cfg = mock.Mock()
+    with pytest.raises(ValueError, match="head_only"):
+        feed_mod.sync(
+            cfg,
+            publish=_publish(tmp_path, head_only=True),
+            feed_root=tmp_path / "feed",
+            stage_root=tmp_path / "stage",
+            snapshot="20260101",
+        )

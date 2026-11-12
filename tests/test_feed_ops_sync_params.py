@@ -159,3 +159,14 @@ def test_only_packages_syncs_a_filtered_view_then_removes_it(seen, cfg, tmp_path
     assert call["files"] == ["avocado-repo.map", "core2_64/foo-1.0-r0.0.core2_64.rpm"]
     assert not call["deploy_dir"].exists()
     assert (deploy / "core2_64" / "bar-lib-2.1-r0.1.core2_64.rpm").exists()
+
+
+def test_view_is_removed_when_building_it_fails(seen, cfg, tmp_path) -> None:
+    deploy = _deploy(tmp_path)
+    (deploy / "avocado-repo.map").unlink()
+    params = feed_ops.SyncParams(only_packages=frozenset({"foo"}))
+
+    with pytest.raises(FileNotFoundError):
+        feed_ops.sync_then_index(cfg, tmp_path / "m.yml", params=params)
+
+    assert [p.name for p in deploy.parent.iterdir() if p.name.startswith("feed-view-")] == []

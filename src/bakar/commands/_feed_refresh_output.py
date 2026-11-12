@@ -12,6 +12,7 @@ tests patch them here and never bind a socket.
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
 import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TextIO
@@ -130,8 +131,32 @@ def _overlay_repos(result: _refresh.RefreshResult) -> list[OverlayRepo]:
     return repos
 
 
+def _is_ipv6(value: str) -> bool:
+    try:
+        return ipaddress.ip_address(value).version == 6
+    except ValueError:
+        return False
+
+
+def check_advertise(address: str | None) -> str | None:
+    """Return a refusal message when ``address`` is not a bare host, else None.
+
+    ``--advertise`` takes a host only; the port is ``--port``. A value holding
+    ``:`` that is not an IPv6 address (``myhost:9000``) would otherwise be
+    bracketed into a url that points nowhere.
+    """
+    if address is None or ":" not in address:
+        return None
+    bare = address[1:-1] if address.startswith("[") and address.endswith("]") else address
+    if _is_ipv6(bare):
+        return None
+    return f"--advertise takes a host only, got {address!r}; set the port with --port"
+
+
 def _host(address: str) -> str:
-    return f"[{address}]" if ":" in address and not address.startswith("[") else address
+    if address.startswith("[") and address.endswith("]"):
+        return address
+    return f"[{address}]" if _is_ipv6(address) else address
 
 
 def present_refresh(
@@ -161,6 +186,10 @@ def present_refresh(
         print("no repository in the delta holds packages; no stanza to print", file=err)
 
     if opts.serve:
+        refusal = check_advertise(opts.advertise)
+        if refusal is not None:
+            print(refusal, file=err)
+            return 1
         pid = start_serving(req.delta_root, port=opts.port, bind=opts.bind)
         if pid is None:
             print(

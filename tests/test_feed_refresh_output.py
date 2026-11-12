@@ -155,6 +155,30 @@ def test_ipv6_advertise_is_bracketed(tmp_path: Path, spy: Spy, capsys: pytest.Ca
     assert "url: http://[::1]:8080/2026/edge/target/qemux86-64" in capsys.readouterr().out
 
 
+def test_ipv6_advertise_literal_is_bracketed(tmp_path: Path, spy: Spy, capsys: pytest.CaptureFixture) -> None:
+    opts = _opts(tmp_path, serve=True, advertise="2001:db8::7")
+    out.present_refresh(_req(tmp_path), _result(tmp_path), opts)  # type: ignore[arg-type]
+    assert "url: http://[2001:db8::7]:8080/2026/edge/target/qemux86-64" in capsys.readouterr().out
+
+
+def test_hostname_advertise_is_not_bracketed(tmp_path: Path, spy: Spy, capsys: pytest.CaptureFixture) -> None:
+    opts = _opts(tmp_path, serve=True, advertise="builder.example")
+    out.present_refresh(_req(tmp_path), _result(tmp_path), opts)  # type: ignore[arg-type]
+    assert "url: http://builder.example:8080/2026/edge/target/qemux86-64" in capsys.readouterr().out
+
+
+def test_host_port_advertise_is_rejected_before_serving(
+    tmp_path: Path, spy: Spy, capsys: pytest.CaptureFixture
+) -> None:
+    opts = _opts(tmp_path, serve=True, advertise="myhost:9000")
+    rc = out.present_refresh(_req(tmp_path), _result(tmp_path), opts)  # type: ignore[arg-type]
+    cap = capsys.readouterr()
+    assert rc == 1
+    assert spy.serve_calls == []
+    assert "--advertise takes a host only" in cap.err
+    assert "[myhost:9000]" not in cap.out
+
+
 def test_run_avocado_off_runs_nothing(tmp_path: Path, spy: Spy, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[Path] = []
     monkeypatch.setattr(out, "run_avocado_commands", lambda p: calls.append(p) or AvocadoRunResult(ok=True))

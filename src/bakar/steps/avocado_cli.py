@@ -9,7 +9,9 @@ their working directory and nothing else.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import signal
 import subprocess
 from dataclasses import dataclass
@@ -24,6 +26,30 @@ AVOCADO_COMMANDS: tuple[str, ...] = ("unlock", "install", "build")
 _DEFAULT_TIMEOUT_S = 3600.0
 _DEFAULT_GRACE_S = 10.0
 _EXEC_FAILED_RC = 127
+
+_YAML_INDICATOR_START = frozenset("-?:,[]{}#&*!|>'\"%@`")
+_YAML_NON_STRING = re.compile(r"(?i)(?:~|null|true|false|yes|no|on|off|[-+]?[0-9._:]+(?:e[-+]?[0-9]+)?|0x[0-9a-f]+)")
+
+
+def _yaml_scalar(value: str) -> str:
+    """Render ``value`` as a YAML scalar, quoting only when a plain one would misparse.
+
+    A plain scalar is cut at `` #`` and rejected at ``: ``, so a path holding
+    either would corrupt the pasted stanza without any error here. Safe values
+    (the common case) stay unquoted.
+    """
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+        return json.dumps(value)
+    needs_quote = (
+        not value
+        or value[0] in _YAML_INDICATOR_START
+        or value != value.strip()
+        or ": " in value
+        or " #" in value
+        or value.endswith(":")
+        or _YAML_NON_STRING.fullmatch(value) is not None
+    )
+    return "'" + value.replace("'", "''") + "'" if needs_quote else value
 
 
 @dataclass(frozen=True)
@@ -67,7 +93,7 @@ def render_overlay_stanza(project_dir: Path, repos: Sequence[OverlayRepo]) -> st
     for repo in entries:
         rel = os.path.relpath(repo.path, project_dir)
         lines.append(f"  {repo.name}:")
-        lines.append(f"    path: {rel}")
+        lines.append(f"    path: {_yaml_scalar(rel)}")
         lines.append(f"    stages: [{', '.join(repo.stages)}]")
     return "\n".join(lines) + "\n"
 
@@ -80,7 +106,7 @@ def render_url_stanza(repos: Sequence[UrlRepo]) -> str:
     lines = ["repos:"]
     for repo in entries:
         lines.append(f"  {repo.name}:")
-        lines.append(f"    url: {repo.url}")
+        lines.append(f"    url: {_yaml_scalar(repo.url)}")
         lines.append(f"    stages: [{', '.join(repo.stages)}]")
     return "\n".join(lines) + "\n"
 
@@ -120,6 +146,12 @@ def _run_one(sub: str, project_dir: Path, timeout: float, grace: float) -> tuple
     except subprocess.TimeoutExpired:
         _terminate_group(proc, grace)
         return proc.returncode if proc.returncode is not None else -1, True
+    except KeyboardInterrupt:
+        # start_new_session detaches the child from the terminal's foreground
+        # group, so Ctrl-C reaches only this process and the child would be
+        # orphaned and keep running.
+        _terminate_group(proc, grace)
+        raise
 
 
 def run_avocado_commands(

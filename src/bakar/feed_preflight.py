@@ -283,7 +283,6 @@ def preflight(*, roots: FeedRoots | None = None, build: PreflightBuild | None = 
         results.extend(check_scripts(scripts))
     if deploy_dir is not None:
         results.append(check_build_output(deploy_dir))
-        results.append(check_map_fresh(deploy_dir))
         if build.release is not None and build.channel is not None:
             results.append(check_release_channel(deploy_dir, build.release, build.channel))
     if roots is not None:

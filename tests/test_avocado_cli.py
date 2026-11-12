@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
+import signal
 import stat
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -195,3 +199,55 @@ def test_timeout_kills_the_command_and_reports_failure(tmp_path: Path, monkeypat
     assert result.ok is False
     assert result.failed_command == "unlock"
     assert result.timed_out is True
+
+
+_AWKWARD = ["a: b", "has #hash", "it's", "-lead", "", "x:", "true", "123", "tab\there", "[x]", "@at", "100%"]
+
+
+@pytest.mark.parametrize("awkward", _AWKWARD)
+def test_overlay_stanza_round_trips_awkward_paths(tmp_path: Path, awkward: str) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    target = project / awkward if awkward else project / "plain"
+    repos = [OverlayRepo(name="d", path=target, stages=("rootfs",), package_count=1)]
+    parsed = yaml.safe_load(render_overlay_stanza(project, repos))
+    assert parsed["repos"]["d"]["path"] == os.path.relpath(target, project)
+    assert parsed["repos"]["d"]["stages"] == ["rootfs"]
+
+
+@pytest.mark.parametrize("awkward", _AWKWARD)
+def test_url_stanza_round_trips_awkward_urls(awkward: str) -> None:
+    repos = [UrlRepo(name="d", url=awkward, stages=("sdk",), package_count=1)]
+    assert yaml.safe_load(render_url_stanza(repos))["repos"]["d"]["url"] == awkward
+
+
+def test_plain_paths_stay_unquoted(tmp_path: Path) -> None:
+    repos = [OverlayRepo(name="d", path=tmp_path / "d" / "t", stages=("rootfs",), package_count=1)]
+    assert "    path: ../d/t\n" in render_overlay_stanza(tmp_path / "proj", repos)
+
+
+def test_keyboard_interrupt_terminates_the_child_group_and_reraises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    pidfile = tmp_path / "pid"
+    exe = bin_dir / "avocado"
+    exe.write_text(f'#!/bin/sh\necho $$ > "{pidfile}"\nsleep 30\n', encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+
+    def interrupt_once_running() -> None:
+        for _ in range(200):
+            if pidfile.exists() and pidfile.read_text().strip():
+                break
+            time.sleep(0.05)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    threading.Thread(target=interrupt_once_running, daemon=True).start()
+    with pytest.raises(KeyboardInterrupt):
+        run_avocado_commands(tmp_path, timeout=30, grace=1)
+
+    child = int(pidfile.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(child, 0)

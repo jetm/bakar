@@ -200,10 +200,6 @@ def sync_then_index(  # noqa: PLR0913 - existing keyword-only callers pass relea
     params = params or SyncParams()
     deploy = deploy_dir(cfg)
     view: Path | None = None
-    if params.only_packages is not None:
-        # Same parent as the deploy dir so the hardlinks stay on one filesystem.
-        view = Path(tempfile.mkdtemp(prefix="feed-view-", dir=deploy.parent))
-        deploy = feed_filter.build_filtered_view(deploy, view, params.only_packages)
     optional = {
         "feed_root": params.feed_root,
         "stage_root": params.stage_root,
@@ -215,6 +211,10 @@ def sync_then_index(  # noqa: PLR0913 - existing keyword-only callers pass relea
     lock_root = params.feed_root if params.feed_root is not None else feed.resolve_feed_root(cfg)
     try:
         with feed_lock.feed_lock(lock_root):
+            if params.only_packages is not None:
+                # Same parent as the deploy dir so the hardlinks stay on one filesystem.
+                view = Path(tempfile.mkdtemp(prefix="feed-view-", dir=deploy.parent))
+                deploy = feed_filter.build_filtered_view(deploy, view, params.only_packages)
             result = feed.sync(
                 cfg,
                 publish=feed.FeedPublish(

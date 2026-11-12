@@ -95,17 +95,23 @@ _STAMP_TASKS = ("do_package_write_rpm", "do_package_write_rpm_setscene", "do_pac
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
 
 
-def read_task_hash(stamps_dir: Path, recipe: str, pv: str) -> str | None:
-    """Read a recipe's bitbake taskhash from its stamp file names.
+def _pv_candidates(pkgv: str) -> list[str]:
+    """Stamp PV names to try for a PKGV, most specific first.
 
-    Stamps live at ``<stamps_dir>/<pkgarch>/<recipe>/<pv>.<task>.<taskhash>``.
-    The first task in ``_STAMP_TASKS`` with a stamp decides; if its stamps carry
-    more than one distinct hash the answer is ambiguous and nothing is returned.
-    Returns None when no stamp matches, so the caller keeps its explicit null
-    ``task_hash``. A hash is never invented; ``.sigdata.`` twins are not stamps.
+    Stamps are named by ``${PV}`` but the caller holds the PKGV parsed from the
+    RPM file name. They agree for release recipes; a ``+git`` recipe's PKGV is
+    ``<base>+git0+<srcrev>`` while its PV is ``<base>+git``.
     """
-    if not stamps_dir.is_dir():
-        return None
+    candidates = [pkgv]
+    if "+git" in pkgv:
+        candidates.append(pkgv.split("+git", 1)[0] + "+git")
+    if "+" in pkgv:
+        candidates.append(pkgv.split("+", 1)[0])
+    return list(dict.fromkeys(candidates))
+
+
+def _read_for_pv(stamps_dir: Path, recipe: str, pv: str) -> tuple[bool, str | None]:
+    """Return (any stamp matched, the unambiguous hash or None) for one PV."""
     found: dict[str, set[str]] = {task: set() for task in _STAMP_TASKS}
     for recipe_dir in stamps_dir.glob(f"*/{recipe}"):
         if not recipe_dir.is_dir():
@@ -118,7 +124,28 @@ def read_task_hash(stamps_dir: Path, recipe: str, pv: str) -> str | None:
     for task in _STAMP_TASKS:
         if found[task]:
             hashes = found[task]
-            return next(iter(hashes)) if len(hashes) == 1 else None
+            return True, next(iter(hashes)) if len(hashes) == 1 else None
+    return False, None
+
+
+def read_task_hash(stamps_dir: Path, recipe: str, pv: str) -> str | None:
+    """Read a recipe's bitbake taskhash from its stamp file names.
+
+    Stamps live at ``<stamps_dir>/<pkgarch>/<recipe>/<pv>.<task>.<taskhash>``.
+    ``pv`` is the version parsed from the RPM file name (the PKGV), so the
+    stamp PV candidates derived from it are tried in order; the first candidate
+    with any matching stamp decides. Within it, the first task in
+    ``_STAMP_TASKS`` with a stamp decides; if its stamps carry more than one
+    distinct hash the answer is ambiguous and nothing is returned.
+    Returns None when no stamp matches, so the caller keeps its explicit null
+    ``task_hash``. A hash is never invented; ``.sigdata.`` twins are not stamps.
+    """
+    if not stamps_dir.is_dir():
+        return None
+    for candidate in _pv_candidates(pv):
+        matched, task_hash = _read_for_pv(stamps_dir, recipe, candidate)
+        if matched:
+            return task_hash
     return None
 
 
