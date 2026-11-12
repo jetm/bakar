@@ -66,7 +66,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 import bakar
@@ -76,7 +76,6 @@ from bakar import feed_mirror_paths as paths
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
     from typing import BinaryIO
 
 _TIMEOUT_S = 60.0
@@ -457,6 +456,31 @@ def _check_ownership(repo: str, *, source_channel: str, channel_dir: Path) -> No
         )
 
 
+def _check_root_not_synced(channel_dir: Path) -> None:
+    """Refuse a channel directory holding a repository no mirror run created.
+
+    :func:`_check_ownership` judges only the repositories this run selects, so
+    a mirror of ``target/a`` would otherwise land beside a synced
+    ``target/b`` and interleave two publishers under one head. Any repository
+    (a directory holding ``repodata/repomd.xml`` or a snapshot pointer) without
+    its own marker marks the root as not a mirror's.
+    """
+    for dirpath, dirnames, filenames in os.walk(channel_dir):
+        dirnames[:] = [d for d in dirnames if d != "_pkgs"]
+        here = Path(dirpath)
+        if here.name == _REPODATA and _REPOMD in filenames:
+            repo = here.parent
+        elif _POINTER in filenames:
+            repo = here
+        else:
+            continue
+        if not (repo / _MARKER).is_file():
+            raise MirrorError(
+                f"{repo} holds feed metadata this mirror did not create, so the root was populated by "
+                "`bakar feed sync`; choose another feed root (-w or build.feed_dir) or remove it"
+            )
+
+
 def _plan_repo(repo: str, *, source_channel: str, channel_dir: Path, allow_missing: bool = False) -> _RepoPlan | None:
     """Phase 1 for one repository: fetch, verify and parse its metadata.
 
@@ -791,6 +815,7 @@ def mirror(request: MirrorRequest) -> MirrorResult:
     # first request rather than only ahead of the first repository's.
     for repo in selected:
         _check_ownership(repo, source_channel=source_channel, channel_dir=channel_dir)
+    _check_root_not_synced(channel_dir)
 
     # Phase 1: every repository's metadata, fully validated, before any package
     # of any repository is requested. An index-derived repository whose own

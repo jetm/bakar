@@ -94,6 +94,33 @@ def test_foreign_repository_refused_with_mismatched_marker(tmp_path: Path, feed_
     assert server.requests == []
 
 
+def test_mirror_into_a_synced_root_is_refused_even_for_a_different_repository(tmp_path: Path, feed_server) -> None:
+    upstream = build_feed(tmp_path / "upstream", FeedSpec(repos={_REPO: 1}))
+    server = feed_server(upstream)
+    feed_root = tmp_path / "local-feed"
+
+    synced = _channel_dir(feed_root) / "target" / "qemux86-64"
+    (synced / "repodata").mkdir(parents=True)
+    (synced / "repodata" / "repomd.xml").write_bytes(b"synced\n")
+
+    with pytest.raises(feed_mirror.MirrorError, match="qemux86-64"):
+        feed_mirror.mirror(_request(source_url=server.url, feed_root=feed_root))
+
+    assert server.requests == []
+    assert not (_channel_dir(feed_root) / _REPO).exists()
+
+
+def test_mirror_beside_another_mirrored_repository_is_accepted(tmp_path: Path, feed_server) -> None:
+    upstream = build_feed(tmp_path / "upstream", FeedSpec(repos={_REPO: 1, "target/m2": 1}))
+    server = feed_server(upstream)
+    feed_root = tmp_path / "local-feed"
+
+    feed_mirror.mirror(_request(source_url=server.url, feed_root=feed_root, repo="target/m2"))
+    result = feed_mirror.mirror(_request(source_url=server.url, feed_root=feed_root))
+
+    assert result.repos[0].repo == _REPO
+
+
 def test_same_source_remirror_succeeds_and_picks_up_a_changed_package(tmp_path: Path, feed_server) -> None:
     upstream = build_feed(tmp_path / "upstream", FeedSpec(repos={_REPO: 2}))
     server = feed_server(upstream)
