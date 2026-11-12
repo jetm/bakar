@@ -65,7 +65,7 @@ def parse_nevra(filename: str) -> Nevra:
 class RecipeEntry:
     recipe: str
     packages: list[str]
-    layer: str | None
+    layer: str
     epoch: int
     pv: str
     pr: str
@@ -154,7 +154,7 @@ def entry_from_package_files(  # noqa: PLR0913 - keyword-only fields of one reco
     recipe: str,
     package_files: list[str],
     packages: list[str],
-    layer: str | None,
+    layer: str,
     epoch: int,
     srcrev: str | None,
     layer_commit: str | None,

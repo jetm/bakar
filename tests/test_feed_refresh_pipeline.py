@@ -114,7 +114,7 @@ class World:
         return SimpleNamespace(exit_code=self.build_exit, run_id="run-1")
 
     def run(self, req: refresh.RefreshRequest | None = None, **kw: object) -> refresh.RefreshResult:
-        return refresh.run_refresh(req or self.req, builder=self.builder, recipe_exists=lambda _c, _r: True, **kw)  # type: ignore[arg-type]
+        return refresh.run_refresh(req or self.req, builder=self.builder, **kw)  # type: ignore[arg-type]
 
 
 @pytest.fixture
@@ -221,22 +221,21 @@ def test_unknown_recipe_fails_before_build_and_names_it(world: World) -> None:
         refresh.run_refresh(
             _with(world, recipes=("htop", "nosuch")),
             builder=world.builder,
-            recipe_exists=lambda _c, r: r != "nosuch",
         )
     assert world.build_calls == []
     assert not world.req.delta_root.exists()
 
 
-def test_layer_has_recipe_matches_exact_and_versioned_names(tmp_path: Path) -> None:
+def test_find_recipe_matches_exact_and_versioned_names(tmp_path: Path) -> None:
     rdir = tmp_path / "ws" / "layers" / "meta-oe" / "recipes-support" / "htop"
     rdir.mkdir(parents=True)
     (rdir / "htop_3.5.0.bb").write_text("")
     (tmp_path / "ws" / "layers" / "meta-oe" / "recipes-support" / "nano.bb").write_text("")
     cfg = SimpleNamespace(workspace=tmp_path / "ws", bsp_root=tmp_path / "ws")
-    assert refresh.layer_has_recipe(cfg, "htop")  # type: ignore[arg-type]
-    assert refresh.layer_has_recipe(cfg, "nano")  # type: ignore[arg-type]
-    assert not refresh.layer_has_recipe(cfg, "ht")  # type: ignore[arg-type]
-    assert not refresh.layer_has_recipe(cfg, "bash")  # type: ignore[arg-type]
+    assert refresh.find_recipe(cfg, "htop") is not None  # type: ignore[arg-type]
+    assert refresh.find_recipe(cfg, "nano") is not None  # type: ignore[arg-type]
+    assert refresh.find_recipe(cfg, "ht") is None  # type: ignore[arg-type]
+    assert refresh.find_recipe(cfg, "bash") is None  # type: ignore[arg-type]
 
 
 def test_failed_build_keeps_previous_delta(world: World) -> None:
@@ -297,6 +296,9 @@ def test_missing_packages_for_a_recipe_refuses_and_keeps_delta(world: World) -> 
     world.recipe("htop")
     world.run()
     before = _delta_rpms(world)
+    ghost_dir = world.workspace / "sources" / "meta-oe" / "recipes" / "ghost"
+    ghost_dir.mkdir(parents=True)
+    (ghost_dir / "ghost_1.0.bb").write_text("")
     with pytest.raises(refresh.RefreshFailedError, match="no packages for ghost"):
         world.run(_with(world, recipes=("htop", "ghost")))
     assert _delta_rpms(world) == before
@@ -357,8 +359,8 @@ def test_find_recipe_follows_a_symlinked_layer_and_skips_tmp(tmp_path: Path) -> 
     assert found is not None
     assert found.layer == "meta-avocado"
     assert found.path.name == "foo_1.0.bb"
-    assert refresh.layer_has_recipe(cfg, "foo")  # type: ignore[arg-type]
-    assert not refresh.layer_has_recipe(cfg, "inside-tmp")  # type: ignore[arg-type]
+    assert refresh.find_recipe(cfg, "foo") is not None  # type: ignore[arg-type]
+    assert refresh.find_recipe(cfg, "inside-tmp") is None  # type: ignore[arg-type]
 
 
 def test_layer_and_srcrev_come_from_the_recipe_file_not_pkgdata(world: World) -> None:
@@ -374,21 +376,19 @@ def test_srcrev_is_none_for_a_release_version(world: World) -> None:
     assert entry.srcrev is None
 
 
-def test_layer_is_null_when_the_recipe_cannot_be_located(world: World) -> None:
+def test_layer_commit_is_null_when_git_and_the_collector_cannot_answer(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
     world.recipe("htop")
-    (entry,) = refresh.run_refresh(
-        world.req,
-        builder=world.builder,
-        recipe_exists=lambda _c, _r: True,
-        locate_recipe=lambda _c, _r: None,
-    ).entries
-    assert (entry.layer, entry.layer_commit) == (None, None)
+    monkeypatch.setattr(layers, "collect_layer_hashes", lambda _cfg: [])
+    (entry,) = world.run().entries
+    assert (entry.layer, entry.layer_commit) == ("meta-oe", None)
     (written,) = json.loads(
         (
             feed.channel_root(world.req.delta_root, release="2026", channel="edge") / feed_delta.RECIPE_MAP_NAME
         ).read_text()
     )["entries"]
-    assert (written["layer"], written["layer_commit"]) == (None, None)
+    assert (written["layer"], written["layer_commit"]) == ("meta-oe", None)
 
 
 def _delta_files(w: World) -> dict[str, bytes]:
@@ -530,7 +530,7 @@ def test_find_recipe_reads_layers_from_bblayers_conf(tmp_path: Path) -> None:
     assert foo.repo_path.name == "meta-avocado"
     assert foo.repo_path.parent.name == "wrynose"
     assert refresh.find_recipe(cfg, "stray") is None  # type: ignore[arg-type]
-    assert not refresh.layer_has_recipe(cfg, "bash")  # type: ignore[arg-type]
+    assert refresh.find_recipe(cfg, "bash") is None  # type: ignore[arg-type]
 
 
 def test_layer_commit_is_the_layer_repository_head(tmp_path: Path) -> None:
@@ -548,7 +548,7 @@ def test_unknown_recipe_with_no_bblayers_conf_names_the_unbuilt_directory(world:
     world.cfg.bblayers_conf = world.workspace / "build-x" / "build" / "conf" / "bblayers.conf"
 
     with pytest.raises(refresh.RefreshFailedError, match=r"bblayers\.conf does not exist.*BAKAR_WORKTREE_BUILD_DIR"):
-        refresh.run_refresh(world.req, builder=world.builder, recipe_exists=lambda _c, _r: False)
+        refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: [])
 
     assert world.build_calls == []
 
@@ -655,9 +655,138 @@ def test_entry_layer_is_the_layer_repository_name_not_the_layer_directory(world:
     (entry,) = refresh.run_refresh(
         world.req,
         builder=world.builder,
-        recipe_exists=lambda _c, _r: True,
-        locate_recipe=lambda _c, _r: loc,
+        locate_recipe=lambda _c, _r: [loc],
     ).entries
 
     assert loc.layer == "meta-oe"
     assert entry.layer == "meta-openembedded"
+
+
+def _mirror_marker_during_build(w: World, root: Path) -> None:
+    chan = feed.channel_root(root, release="2026", channel="edge") / "target" / "qemux86-64"
+
+    def plant() -> None:
+        chan.mkdir(parents=True, exist_ok=True)
+        (chan / feed.MIRROR_MARKER).write_text("{}")
+
+    w.during_build.append(plant)
+
+
+@pytest.mark.parametrize("which", ["delta_root", "work_root"])
+def test_mirror_aimed_at_the_channel_during_the_build_is_not_wiped(world: World, which: str) -> None:
+    world.recipe("htop")
+    _mirror_marker_during_build(world, getattr(world.req, which))
+
+    with pytest.raises(refresh.RefreshRefusedError, match="mirror"):
+        world.run()
+
+    marker = (
+        feed.channel_root(getattr(world.req, which), release="2026", channel="edge")
+        / "target"
+        / "qemux86-64"
+        / feed.MIRROR_MARKER
+    )
+    assert marker.is_file()
+
+
+def test_target_only_recipe_leaves_no_sdk_directory(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    world.recipe("htop")
+    real_sync = refresh.feed.sync
+
+    def sync_with_sdk(cfg: object, **kw: object) -> dict:
+        result = real_sync(cfg, **kw)  # type: ignore[arg-type]
+        chan = result["channel_root"]
+        (chan / "sdk" / "qemux86-64" / "repodata").mkdir(parents=True)
+        (chan / "sdk" / "qemux86-64" / "repodata" / "pooled-primary.xml.gz").write_bytes(b"pooled")
+        return {**result, "repos": [*result["repos"], "sdk/qemux86-64"]}
+
+    monkeypatch.setattr(refresh.feed, "sync", sync_with_sdk)
+
+    result = world.run()
+
+    assert not (result.channel_dir / "sdk").exists()
+    assert result.sync["repos"] == ["target/qemux86-64"]
+    assert (result.channel_dir / "target" / "qemux86-64" / "core2_64" / "htop-1.0-r0.1.core2_64.rpm").is_file()
+
+
+def _two_layer_loc(world: World) -> list[refresh.RecipeLocation]:
+    out = []
+    for name in ("meta-first", "meta-second"):
+        repo = world.workspace / name
+        (repo / "recipes").mkdir(parents=True, exist_ok=True)
+        out.append(refresh.RecipeLocation(path=repo / "recipes" / "htop_1.0.bb", layer=name, repo_path=repo))
+    return out
+
+
+def test_recipe_in_several_layers_records_the_first_and_warns_naming_all(world: World) -> None:
+    world.recipe("htop")
+    locs = _two_layer_loc(world)
+
+    result = refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs)
+
+    (entry,) = result.entries
+    assert entry.layer == "meta-first"
+    (warning,) = result.warnings
+    assert "htop" in warning
+    assert "meta-first" in warning
+    assert "meta-second" in warning
+
+
+def test_recipe_in_several_layers_prefers_the_layer_of_the_built_recipe_file(world: World) -> None:
+    world.recipe("htop")
+    locs = _two_layer_loc(world)
+    pkgdata = world.tmpdir / "pkgdata" / "avocado-qemux86-64" / "htop"
+    pkgdata.write_text(pkgdata.read_text() + f"FILE_DIRNAME: {locs[1].path.parent}\n")
+
+    (entry,) = refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs).entries
+
+    assert entry.layer == "meta-second"
+
+
+def test_recipe_in_one_layer_has_no_warning(world: World) -> None:
+    world.recipe("htop")
+    assert world.run().warnings == ()
+
+
+def test_unreadable_pkgdata_refuses_and_keeps_the_previous_delta(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    world.recipe("htop")
+    world.run()
+    before = _delta_files(world)
+
+    def deny(_path: Path) -> dict[str, str]:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(refresh, "_read_pkgdata", deny)
+
+    with pytest.raises(refresh.RefreshFailedError, match="previous delta is untouched"):
+        world.run()
+
+    assert _delta_files(world) == before
+
+
+def test_scratch_directory_failure_refuses_and_keeps_the_previous_delta(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.recipe("htop")
+
+    def full_disk(**_kw: object) -> str:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(refresh.tempfile, "mkdtemp", full_disk)
+
+    with pytest.raises(refresh.RefreshFailedError, match="previous delta is untouched"):
+        world.run()
+
+
+def test_locate_runs_once_per_recipe(world: World) -> None:
+    world.recipe("htop")
+    calls: list[str] = []
+    locs = _two_layer_loc(world)[:1]
+
+    def locate(_cfg: object, recipe: str) -> list[refresh.RecipeLocation]:
+        calls.append(recipe)
+        return locs
+
+    refresh.run_refresh(world.req, builder=world.builder, locate_recipe=locate)  # type: ignore[arg-type]
+
+    assert calls == ["htop"]

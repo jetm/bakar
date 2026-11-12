@@ -152,9 +152,11 @@ name (the `PKGR` value in the runtime package data, for example `r0.1` with the
 PR-server suffix), not the recipe's own `PR`. `task_hash` is the bitbake
 taskhash read from the build's stamps and is written as `null` when it cannot be
 read unambiguously; the comparison between two builds of a recipe then falls
-back to `epoch`, `pv`, `pr`, `srcrev` and the layer commit. `layer` and
-`layer_commit` are written as `null` when the recipe file or the layer's commit
-cannot be found, never as an empty string.
+back to `epoch`, `pv`, `pr`, `srcrev` and the layer commit. `layer_commit` is written as `null`
+when the layer repository's commit cannot be determined, never as an empty
+string. A recipe that several layers provide is recorded under the layer
+holding the built recipe's own file when pkgdata names it, else the first
+layer, and the refresh prints a warning naming every layer.
 
 **Guards.** Each of these refuses with exit `1` before anything is written, or
 (for the build-dependent ones) before the delta is wiped, and names the way out:

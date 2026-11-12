@@ -407,6 +407,8 @@ def refresh(
         console.print(f"feed refresh failed: {feed_ops.describe_failure(exc)}")
         raise typer.Exit(code=1) from exc
 
+    for warning in result.warnings:
+        console.print(f"warning: {markup_safe(warning)}")
     code = _feed_refresh_output.present_refresh(request, result, opts)
     if code:
         raise typer.Exit(code=code)

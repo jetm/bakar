@@ -191,6 +191,7 @@ class RefreshResult:
     recipes: tuple[str, ...]
     sync: dict[str, object]
     entries: list[feed_delta.RecipeEntry]
+    warnings: tuple[str, ...] = ()
 
 
 _LAYER_DIRS = ("layers", "sources")
@@ -279,31 +280,41 @@ def _convention_layers(cfg: BuildConfig) -> list[tuple[str, Path, Path]]:
     return found or [(cfg.bsp_root.name, cfg.bsp_root.resolve(), cfg.bsp_root.resolve())]
 
 
-def find_recipe(cfg: BuildConfig, recipe: str) -> RecipeLocation | None:
-    """Locate ``<recipe>.bb`` or ``<recipe>_<version>.bb`` in the build's layers.
+def find_recipes(cfg: BuildConfig, recipe: str) -> list[RecipeLocation]:
+    """Locate ``<recipe>.bb`` or ``<recipe>_<version>.bb`` in every layer that provides it.
 
-    The layers come from ``bblayers.conf``; the ``layers/`` and ``sources/``
-    conventions are used only when that file does not exist.
+    One location per layer, in layer order. The layers come from
+    ``bblayers.conf``; the ``layers/`` and ``sources/`` conventions are used
+    only when that file does not exist.
     """
     exact, prefix = f"{recipe}.bb", f"{recipe}_"
+    found: list[RecipeLocation] = []
     for layer, layer_dir, repo in _bblayers_layers(cfg) or _convention_layers(cfg):
-        visited: set[str] = set()
-        for dirpath, dirnames, filenames in os.walk(layer_dir, followlinks=True):
-            real = os.path.realpath(dirpath)
-            if real in visited:
-                dirnames[:] = []
-                continue
-            visited.add(real)
-            dirnames[:] = sorted(d for d in dirnames if not _is_pruned(d))
-            for name in sorted(filenames):
-                if name == exact or (name.startswith(prefix) and name.endswith(".bb")):
-                    return RecipeLocation(path=Path(dirpath) / name, layer=layer, repo_path=repo)
+        hit = _recipe_in_layer(layer_dir, exact, prefix)
+        if hit is not None:
+            found.append(RecipeLocation(path=hit, layer=layer, repo_path=repo))
+    return found
+
+
+def _recipe_in_layer(layer_dir: Path, exact: str, prefix: str) -> Path | None:
+    visited: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(layer_dir, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in visited:
+            dirnames[:] = []
+            continue
+        visited.add(real)
+        dirnames[:] = sorted(d for d in dirnames if not _is_pruned(d))
+        for name in sorted(filenames):
+            if name == exact or (name.startswith(prefix) and name.endswith(".bb")):
+                return Path(dirpath) / name
     return None
 
 
-def layer_has_recipe(cfg: BuildConfig, recipe: str) -> bool:
-    """True when :func:`find_recipe` finds the recipe in the workspace layers."""
-    return find_recipe(cfg, recipe) is not None
+def find_recipe(cfg: BuildConfig, recipe: str) -> RecipeLocation | None:
+    """The first layer that provides the recipe, else None."""
+    found = find_recipes(cfg, recipe)
+    return found[0] if found else None
 
 
 def _read_pkgdata(path: Path) -> dict[str, str]:
@@ -320,6 +331,7 @@ def _read_pkgdata(path: Path) -> dict[str, str]:
 class RecipePkgdata:
     packages: list[str]
     epoch: int
+    recipe_dir: Path | None = None
 
 
 def read_recipe_pkgdata(tmpdir: Path, recipe: str) -> RecipePkgdata:
@@ -335,6 +347,7 @@ def read_recipe_pkgdata(tmpdir: Path, recipe: str) -> RecipePkgdata:
     if not recipe_files:
         return RecipePkgdata(packages=[recipe], epoch=0)
     data = _read_pkgdata(recipe_files[0])
+    dirname = data.get("FILE_DIRNAME", "").strip()
     runtime = recipe_files[0].parent / "runtime"
     names: list[str] = []
     epoch = 0
@@ -348,7 +361,7 @@ def read_recipe_pkgdata(tmpdir: Path, recipe: str) -> RecipePkgdata:
                 epoch = int(rt_data["PKGE"])
         if rpm_name not in names:
             names.append(rpm_name)
-    return RecipePkgdata(packages=names, epoch=epoch)
+    return RecipePkgdata(packages=names, epoch=epoch, recipe_dir=Path(dirname) if dirname else None)
 
 
 def _layer_commit(loc: RecipeLocation, hashes: list[layers.LayerHash]) -> str | None:
@@ -465,7 +478,7 @@ def _createrepo(repo: Path) -> None:
     subprocess.run(["createrepo_c", "--general-compress-type", "gz", str(repo)], check=True)
 
 
-def make_repos_self_contained(channel_dir: Path, stage_channel: Path, sync: dict[str, object]) -> None:
+def make_repos_self_contained(channel_dir: Path, stage_channel: Path, sync: dict[str, object]) -> list[str]:
     """Replace the pooled repositories ``feed.sync`` rendered with self-contained ones.
 
     ``render-pool-local`` writes ``repodata/`` whose ``location_href`` points at
@@ -477,24 +490,44 @@ def make_repos_self_contained(channel_dir: Path, stage_channel: Path, sync: dict
     ``createrepo_c`` metadata with hrefs relative to the repository directory, and
     the channel's ``_pkgs`` pool is dropped. The ordinary ``feed sync`` is not
     routed through here and keeps the pooled layout.
+
+    A repository the build staged no RPMs for (the ``sdk`` repository of a
+    target-only recipe) is removed rather than left as an empty one, and is
+    left out of the returned list of repositories that now exist.
     """
     snapshot = sync.get("snapshot")
+    kept_roots: list[str] = []
     for root in (str(r) for r in cast("list[object]", sync.get("repos", []))):
         staged = stage_channel / root
         rpms = sorted(staged.rglob("*.rpm")) if staged.is_dir() else []
         subpaths = [root] if not snapshot else [root, f"snapshots/{snapshot}/{root}"]
         for sub in subpaths:
             repo = channel_dir / sub
-            _wipe(repo / "repodata")
             if not rpms:
+                _wipe(repo)
+                _prune_empty_parents(repo.parent, channel_dir)
                 continue
+            _wipe(repo / "repodata")
             for rpm in rpms:
                 dest = repo / rpm.relative_to(staged)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.unlink(missing_ok=True)
                 feed_filter._link_or_copy(rpm, dest)
             _createrepo(repo)
+        if rpms:
+            kept_roots.append(root)
     _wipe(channel_dir / "_pkgs")
+    return kept_roots
+
+
+def _prune_empty_parents(path: Path, stop: Path) -> None:
+    """Remove ``path`` and its parents up to, not including, ``stop`` while each is empty."""
+    while path != stop and stop in path.parents:
+        try:
+            path.rmdir()
+        except OSError:
+            return
+        path = path.parent
 
 
 def target_slug(machine: str, deploy: Path) -> str:
@@ -569,17 +602,28 @@ def _build_entries(
     rpms: dict[str, list[str]],
     tmpdir: Path,
     machine: str,
-    locate: Callable[[BuildConfig, str], RecipeLocation | None],
-) -> list[feed_delta.RecipeEntry]:
-    """Build and validate every recipe entry. Raises before anything is published."""
+    locations: dict[str, list[RecipeLocation]],
+) -> tuple[list[feed_delta.RecipeEntry], tuple[str, ...]]:
+    """Build and validate every recipe entry, and name recipes several layers provide.
+
+    Raises before anything is published. Of several layers providing a recipe,
+    the one holding the built recipe's own file (pkgdata ``FILE_DIRNAME``) is
+    recorded when that path is readable, else the first layer.
+    """
     hashes = layers.collect_layer_hashes(req.cfg)
     entries = []
+    warnings: list[str] = []
     for recipe in recipes:
         pd = pkgdata[recipe]
         names = [n for n in pd.packages if n in rpms]
         files = [f for n in names for f in rpms[n]]
-        loc = locate(req.cfg, recipe)
-        layer, commit = (loc.repo_path.name, _layer_commit(loc, hashes)) if loc else (None, None)
+        candidates = locations[recipe]
+        loc = _choose_location(candidates, pd.recipe_dir)
+        layer, commit = loc.repo_path.name, _layer_commit(loc, hashes)
+        if len(candidates) > 1:
+            warnings.append(
+                f"recipe {recipe} is provided by layers {', '.join(c.layer for c in candidates)}; recorded {loc.layer}"
+            )
         try:
             probe = feed_delta.entry_from_package_files(
                 recipe=recipe,
@@ -597,15 +641,24 @@ def _build_entries(
             raise RefreshFailedError(f"{exc}; the previous delta is untouched") from exc
         task_hash = feed_delta.read_task_hash(tmpdir / "stamps", recipe, probe.pv)
         entries.append(dataclasses.replace(probe, task_hash=task_hash, srcrev=_srcrev_of(probe.pv)))
-    return entries
+    return entries, tuple(warnings)
+
+
+def _choose_location(candidates: list[RecipeLocation], recipe_dir: Path | None) -> RecipeLocation:
+    """The candidate whose recipe directory is the built recipe's, else the first."""
+    if recipe_dir is not None:
+        built = os.path.realpath(recipe_dir)
+        for cand in candidates:
+            if os.path.realpath(cand.path.parent) == built:
+                return cand
+    return candidates[0]
 
 
 def run_refresh(
     req: RefreshRequest,
     *,
     builder: Callable[..., BuildResult] | None = None,
-    recipe_exists: Callable[[BuildConfig, str], bool] = layer_has_recipe,
-    locate_recipe: Callable[[BuildConfig, str], RecipeLocation | None] = find_recipe,
+    locate_recipe: Callable[[BuildConfig, str], list[RecipeLocation]] = find_recipes,
 ) -> RefreshResult:
     """Build the named recipes and replace the delta with exactly their packages.
 
@@ -641,7 +694,8 @@ def run_refresh(
         scripts = feed_ops.scripts_dir(req.kas_yaml)
         if scripts is None:
             raise RefreshFailedError(f"meta-avocado scripts not found for {req.kas_yaml}; nothing was built")
-        unknown = [r for r in recipes if not recipe_exists(req.cfg, r)]
+        locations = {r: locate_recipe(req.cfg, r) for r in recipes}
+        unknown = [r for r in recipes if not locations[r]]
         if unknown:
             conf = getattr(req.cfg, "bblayers_conf", None)
             hint = ""
@@ -664,9 +718,14 @@ def run_refresh(
                 f"build failed (exit {result.exit_code}, run {result.run_id}); the previous delta is untouched"
             )
 
-        pkgdata = {r: read_recipe_pkgdata(tmpdir, r) for r in recipes}
-        own_names = frozenset(n for pd in pkgdata.values() for n in pd.packages)
-        stale = _stale_map_message(deploy, own_names, before)
+        try:
+            pkgdata = {r: read_recipe_pkgdata(tmpdir, r) for r in recipes}
+            own_names = frozenset(n for pd in pkgdata.values() for n in pd.packages)
+            stale = _stale_map_message(deploy, own_names, before)
+        except OSError as exc:
+            raise RefreshFailedError(
+                f"could not read the build output: {exc}; the previous delta is untouched"
+            ) from exc
         if stale:
             raise RefreshFailedError(f"{stale}; the previous delta is untouched")
         rpms = _rpm_files(deploy)
@@ -675,21 +734,26 @@ def run_refresh(
             raise RefreshFailedError(
                 f"the build produced no packages for {', '.join(missing)}; the previous delta is untouched"
             )
-        entries = _build_entries(
+        entries, warnings = _build_entries(
             req,
             recipes=recipes,
             pkgdata=pkgdata,
             rpms=rpms,
             tmpdir=tmpdir,
             machine=target_slug(req.cfg.machine, deploy),
-            locate=locate_recipe,
+            locations=locations,
         )
 
         channel_dir = feed.channel_root(req.delta_root, release=req.release, channel=req.channel)
         stage_dir = feed.channel_root(req.work_root, release=req.release, channel=req.channel)
         new_delta, new_stage = _sibling(req.delta_root, ".new"), _sibling(req.work_root, ".new")
         kept = {f for n in own_names for f in rpms.get(n, [])}
-        view = Path(tempfile.mkdtemp(prefix="feed-view-", dir=deploy.parent))
+        try:
+            view = Path(tempfile.mkdtemp(prefix="feed-view-", dir=deploy.parent))
+        except OSError as exc:
+            raise RefreshFailedError(
+                f"could not create a scratch directory: {exc}; the previous delta is untouched"
+            ) from exc
         for fresh in (new_delta, new_stage):
             _wipe(fresh)
         try:
@@ -714,11 +778,14 @@ def run_refresh(
             )
             new_channel = feed.channel_root(new_delta, release=req.release, channel=req.channel)
             new_channel.mkdir(parents=True, exist_ok=True)
-            make_repos_self_contained(
-                new_channel,
-                feed.channel_root(new_stage, release=req.release, channel=req.channel),
-                sync,
-            )
+            sync = {
+                **sync,
+                "repos": make_repos_self_contained(
+                    new_channel,
+                    feed.channel_root(new_stage, release=req.release, channel=req.channel),
+                    sync,
+                ),
+            }
             feed_delta.write_recipe_map(new_channel, entries)
             feed_delta.write_delta(
                 new_channel,
@@ -731,8 +798,14 @@ def run_refresh(
             )
             new_stage_channel = feed.channel_root(new_stage, release=req.release, channel=req.channel)
             new_stage_channel.mkdir(parents=True, exist_ok=True)
+            # A mirror can be pointed at an absent delta channel while the build runs;
+            # the entry guards saw nothing there, so look again before replacing it.
+            check_no_mirror_markers(channel_dir)
+            check_no_mirror_markers(stage_dir)
             _swap_all([(new_channel, channel_dir), (new_stage_channel, stage_dir)])
         finally:
             for scratch in (view, new_delta, new_stage):
                 _wipe(scratch)
-    return RefreshResult(channel_dir=channel_dir, run_id=result.run_id, recipes=recipes, sync=sync, entries=entries)
+    return RefreshResult(
+        channel_dir=channel_dir, run_id=result.run_id, recipes=recipes, sync=sync, entries=entries, warnings=warnings
+    )
