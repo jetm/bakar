@@ -917,6 +917,26 @@ def test_refresh_base_snapshot_is_not_taken_from_the_local_synced_feed(
     assert request.base_snapshot_id is None
 
 
+@pytest.mark.parametrize(
+    "error", [PermissionError(13, "Permission denied", "/x/pkgdata"), OSError(28, "No space left on device")]
+)
+def test_refresh_os_error_prints_a_message_not_a_traceback(cli: CliRunner, cfg, tmp_path: Path, error: OSError) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    resolve, run, preflight, port, present = _refresh_patches(cfg)
+
+    with resolve, run as ran, preflight, port, present:
+        ran.side_effect = error
+        result = cli.invoke(
+            app, ["feed", "refresh", str(_yaml(tmp_path)), "--recipe", "busybox", "--project", str(project)]
+        )
+
+    assert result.exit_code == 1
+    assert "feed refresh failed" in result.output
+    assert str(error.strerror) in result.output
+    assert not isinstance(result.exception, OSError)
+
+
 def test_refresh_bad_advertise_fails_before_resolving_or_building(cli: CliRunner, cfg, tmp_path: Path) -> None:
     project = tmp_path / "proj"
     project.mkdir()

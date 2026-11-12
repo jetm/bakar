@@ -403,8 +403,8 @@ def refresh(
     except (_feed_refresh.RefreshRefusedError, _feed_refresh.RefreshFailedError) as exc:
         console.print(f"feed refresh failed: {markup_safe(str(exc))}")
         raise typer.Exit(code=1) from exc
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        console.print(f"feed refresh failed: {feed_ops.describe_failure(exc)}")
+    except (subprocess.CalledProcessError, OSError) as exc:
+        console.print(f"feed refresh failed: {markup_safe(feed_ops.describe_failure(exc))}")
         raise typer.Exit(code=1) from exc
 
     for warning in result.warnings:

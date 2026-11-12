@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from bakar import feed, feed_delta, feed_filter, feed_ops, feed_preflight, layers, run_discovery
+from bakar import feed, feed_delta, feed_filter, feed_lock, feed_ops, feed_preflight, layers, run_discovery
 from bakar.commands import bitbake as bitbake_cmd
 from bakar.gitutil import run_git
 from bakar.kas import _bblayers_bodies
@@ -338,7 +338,6 @@ def _read_pkgdata(path: Path) -> dict[str, str]:
 class RecipePkgdata:
     packages: list[str]
     epoch: int
-    recipe_dir: Path | None = None
 
 
 def read_recipe_pkgdata(tmpdir: Path, recipe: str) -> RecipePkgdata:
@@ -354,7 +353,6 @@ def read_recipe_pkgdata(tmpdir: Path, recipe: str) -> RecipePkgdata:
     if not recipe_files:
         return RecipePkgdata(packages=[recipe], epoch=0)
     data = _read_pkgdata(recipe_files[0])
-    dirname = data.get("FILE_DIRNAME", "").strip()
     runtime = recipe_files[0].parent / "runtime"
     names: list[str] = []
     epoch = 0
@@ -368,7 +366,7 @@ def read_recipe_pkgdata(tmpdir: Path, recipe: str) -> RecipePkgdata:
                 epoch = int(rt_data["PKGE"])
         if rpm_name not in names:
             names.append(rpm_name)
-    return RecipePkgdata(packages=names, epoch=epoch, recipe_dir=Path(dirname) if dirname else None)
+    return RecipePkgdata(packages=names, epoch=epoch)
 
 
 def _layer_commit(loc: RecipeLocation, hashes: list[layers.LayerHash]) -> str | None:
@@ -613,9 +611,11 @@ def _build_entries(
 ) -> tuple[list[feed_delta.RecipeEntry], tuple[str, ...]]:
     """Build and validate every recipe entry, and name recipes several layers provide.
 
-    Raises before anything is published. Of several layers providing a recipe,
-    the one holding the built recipe's own file (pkgdata ``FILE_DIRNAME``) is
-    recorded when that path is readable, else the first layer.
+    Raises before anything is published. Pkgdata carries no recipe path
+    (``PKGDATA_VARS`` has no ``FILE_DIRNAME``), so when several layers provide a
+    recipe the built one cannot be told apart: the first layer's name is
+    recorded, ``layer_commit`` is null rather than a guess, and a warning names
+    every layer.
     """
     hashes = layers.collect_layer_hashes(req.cfg)
     entries = []
@@ -625,11 +625,13 @@ def _build_entries(
         names = [n for n in pd.packages if n in rpms]
         files = [f for n in names for f in rpms[n]]
         candidates = locations[recipe]
-        loc = _choose_location(candidates, pd.recipe_dir)
+        loc = candidates[0]
         layer, commit = loc.repo_path.name, _layer_commit(loc, hashes)
         if len(candidates) > 1:
+            commit = None
             warnings.append(
-                f"recipe {recipe} is provided by layers {', '.join(c.layer for c in candidates)}; recorded {loc.layer}"
+                f"recipe {recipe} is provided by layers {', '.join(c.layer for c in candidates)}; "
+                f"recorded layer {loc.layer} with a null layer_commit because the built one cannot be told apart"
             )
         try:
             probe = feed_delta.entry_from_package_files(
@@ -649,16 +651,6 @@ def _build_entries(
         task_hash = feed_delta.read_task_hash(tmpdir / "stamps", recipe, probe.pv)
         entries.append(dataclasses.replace(probe, task_hash=task_hash, srcrev=_srcrev_of(probe.pv)))
     return entries, tuple(warnings)
-
-
-def _choose_location(candidates: list[RecipeLocation], recipe_dir: Path | None) -> RecipeLocation:
-    """The candidate whose recipe directory is the built recipe's, else the first."""
-    if recipe_dir is not None:
-        built = os.path.realpath(recipe_dir)
-        for cand in candidates:
-            if os.path.realpath(cand.path.parent) == built:
-                return cand
-    return candidates[0]
 
 
 def run_refresh(
@@ -805,11 +797,17 @@ def run_refresh(
             )
             new_stage_channel = feed.channel_root(new_stage, release=req.release, channel=req.channel)
             new_stage_channel.mkdir(parents=True, exist_ok=True)
-            # A mirror can be pointed at an absent delta channel while the build runs;
-            # the entry guards saw nothing there, so look again before replacing it.
-            check_no_mirror_markers(channel_dir)
-            check_no_mirror_markers(stage_dir)
-            _swap_all([(new_channel, channel_dir), (new_stage_channel, stage_dir)])
+            # A `bakar feed mirror` aimed at these roots writes no marker until its last
+            # phase, so the marker check alone can miss one that is still downloading.
+            # Take the lock the mirror holds for its whole run, then look again; the
+            # check stays as defence in depth for a mirror that finished meanwhile.
+            try:
+                with feed_lock.feed_lock(req.delta_root), feed_lock.feed_lock(req.work_root):
+                    check_no_mirror_markers(channel_dir)
+                    check_no_mirror_markers(stage_dir)
+                    _swap_all([(new_channel, channel_dir), (new_stage_channel, stage_dir)])
+            except feed_lock.FeedLockTimeout as exc:
+                raise RefreshFailedError(f"{exc}; the previous delta is untouched") from exc
         finally:
             for scratch in (view, new_delta, new_stage):
                 _wipe(scratch)

@@ -732,15 +732,17 @@ def test_recipe_in_several_layers_records_the_first_and_warns_naming_all(world: 
     assert "meta-second" in warning
 
 
-def test_recipe_in_several_layers_prefers_the_layer_of_the_built_recipe_file(world: World) -> None:
+def test_recipe_in_several_layers_writes_a_null_layer_commit(world: World) -> None:
+    # pkgdata carries no recipe path (PKGDATA_VARS has no FILE_DIRNAME), so the
+    # providing layer cannot be told apart and no commit is guessed.
     world.recipe("htop")
     locs = _two_layer_loc(world)
-    pkgdata = world.tmpdir / "pkgdata" / "avocado-qemux86-64" / "htop"
-    pkgdata.write_text(pkgdata.read_text() + f"FILE_DIRNAME: {locs[1].path.parent}\n")
 
-    (entry,) = refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs).entries
+    result = refresh.run_refresh(world.req, builder=world.builder, locate_recipe=lambda _c, _r: locs)
 
-    assert entry.layer == "meta-second"
+    (entry,) = result.entries
+    assert (entry.layer, entry.layer_commit) == ("meta-first", None)
+    assert "layer_commit" in result.warnings[0]
 
 
 def test_recipe_in_one_layer_has_no_warning(world: World) -> None:
@@ -768,6 +770,9 @@ def test_scratch_directory_failure_refuses_and_keeps_the_previous_delta(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     world.recipe("htop")
+    world.run()
+    before = _delta_files(world)
+    assert before
 
     def full_disk(**_kw: object) -> str:
         raise OSError(28, "No space left on device")
@@ -776,6 +781,55 @@ def test_scratch_directory_failure_refuses_and_keeps_the_previous_delta(
 
     with pytest.raises(refresh.RefreshFailedError, match="previous delta is untouched"):
         world.run()
+
+    assert _delta_files(world) == before
+
+
+_HOLDER = (
+    "import fcntl, os, sys\n"
+    "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)\n"
+    "fcntl.lockf(fd, fcntl.LOCK_EX)\n"
+    "print('locked', flush=True)\n"
+    "sys.stdin.read()\n"
+)
+
+
+@pytest.mark.parametrize("which", ["delta_root", "work_root"])
+def test_refresh_does_not_swap_while_a_mirror_holds_the_root_lock(
+    world: World, monkeypatch: pytest.MonkeyPatch, which: str
+) -> None:
+    import subprocess
+    import sys
+
+    world.recipe("htop")
+    world.run()
+    before = _delta_files(world)
+    monkeypatch.setenv("BAKAR_FEED_LOCK_TIMEOUT", "0")
+    root: Path = getattr(world.req, which)
+    holders: list[subprocess.Popen[str]] = []
+
+    def hold() -> None:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _HOLDER, str(root / ".bakar-feed.lock")],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        holders.append(proc)
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == "locked"
+
+    world.during_build.append(hold)
+    try:
+        with pytest.raises(refresh.RefreshFailedError, match="locked by another bakar process"):
+            world.run()
+    finally:
+        for proc in holders:
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=10)
+
+    assert _delta_files(world) == before
 
 
 def test_locate_runs_once_per_recipe(world: World) -> None:
