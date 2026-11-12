@@ -440,3 +440,85 @@ def test_dependency_rewritten_in_this_run_is_not_counted_either(world: World) ->
     world.run()
 
     assert _delta_rpms(world) == ["htop-1.0-r0.1.core2_64.rpm"]
+
+
+def _git(repo: Path, *args: str) -> str:
+    import subprocess
+
+    done = subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout.strip()
+
+
+def _real_shape_workspace(tmp_path: Path) -> SimpleNamespace:
+    """Layers are siblings of the build directory and named by ``${TOPDIR}/../../`` tokens."""
+    ws = tmp_path / "peridio-wrynose"
+    build = ws / "build-qemux86-64-wrynose" / "build"
+    (build / "conf").mkdir(parents=True)
+    oe = ws / "meta-openembedded"
+    (oe / "meta-oe" / "recipes-support" / "htop").mkdir(parents=True)
+    (oe / "meta-oe" / "recipes-support" / "htop" / "htop_3.5.0.bb").write_text("")
+    (oe / "meta-oe" / "tmp" / "work").mkdir(parents=True)
+    (oe / "meta-oe" / "tmp" / "work" / "stray.bb").write_text("")
+    avocado = ws / ".bakar" / "worktrees" / "wrynose" / "meta-avocado"
+    (avocado / "meta-avocado" / "recipes-x" / "foo").mkdir(parents=True)
+    (avocado / "meta-avocado" / "recipes-x" / "foo" / "foo.bb").write_text("")
+    for repo in (oe, avocado):
+        _git(repo, "init", "-q")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "x")
+    (ws / "meta-atmel").mkdir()  # a layer with no recipes
+    (build / "conf" / "bblayers.conf").write_text(
+        'BBLAYERS ?= " \\\n'
+        "    ${TOPDIR}/../../meta-atmel \\\n"
+        "    ${TOPDIR}/../../.bakar/worktrees/wrynose/meta-avocado/meta-avocado \\\n"
+        "    ${TOPDIR}/../../meta-openembedded/meta-oe \\\n"
+        '    ${TOPDIR}/../../meta-gone \\\n"\n'
+    )
+    return SimpleNamespace(
+        workspace=ws,
+        bsp_root=ws / "build-qemux86-64-wrynose",
+        bblayers_conf=build / "conf" / "bblayers.conf",
+    )
+
+
+def test_find_recipe_reads_layers_from_bblayers_conf(tmp_path: Path) -> None:
+    cfg = _real_shape_workspace(tmp_path)
+
+    found = refresh.find_recipe(cfg, "htop")  # type: ignore[arg-type]
+
+    assert found is not None
+    assert found.layer == "meta-oe"
+    assert found.path == cfg.workspace.resolve() / "meta-openembedded/meta-oe/recipes-support/htop/htop_3.5.0.bb"
+    assert found.repo_path == (cfg.workspace / "meta-openembedded").resolve()
+    foo = refresh.find_recipe(cfg, "foo")  # type: ignore[arg-type]
+    assert foo is not None
+    assert foo.layer == "meta-avocado"
+    assert foo.repo_path.name == "meta-avocado"
+    assert foo.repo_path.parent.name == "wrynose"
+    assert refresh.find_recipe(cfg, "stray") is None  # type: ignore[arg-type]
+    assert not refresh.layer_has_recipe(cfg, "bash")  # type: ignore[arg-type]
+
+
+def test_layer_commit_is_the_layer_repository_head(tmp_path: Path) -> None:
+    cfg = _real_shape_workspace(tmp_path)
+    found = refresh.find_recipe(cfg, "htop")  # type: ignore[arg-type]
+    assert found is not None
+
+    commit = refresh._layer_commit(found, [])
+
+    assert commit == _git(cfg.workspace / "meta-openembedded", "rev-parse", "--short", "HEAD")
+    assert commit != ""
+
+
+def test_unknown_recipe_with_no_bblayers_conf_names_the_unbuilt_directory(world: World) -> None:
+    world.cfg.bblayers_conf = world.workspace / "build-x" / "build" / "conf" / "bblayers.conf"
+
+    with pytest.raises(refresh.RefreshFailedError, match=r"bblayers\.conf does not exist.*BAKAR_WORKTREE_BUILD_DIR"):
+        refresh.run_refresh(world.req, builder=world.builder, recipe_exists=lambda _c, _r: False)
+
+    assert world.build_calls == []

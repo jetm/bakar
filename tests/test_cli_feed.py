@@ -912,3 +912,27 @@ def test_refresh_bad_advertise_fails_before_resolving_or_building(cli: CliRunner
     ran.assert_not_called()
     resolved.assert_not_called()
     preflighted.assert_not_called()
+
+
+def test_refresh_cfg_equals_the_cfg_bakar_bitbake_resolves(
+    meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refresh must read the build directory, tmpdir and layers of the build it runs."""
+    from bakar.commands import bitbake as bitbake_cmd
+    from bakar.commands.feed import _resolve_refresh_cfg
+
+    layout = meta_avocado_worktree_layout
+    monkeypatch.setenv("BAKAR_WORKTREE_BUILD_DIR", "build-{stem}-dispatched")
+    for name in ("materialize_cache_classify_layer", "materialize_sccache_layer", "materialize_host_layer"):
+        monkeypatch.setattr(bitbake_cmd, name, lambda _cfg: None)
+
+    refresh_cfg = _resolve_refresh_cfg(layout.ws, layout.kas_yaml)
+    bitbake_cfg, _overlay, _extra = bitbake_cmd._prepare_run(
+        manifest=None, machine=None, workspace=layout.ws, kas_yaml=str(layout.kas_yaml)
+    )
+
+    assert refresh_cfg.bsp_root == layout.ws / "build-m-dispatched"
+    assert refresh_cfg.bsp_root == bitbake_cfg.bsp_root
+    assert refresh_cfg.workspace == bitbake_cfg.workspace
+    assert refresh_cfg.resolved_tmpdir == bitbake_cfg.resolved_tmpdir
+    assert refresh_cfg.bblayers_conf == bitbake_cfg.bblayers_conf

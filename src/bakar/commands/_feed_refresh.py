@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING
 
 from bakar import feed, feed_delta, feed_filter, feed_ops, feed_preflight, layers, run_discovery
 from bakar.commands import bitbake as bitbake_cmd
+from bakar.gitutil import run_git
+from bakar.kas import _bblayers_bodies
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -207,18 +209,54 @@ def _is_pruned(name: str) -> bool:
     return name == ".git" or name == "tmp" or name.startswith(("tmp-", "tmp_"))
 
 
-def _layer_repos(cfg: BuildConfig) -> list[tuple[str, Path]]:
-    """Return ``(name, resolved_path)`` for each layer repository the workspace holds.
+def _git_toplevel(path: Path) -> Path:
+    """The git repository root holding ``path``, else ``path`` itself."""
+    out = run_git(["git", "-C", str(path), "rev-parse", "--show-toplevel"])
+    if out is None or out.returncode != 0 or not out.stdout.strip():
+        return path
+    return Path(out.stdout.strip()).resolve()
 
-    Follows the ``layers/`` (bitbake-setup) and ``sources/`` (kas) conventions
-    that :func:`bakar.layers.collect_layer_hashes` reads. They are looked up
-    under the workspace and under ``bsp_root``, which differ for meta-avocado
-    (``bsp_root`` is a ``build-<stem>`` directory inside the workspace). Symlinked
-    layers are followed and de-duplicated by their real path. A BYO build with
-    neither directory scans ``bsp_root`` itself.
+
+def _bblayers_layers(cfg: BuildConfig) -> list[tuple[str, Path, Path]]:
+    """Layers named by the build's ``conf/bblayers.conf``, as ``(layer, layer_dir, repo)``.
+
+    ``${TOPDIR}`` is the build directory that holds ``conf/`` (the file's
+    grandparent), and a token such as ``${TOPDIR}/../../meta-oe`` is normalized,
+    symlinks followed, and de-duplicated by real path. ``layer`` is the layer
+    directory's name (``meta-oe``); ``repo`` is that directory's git toplevel
+    (the ``meta-openembedded`` checkout), which is what the layer commit names.
+    Returns ``[]`` when the file is absent or unreadable.
+    """
+    conf = getattr(cfg, "bblayers_conf", None)
+    if not isinstance(conf, Path) or not conf.is_file():
+        return []
+    topdir = str(conf.parent.parent)
+    try:
+        bodies = _bblayers_bodies(conf)
+    except OSError:
+        return []
+    seen: set[Path] = set()
+    found: list[tuple[str, Path, Path]] = []
+    for body in bodies:
+        for token in body.split():
+            layer_dir = Path(os.path.normpath(token.replace("${TOPDIR}", topdir))).resolve()
+            if layer_dir in seen or not layer_dir.is_dir():
+                continue
+            seen.add(layer_dir)
+            found.append((layer_dir.name, layer_dir, _git_toplevel(layer_dir)))
+    return found
+
+
+def _convention_layers(cfg: BuildConfig) -> list[tuple[str, Path, Path]]:
+    """Layer repositories under the ``layers/`` and ``sources/`` conventions, as ``(layer, dir, repo)``.
+
+    The fallback for a workspace with no ``bblayers.conf`` yet. Both the
+    workspace and ``bsp_root`` are searched, which differ for meta-avocado
+    (``bsp_root`` is a ``build-<stem>`` directory inside the workspace). A BYO
+    build with neither directory scans ``bsp_root`` itself.
     """
     seen: set[Path] = set()
-    found: list[tuple[str, Path]] = []
+    found: list[tuple[str, Path, Path]] = []
     for base in dict.fromkeys((cfg.workspace, cfg.bsp_root)):
         for dirname in _LAYER_DIRS:
             root = base / dirname
@@ -232,16 +270,20 @@ def _layer_repos(cfg: BuildConfig) -> list[tuple[str, Path]]:
                 real = entry.resolve()
                 if entry.is_dir() and real not in seen:
                     seen.add(real)
-                    found.append((entry.name, real))
-    return found or [(cfg.bsp_root.name, cfg.bsp_root.resolve())]
+                    found.append((entry.name, real, real))
+    return found or [(cfg.bsp_root.name, cfg.bsp_root.resolve(), cfg.bsp_root.resolve())]
 
 
 def find_recipe(cfg: BuildConfig, recipe: str) -> RecipeLocation | None:
-    """Locate ``<recipe>.bb`` or ``<recipe>_<version>.bb`` in the workspace's layer repositories."""
+    """Locate ``<recipe>.bb`` or ``<recipe>_<version>.bb`` in the build's layers.
+
+    The layers come from ``bblayers.conf``; the ``layers/`` and ``sources/``
+    conventions are used only when that file does not exist.
+    """
     exact, prefix = f"{recipe}.bb", f"{recipe}_"
-    for layer, repo in _layer_repos(cfg):
+    for layer, layer_dir, repo in _bblayers_layers(cfg) or _convention_layers(cfg):
         visited: set[str] = set()
-        for dirpath, dirnames, filenames in os.walk(repo, followlinks=True):
+        for dirpath, dirnames, filenames in os.walk(layer_dir, followlinks=True):
             real = os.path.realpath(dirpath)
             if real in visited:
                 dirnames[:] = []
@@ -305,16 +347,19 @@ def read_recipe_pkgdata(tmpdir: Path, recipe: str) -> RecipePkgdata:
 
 
 def _layer_commit(loc: RecipeLocation, hashes: list[layers.LayerHash]) -> str:
-    """The abbreviated commit of the layer repository holding the recipe.
+    """The abbreviated HEAD commit of the git repository holding the recipe's layer.
 
-    Prefers the bblayers-derived hash for the repository by name; a layer that
-    list does not carry (meta-avocado, whose ``bsp_root`` is a build directory)
-    is asked directly.
+    Asks git for the repository's ``rev-parse --short HEAD``, the same form
+    :func:`bakar.layers.collect_layer_hashes` records. When git cannot answer
+    (no repository), falls back to that collector's entry for the repository.
     """
+    short = layers._git_short_hash(loc.repo_path)
+    if short:
+        return short
     for h in hashes:
-        if h.repo == loc.layer:
+        if h.repo in {loc.repo_path.name, loc.layer}:
             return h.short_hash
-    return layers._git_short_hash(loc.repo_path) or ""
+    return ""
 
 
 def _srcrev_of(pv: str) -> str | None:
@@ -529,8 +574,16 @@ def run_refresh(
             raise RefreshFailedError(f"meta-avocado scripts not found for {req.kas_yaml}; nothing was built")
         unknown = [r for r in recipes if not recipe_exists(req.cfg, r)]
         if unknown:
+            conf = getattr(req.cfg, "bblayers_conf", None)
+            hint = ""
+            if isinstance(conf, Path) and not conf.is_file():
+                hint = (
+                    f" ({conf} does not exist, so the layers could not be read; this build directory has not been "
+                    "built here. A dispatched build names its directory with BAKAR_WORKTREE_BUILD_DIR - set the "
+                    "same value, or run from the worktree that built it)"
+                )
             raise RefreshFailedError(
-                f"recipe not found in the configured layers: {', '.join(unknown)}; nothing was built"
+                f"recipe not found in the configured layers: {', '.join(unknown)}{hint}; nothing was built"
             )
 
         tmpdir = req.cfg.resolved_tmpdir
