@@ -6,8 +6,9 @@ import json
 import os
 import re
 import shutil
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -16,7 +17,6 @@ from bakar.commands import _feed_refresh as refresh
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 pytestmark = pytest.mark.unit
 
@@ -695,10 +695,10 @@ def test_target_only_recipe_leaves_no_sdk_directory(world: World, monkeypatch: p
 
     def sync_with_sdk(cfg: object, **kw: object) -> dict:
         result = real_sync(cfg, **kw)  # type: ignore[arg-type]
-        chan = result["channel_root"]
+        chan = Path(str(result["channel_root"]))
         (chan / "sdk" / "qemux86-64" / "repodata").mkdir(parents=True)
         (chan / "sdk" / "qemux86-64" / "repodata" / "pooled-primary.xml.gz").write_bytes(b"pooled")
-        return {**result, "repos": [*result["repos"], "sdk/qemux86-64"]}
+        return {**result, "repos": [*cast("list[str]", result["repos"]), "sdk/qemux86-64"]}
 
     monkeypatch.setattr(refresh.feed, "sync", sync_with_sdk)
 
