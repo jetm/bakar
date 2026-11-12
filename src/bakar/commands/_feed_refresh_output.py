@@ -17,7 +17,7 @@ import ipaddress
 import re
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, TextIO, cast
 
 from bakar import feed_preflight
 from bakar.commands import _feed_refresh as _refresh
@@ -153,7 +153,7 @@ def repo_package_count(path: Path) -> int:
 
 
 def _overlay_repos(result: _refresh.RefreshResult) -> list[OverlayRepo]:
-    roots = [str(r) for r in result.sync.get("repos", [])]  # type: ignore[attr-defined]
+    roots = [str(r) for r in cast("list[object]", result.sync.get("repos", []))]
     repos = []
     for root in roots:
         path = result.channel_dir / root
@@ -231,7 +231,7 @@ def present_refresh(
             return 1
         host = _host(opts.advertise or opts.bind)
         base = f"http://{host}:{opts.port}/{channel_rel}"
-        roots = {_repo_name(str(r)): str(r) for r in result.sync.get("repos", [])}  # type: ignore[attr-defined]
+        roots = {_repo_name(str(r)): str(r) for r in cast("list[object]", result.sync.get("repos", []))}
         url_stanza = render_url_stanza(
             [UrlRepo(r.name, f"{base}/{roots[r.name]}", r.stages, r.package_count) for r in repos]
         )

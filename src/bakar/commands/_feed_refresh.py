@@ -23,7 +23,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from bakar import feed, feed_delta, feed_filter, feed_ops, feed_preflight, layers, run_discovery
 from bakar.commands import bitbake as bitbake_cmd
@@ -380,7 +380,10 @@ def _srcrev_of(pv: str) -> str | None:
     return tail if re.fullmatch(r"[0-9a-f]{7,40}", tail) else None
 
 
-def _version_key(text: str) -> tuple[tuple[int, int, str], ...]:
+_VersionKey = tuple[tuple[int, int, str], ...]
+
+
+def _version_key(text: str) -> _VersionKey:
     """Order key for a version or release string, comparing digit runs numerically.
 
     Digit runs compare as integers and sort above letter runs; a longer string
@@ -397,7 +400,7 @@ def _rpm_files(deploy: Path) -> dict[str, list[str]]:
     A PR bump leaves ``foo-1.0-r0`` and ``foo-1.0-r1`` side by side; only the
     newest per (name, arch) is kept, so one recipe never publishes two builds.
     """
-    best: dict[tuple[str, str], tuple[tuple[object, object], str]] = {}
+    best: dict[tuple[str, str], tuple[tuple[_VersionKey, _VersionKey], str]] = {}
     for rpm in sorted(deploy.glob("*/*.rpm")):
         try:
             nevra = feed_delta.parse_nevra(rpm.name)
@@ -475,7 +478,7 @@ def make_repos_self_contained(channel_dir: Path, stage_channel: Path, sync: dict
     routed through here and keeps the pooled layout.
     """
     snapshot = sync.get("snapshot")
-    for root in (str(r) for r in sync.get("repos", [])):  # type: ignore[attr-defined]
+    for root in (str(r) for r in cast("list[object]", sync.get("repos", []))):
         staged = stage_channel / root
         rpms = sorted(staged.rglob("*.rpm")) if staged.is_dir() else []
         subpaths = [root] if not snapshot else [root, f"snapshots/{snapshot}/{root}"]
