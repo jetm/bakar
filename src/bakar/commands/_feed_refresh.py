@@ -198,7 +198,11 @@ _LAYER_DIRS = ("layers", "sources")
 
 @dataclass(frozen=True, slots=True)
 class RecipeLocation:
-    """A recipe file and the layer repository that holds it."""
+    """A recipe file, its layer directory name, and the layer repository that holds it.
+
+    The recipe map records ``repo_path.name`` (``meta-openembedded``), not
+    ``layer`` (``meta-oe``): consumers key layers by repository directory.
+    """
 
     path: Path
     layer: str
@@ -571,7 +575,7 @@ def _build_entries(
         names = [n for n in pd.packages if n in rpms]
         files = [f for n in names for f in rpms[n]]
         loc = locate(req.cfg, recipe)
-        layer, commit = (loc.layer, _layer_commit(loc, hashes)) if loc else ("", "")
+        layer, commit = (loc.repo_path.name, _layer_commit(loc, hashes)) if loc else ("", "")
         try:
             probe = feed_delta.entry_from_package_files(
                 recipe=recipe,

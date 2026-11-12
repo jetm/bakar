@@ -142,7 +142,7 @@ directory also receives two files:
 
 | File | Content |
 |------|---------|
-| `recipe-map.json` | One entry per recipe: its RPM package names, layer, layer commit, `epoch`, `pv`, `pr`, `srcrev`, machine, release and `task_hash` |
+| `recipe-map.json` | One entry per recipe: its RPM package names, layer (the layer repository's directory name, e.g. `meta-openembedded`), layer commit, `epoch`, `pv`, `pr`, `srcrev`, machine, release and `task_hash` |
 | `delta.json` | The base release and channel the delta was built against, the recipes built, the build's run id and the delta path |
 
 In `recipe-map.json`, `pr` is the RPM release as it appears in the package file

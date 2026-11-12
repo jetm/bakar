@@ -515,7 +515,7 @@ def test_find_recipe_reads_layers_from_bblayers_conf(tmp_path: Path) -> None:
     found = refresh.find_recipe(cfg, "htop")  # type: ignore[arg-type]
 
     assert found is not None
-    assert found.layer == "meta-oe"
+    assert found.layer == "meta-oe"  # the layer directory; the map records the repository
     assert found.path == cfg.workspace.resolve() / "meta-openembedded/meta-oe/recipes-support/htop/htop_3.5.0.bb"
     assert found.repo_path == (cfg.workspace / "meta-openembedded").resolve()
     foo = refresh.find_recipe(cfg, "foo")  # type: ignore[arg-type]
@@ -639,3 +639,19 @@ def test_target_slug_comes_from_the_repo_map(tmp_path: Path, machine: str, repos
     (deploy / "avocado-repo.map").write_text("".join(f"repo=$releasever/{r}\n" for r in repos))
     assert refresh.target_slug(machine, deploy) == expected
     assert refresh.target_slug(machine, tmp_path / "no-map") == machine
+
+
+def test_entry_layer_is_the_layer_repository_name_not_the_layer_directory(world: World) -> None:
+    world.recipe("htop")
+    repo = world.workspace / "meta-openembedded"
+    loc = refresh.RecipeLocation(path=repo / "meta-oe" / "htop_1.0.bb", layer="meta-oe", repo_path=repo)
+
+    (entry,) = refresh.run_refresh(
+        world.req,
+        builder=world.builder,
+        recipe_exists=lambda _c, _r: True,
+        locate_recipe=lambda _c, _r: loc,
+    ).entries
+
+    assert loc.layer == "meta-oe"
+    assert entry.layer == "meta-openembedded"
