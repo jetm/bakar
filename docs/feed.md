@@ -145,7 +145,7 @@ directory also receives two files:
 | File | Content |
 |------|---------|
 | `recipe-map.json` | One entry per recipe: its RPM package names, layer (the layer repository's directory name, e.g. `meta-openembedded`), layer commit, `epoch`, `pv`, `pr`, `srcrev`, machine, release and `task_hash` |
-| `delta.json` | The base release, channel and snapshot id the delta was built against (`base.snapshot_id` is `null` unless `--base-snapshot` was given), the recipes built, the build's run id and the delta path |
+| `delta.json` | The base release, channel and snapshot id the delta was built against (`base.snapshot_id` is `null` unless `--base-snapshot` was given), the recipes built, the build's run id and the delta path; a refresh that pulled a remote build adds a `source` record ([below](#pulling-a-remote-build---from)) |
 
 In `recipe-map.json`, `pr` is the RPM release as it appears in the package file
 name (the `PKGR` value in the runtime package data, for example `r0.1` with the
@@ -171,7 +171,10 @@ answer, the recipe is recorded under the first layer, with a `null`
 repository share a commit). The refresh prints a warning for each such recipe
 naming every layer and what it recorded, and a failed query only adds a warning;
 it never fails the refresh. The query runs in a local kas shell against the local
-workspace and does not follow a remote build (`bakar build --on`).
+workspace and does not follow a remote build (`bakar build --on`). A refresh
+that pulls a remote build ([below](#pulling-a-remote-build---from)) does not run
+it: the host computes the entries itself and the local refresh reads them from
+the host's description.
 
 **Guards.** Each of these refuses with exit `1` before anything is written, or
 (for the build-dependent ones) before the delta is wiped, and names the way out:
@@ -246,6 +249,110 @@ With `--run-avocado`, bakar runs `avocado unlock`, `avocado install` and
 failure (exit `1`). Each command has a one-hour limit. Without the flag, no
 avocado process starts, and no file in the project is modified: the stanza is
 printed for you to paste.
+
+### Pulling a remote build (`--from`)
+
+`bakar feed refresh --from HOST --run RUN_ID` builds nothing. It copies the
+packages of a build that `bakar build --on HOST` already finished on another
+machine, and publishes them as the same delta feed, so the inner avocado loop
+gets a hit for work the remote machine built.
+
+**Prerequisites.**
+
+- The same bakar version, with the same content, on both machines. The host
+  needs it because refresh runs `bakar feed describe` there; a host whose bakar
+  lacks that verb is refused with a message saying to install the same bakar on
+  it. A differing version is refused as in a dispatch, and `--yes` overrides it.
+- A finished build started with `bakar build --on HOST`. The build must have
+  succeeded and no build may be running on the host.
+- Its run id, which dispatch prints as `remote run-id`. A build dispatched by an
+  older bakar did not record where its kas file and workspace were, so it is
+  refused with a message saying the build must be dispatched again.
+
+```bash
+bakar feed refresh meta-avocado/kas/machine/qemux86-64.yml \
+  --recipe htop --recipe my-app \
+  --from build-node --run <run-id> \
+  --project ~/avocado-project
+```
+
+`build-node` is the ssh host you gave `--on`, and `<run-id>` is the one that
+dispatch printed. The kas file is the local one: it supplies the pins that the
+host's build is checked against and the layer scripts that publish the delta.
+`--recipe` and `--project` are required as for a local refresh. `--run`,
+`--allow-pin-mismatch` and `--yes` are refused without `--from`. Do not confuse
+`--run` with `--run-avocado`: `--run` names a run on the host, while
+`--run-avocado` runs the printed avocado commands in `--project`.
+
+**Order.** The refresh lock comes first, so a second refresh is refused before
+the host is contacted. Then the host's bakar identity is checked, the host
+describes the run, the pins and the release and channel are judged, the files
+are pulled and verified, and the delta is swapped in last. A refusal or failure
+at any step leaves the previous delta in place and removes the staging
+directory.
+
+**What is pulled, and nothing else.** The host's description lists the files by
+exact relative path, with size and sha256: the RPM files of the named recipes'
+packages, `avocado-repo.map`, and the image test-data files
+(`images/<machine>/<name>.testdata.json`). rsync copies that list with
+`--files-from`, so no pattern or wildcard is ever expanded, into a private
+staging directory beside the delta's stage root. The limits that apply:
+
+- Only three path shapes are accepted: `rpm/<arch>/<name>.rpm`,
+  `rpm/avocado-repo.map` and `images/<machine>/<name>.testdata.json`. A path
+  with `..`, a leading `/`, a backslash or any other shape refuses the pull
+  before a byte moves.
+- A file over 2 GiB, or a total over 8 GiB, is refused. The staging
+  filesystem must also hold the total plus ten percent.
+- Symbolic links, hard links, devices and other special files are never copied,
+  and one found in staging refuses the pull. File modes and owners are not
+  carried over.
+- After the copy, staging must hold exactly the described files, each with the
+  described size and sha256. Then the host describes the run a second time. A
+  build that is live by then, or any file whose size or checksum differs from
+  the first description, refuses the pull.
+
+**Pin check and `--allow-pin-mismatch`.** The description carries the commit
+each build layer directory on the host holds. The refresh compares those with
+the pins the local kas file declares. A layer that differs from its pin, or
+whose commit the host could not read, refuses the refresh and names the layer.
+`--allow-pin-mismatch` publishes anyway; the `source` record then carries
+`pin_override: true`. `meta-avocado` is the exception: it is the layer the feed
+delivers, so a difference there only adds a warning naming the commit the host
+built and the local checkout's head.
+
+**Release and channel.** The pair comes from the build's own deploy tree. A
+`--release` or `--channel` you typed that disagrees with it is refused naming
+both; one you left out is taken from the build. The local defaults are not held
+against the build.
+
+**`--yes`.** It overrides only a bakar version mismatch between the two
+machines. It does not override a failed pin check (use `--allow-pin-mismatch`),
+a live build or a refused file.
+
+**The `source` record.** A remote refresh adds a `source` object to
+`delta.json`; a local refresh never writes one:
+
+| Key | Content |
+|-----|---------|
+| `host` | The ssh host the files came from |
+| `run_id` | The run id on that host |
+| `pulled_at` | When the pull finished, an ISO 8601 UTC timestamp |
+| `observed_layers` | The commit each build layer directory held on the host, keyed by layer repository (`null` when unreadable) |
+| `pin_override` | `true` when `--allow-pin-mismatch` let a pin mismatch through |
+
+**Limits.**
+
+- Runs of the vendor families `nxp` and `ti` are refused. Only builds
+  dispatched from a release workspace (a `meta-avocado` checkout) or from a
+  layer repository carry the two dispatch variables that the host needs to
+  describe them.
+- The files are checksummed against the host's own description, which guards
+  against a corrupt or changing copy. They are not signed and not
+  authenticated: a delta published this way is as trustworthy as the host and
+  the ssh path to it.
+- `bakar build --feed` combined with `--on` stays refused; run the sync on the
+  host, or build with `--on` and then refresh with `--from`.
 
 ## Mirroring a published feed
 

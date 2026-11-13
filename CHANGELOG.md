@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `bakar feed refresh --from HOST --run RUN_ID`, which builds nothing and publishes the delta feed from the packages of a build that `bakar build --on HOST` already finished. It copies only the named recipes' package files, the repository map and the image test-data by exact path, with size caps and checksums, and describes the host again after the copy so a live or changed build refuses the pull. It compares the commit each host build layer holds with the pins the local kas file declares (`--allow-pin-mismatch` overrides; `meta-avocado` only warns), checks the release and channel, and takes `--yes` to override a bakar version mismatch. Both machines need this version, and a run dispatched by an older bakar must be dispatched again
+- Added the hidden `bakar feed describe` verb, which `bakar feed refresh --from` runs on the host to describe a finished run as one JSON document without changing anything
+- Added a `source` record (`host`, `run_id`, `pulled_at`, `observed_layers`, `pin_override`) to `delta.json` for a delta published from a remote build
+- Changed `bakar build --on` to record the delivered kas path and workspace in the host run's environment as `BAKAR_DISPATCH_KAS` and `BAKAR_DISPATCH_WORKSPACE`, for meta-avocado and layer-repository dispatches
+
 ## [0.42.0] - 2026-11-12
 
 ### Added

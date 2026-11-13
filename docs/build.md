@@ -969,6 +969,15 @@ Both transfers bound the ssh they start with keepalive and connect timeouts so a
    and the build is still running, so it has to be distinguishable from a build
    that genuinely exited 255.
 
+**Run record for a later pull.** A meta-avocado or layer-repository dispatch
+records the kas path it delivered and the remote workspace in the host run's
+environment, as `BAKAR_DISPATCH_KAS` and `BAKAR_DISPATCH_WORKSPACE`. They come
+from the dispatch, never from your own environment. The remote run-id printed on
+completion is what `bakar feed refresh --from <host> --run <run-id>` takes to
+copy the build's packages into the local delta feed, and a run dispatched by a
+bakar that did not record the two variables is refused there. See
+[Pulling a remote build](feed.md#pulling-a-remote-build---from).
+
 Stop a detached build with `bakar stop --on <host>` - see [stop.md](stop.md).
 Ctrl-C on the dispatching terminal does not reach it: the local command exits
 130 and prints the stop and triage commands.
