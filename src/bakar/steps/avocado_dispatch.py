@@ -162,11 +162,16 @@ def build_remote_argv(local_args: list[str], kas_arg: str, rewritten_kas: str) -
     return argv
 
 
-def remote_env(build_dir_template: str | None, worktree_value: str) -> dict[str, str]:
+def remote_env(build_dir_template: str | None, worktree_value: str, *, kas_arg: str, workspace: str) -> dict[str, str]:
     """Forwarded ``BAKAR_*``/``KAS_*`` variables for the remote build.
 
     ``KAS_WORK_DIR`` names a local directory, and the remote workspace is chosen
     by where the delivered worktree sits, so it is dropped.
+
+    ``BAKAR_DISPATCH_KAS`` (the kas argument as rewritten for the host) and
+    ``BAKAR_DISPATCH_WORKSPACE`` come from the dispatch itself, never from the
+    caller's environment, so the host run records where its kas file and
+    workspace are.
     """
     env = {k: v for k, v in os.environ.items() if k.startswith(("BAKAR_", "KAS_")) and k != "KAS_WORK_DIR"}
     env[REPO_POLICY_ENV] = REPO_POLICY_REUSE
@@ -179,6 +184,8 @@ def remote_env(build_dir_template: str | None, worktree_value: str) -> dict[str,
     env["BAKAR_WORKTREE_BUILD_DIR"] = (build_dir_template or DEFAULT_BUILD_DIR_TEMPLATE).replace(
         "{worktree}", worktree_value
     )
+    env["BAKAR_DISPATCH_KAS"] = kas_arg
+    env["BAKAR_DISPATCH_WORKSPACE"] = workspace
     return env
 
 
@@ -431,9 +438,8 @@ def _dispatch(
 
     cwd = invoking_cwd if invoking_cwd is not None else Path.cwd()
     try:
-        remote_argv = build_remote_argv(
-            local_args, kas_arg, rewrite_kas_arg(kas_arg, checkout, cwd, request.checkout_label)
-        )
+        remote_kas = rewrite_kas_arg(kas_arg, checkout, cwd, request.checkout_label)
+        remote_argv = build_remote_argv(local_args, kas_arg, remote_kas)
     except KasArgError as exc:
         console.print(f"[red]cannot dispatch:[/] {exc}")
         return 2
@@ -536,7 +542,8 @@ def _dispatch(
             entries,
             facts,
             pair_core_with_bitbake=host_pairs_core_with_bitbake(
-                remote_argv, remote_env(build_dir_template, target.worktree_value)
+                remote_argv,
+                remote_env(build_dir_template, target.worktree_value, kas_arg=remote_kas, workspace=str(workspace)),
             ),
         )
         blocked = bool(repo_reuse.blocking(states))
@@ -641,7 +648,9 @@ def _dispatch(
         rd.RemoteScriptSpec(
             remote_argv=remote_argv,
             cwd=target_dir,
-            env_vars=remote_env(build_dir_template, target.worktree_value),
+            env_vars=remote_env(
+                build_dir_template, target.worktree_value, kas_arg=remote_kas, workspace=str(workspace)
+            ),
             sccache_off=not sccache_dist,
             guard=layer_delivery_remote.build_guard(
                 worktree_root=str(root), name=name, commit=commit, checkout_dirname=target.checkout_dirname

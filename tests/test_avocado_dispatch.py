@@ -603,9 +603,44 @@ def test_strip_workspace_option_in_short_clusters() -> None:
 def test_remote_env_names_the_build_dir_with_the_worktree_filled_in() -> None:
     # The checkout directory is always meta-avocado, so a host reading {worktree}
     # from it would give every dispatch one shared build directory.
-    assert ad.remote_env(None, "feature-x")["BAKAR_WORKTREE_BUILD_DIR"] == "build-{stem}-feature-x"
-    assert ad.remote_env("b-{stem}", "feature-x")["BAKAR_WORKTREE_BUILD_DIR"] == "b-{stem}"
-    assert ad.remote_env("{worktree}/{stem}", "w1")["BAKAR_WORKTREE_BUILD_DIR"] == "w1/{stem}"
+    kw = {"kas_arg": "kas/machine/m.yml", "workspace": "/srv/ws/scarthgap"}
+    assert ad.remote_env(None, "feature-x", **kw)["BAKAR_WORKTREE_BUILD_DIR"] == "build-{stem}-feature-x"
+    assert ad.remote_env("b-{stem}", "feature-x", **kw)["BAKAR_WORKTREE_BUILD_DIR"] == "b-{stem}"
+    assert ad.remote_env("{worktree}/{stem}", "w1", **kw)["BAKAR_WORKTREE_BUILD_DIR"] == "w1/{stem}"
+
+
+def test_remote_env_carries_the_dispatch_kas_and_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAKAR_DISPATCH_KAS", "/local/leak.yml")
+    monkeypatch.setenv("BAKAR_DISPATCH_WORKSPACE", "/local/leak-ws")
+    env = ad.remote_env(None, "feature-x", kas_arg="kas/machine/m.yml", workspace="/srv/ws/scarthgap")
+    assert env["BAKAR_DISPATCH_KAS"] == "kas/machine/m.yml"
+    assert env["BAKAR_DISPATCH_WORKSPACE"] == "/srv/ws/scarthgap"
+    assert env["BAKAR_REPO_POLICY"] == "reuse"
+    assert env["BAKAR_WORKTREE_BUILD_DIR"] == "build-{stem}-feature-x"
+
+
+def test_meta_avocado_dispatch_forwards_the_rewritten_kas_and_workspace(
+    rec: Recorder, checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_DISPATCH_KAS", "/local/leak.yml")
+    kas = str(checkout / "kas" / "machine" / "m.yml")
+    assert _dispatch(checkout, kas, ["build", kas, "--on", HOST, "-y"]) == 0
+    script = rec.remote_script
+    assert "BAKAR_DISPATCH_KAS=kas/machine/m.yml" in script
+    assert f"BAKAR_DISPATCH_WORKSPACE={WORKSPACE}" in script
+    assert "/local/leak.yml" not in script
+
+
+def test_layer_dispatch_forwards_the_rewritten_kas_and_workspace(
+    lrec: LayerRec, layer: Any, checkout: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BAKAR_DISPATCH_WORKSPACE", "/local/leak-ws")
+    kas = str(checkout / "kas" / "machine" / "m.yml")
+    assert _layer_dispatch(checkout, layer, kas, ["build", kas, "--on", HOST, "-y"]) == 0
+    script = lrec.rec.remote_script
+    assert "BAKAR_DISPATCH_KAS=kas/machine/m.yml" in script
+    assert f"BAKAR_DISPATCH_WORKSPACE={WORKSPACE}" in script
+    assert "/local/leak-ws" not in script
 
 
 @pytest.mark.parametrize(
@@ -997,7 +1032,7 @@ GOLDEN_PUSH = [
 GOLDEN_SHA = {
     "capability": "1c78548f9ee41f8131ce5f7d1753a22388d8874806cb0e633c1fd132873e38c6",
     "ensure": "2bb9a5c3e104395f4ad14a6333bc8b2d58214b6d7737c88cac4898badb8ace96",
-    "remote": "76c8c1aec5d891d529f1702184a72b31be6081936c97ef44bc92976460d5ce25",
+    "remote": "ef102e23c4322d96ce0a5cf307fd429a657d8e8815555a0b49a8109de286b76f",
 }
 
 
