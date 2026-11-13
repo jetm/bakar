@@ -49,6 +49,10 @@ _ALLOWED_SHAPES = (
     re.compile(r"rpm/avocado-repo\.map"),
     re.compile(rf"images/{_COMPONENT}/{_COMPONENT}\.testdata\.json"),
 )
+# One repo map line as avocado-repo-map.bbclass writes it: an arch directory or
+# ``repo``, then ``$releasever`` and plain path components, never one led by a dot.
+_REPO_MAP_LINE = re.compile(r"(repo|[A-Za-z0-9_][A-Za-z0-9_.+-]*)=\$releasever(/[A-Za-z0-9_][A-Za-z0-9_.+-]*)+")
+_CONTROL_CHAR = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class PullRefused(RuntimeError):  # noqa: N818 - name fixed by the pull spec
@@ -78,6 +82,8 @@ def validate_description(
     """Refuse a description whose file list is unsafe to copy, before any byte moves."""
     if not desc.deploy_dir.startswith("/"):
         raise PullRefused(f"described deploy directory {desc.deploy_dir!r} is not an absolute path")
+    if _CONTROL_CHAR.search(desc.deploy_dir):
+        raise PullRefused(f"described deploy directory {desc.deploy_dir!r} contains a control character")
     seen: set[str] = set()
     total = 0
     for item in desc.files:
@@ -163,6 +169,46 @@ def verify_staged_tree(staging: Path, desc: BuildDescription) -> None:
             raise PullRefused(f"staged file {rel!r} has sha256 {actual}, described sha256 {item.sha256}")
 
 
+def check_repo_map(path: Path) -> None:
+    """Refuse a repo map holding any line but the plain ones the producer writes.
+
+    meta-avocado's repo-stage-rpms.sh runs ``eval`` on every map value and later
+    steps remove the ``repo=`` roots, so a value is code and a path at once.
+    """
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PullRefused(f"repo map {str(path)!r} is not UTF-8: {exc}") from exc
+    # split("\n"), not splitlines(): a CR must stay in the line and be refused.
+    for number, line in enumerate(text.split("\n"), start=1):
+        if line and not _REPO_MAP_LINE.fullmatch(line):
+            raise PullRefused(
+                f"repo map line {number} {line!r} is not a plain <name>=$releasever/<path> line; "
+                "the feed staging scripts evaluate map values, so nothing else is accepted"
+            )
+
+
+def remove_staging(staging: Path) -> Path | None:
+    """Remove ``staging``; return it if anything is left, else ``None``.
+
+    A pulled directory can be read-only, which makes its entries undeletable, so a
+    refused unlink makes the containing directory user-writable and retries.
+    """
+
+    def retry_writable(func: Callable[..., Any], path: str, exc: BaseException) -> None:
+        # Never touch the mode of staging's own parent: it is not ours to change.
+        if not isinstance(exc, PermissionError) or path == str(staging) or func not in (os.unlink, os.rmdir):
+            return
+        try:
+            os.chmod(os.path.dirname(path), stat.S_IRWXU)
+            func(path)
+        except OSError:
+            pass
+
+    shutil.rmtree(staging, onexc=retry_writable)
+    return staging if os.path.lexists(staging) else None
+
+
 def make_staging(parent: Path) -> Path:
     """Create a fresh owner-only directory inside ``parent`` and return it.
 
@@ -177,7 +223,8 @@ def make_staging(parent: Path) -> Path:
         raise PullRefused(f"staging parent {str(parent)!r} is not a directory")
     staging = Path(tempfile.mkdtemp(prefix="pull-", dir=parent))
     info = staging.lstat()
-    if stat.S_IMODE(info.st_mode) != 0o700 or info.st_uid != os.geteuid():
+    # Permission bits only: a setgid parent (a group-shared directory) gives 02700.
+    if info.st_mode & 0o777 != 0o700 or info.st_uid != os.geteuid():
         staging.rmdir()
         raise PullRefused(
             f"staging directory {str(staging)!r} is mode {stat.S_IMODE(info.st_mode):04o} "
@@ -238,7 +285,9 @@ def _run_rsync(argv: list[str], timeout: float) -> tuple[int, str]:
         proc = subprocess.Popen(argv, stdout=out, stderr=err, stdin=subprocess.DEVNULL, start_new_session=True)
         try:
             code = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        except BaseException:
+            # A timeout or a Ctrl-C alike: rsync is in its own session, so nothing
+            # else stops it, and it would race the caller removing staging.
             _terminate_group(proc)
             proc.wait()
             raise
@@ -259,6 +308,9 @@ def build_pull_argv(host: str, desc: BuildDescription, staging: Path, list_file:
         "--no-devices",
         "--no-specials",
         "--protect-args",
+        # --no-perms keeps a read-only host directory read-only, which would leave
+        # staging undeletable; owner write on everything keeps it removable.
+        "--chmod=Du+rwx,Fu+rw",
         f"--timeout={RSYNC_IO_TIMEOUT_SECONDS}",
         f"--max-size={MAX_FILE_BYTES}",
         "-e",
@@ -333,7 +385,10 @@ def pull_files(  # noqa: PLR0913 - the spec fixes this signature
         check_free_space(staging, desc, disk_usage=disk_usage)
         _copy(host, desc, staging, runner or _run_rsync)
         verify_staged_tree(staging, desc)
+        repo_map = staging / "rpm" / "avocado-repo.map"
+        if repo_map.exists():
+            check_repo_map(repo_map)
         _compare_descriptions(desc, describe_again())
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        remove_staging(staging)
         raise

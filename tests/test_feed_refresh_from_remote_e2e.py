@@ -349,7 +349,7 @@ def test_pin_mismatch_is_refused_then_published_with_the_override(fake: FakeHost
     assert refused.exit_code == 1, refused.output
     assert f"meta-x declared {OTHER_COMMIT} but the host built {fake.pin}" in out
     assert "--allow-pin-mismatch" in out
-    assert not fake.delta_root.exists() or not list(fake.delta_root.rglob("*.rpm"))
+    assert not fake.delta_root.exists()
     assert fake.staging_dirs() == []
     assert fake.ssh_runs == 0
 

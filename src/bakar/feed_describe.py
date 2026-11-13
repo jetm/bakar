@@ -120,7 +120,11 @@ def _load(text: str) -> object:
     stripped = text.lstrip()
     try:
         doc, end = decoder.raw_decode(stripped)
-    except json.JSONDecodeError as exc:
+    except DescriptionError:
+        raise
+    # ValueError covers JSONDecodeError and an integer past the str-to-int digit
+    # limit; RecursionError is nesting deeper than the decoder's stack.
+    except (ValueError, RecursionError) as exc:
         raise DescriptionError(f"document is not valid JSON: {exc}") from exc
     if stripped[end:].strip():
         raise DescriptionError("document has text after the document")

@@ -20,8 +20,10 @@ from bakar.steps.remote_pull import (
     MAX_TOTAL_BYTES,
     PullRefused,
     check_free_space,
+    check_repo_map,
     make_staging,
     pull_files,
+    remove_staging,
     validate_description,
     verify_staged_tree,
 )
@@ -29,6 +31,12 @@ from bakar.steps.remote_pull import (
 RPM = "rpm/core2_64/busybox-1.36.rpm"
 MAP = "rpm/avocado-repo.map"
 TESTDATA = "images/qemux86-64/avocado-image.testdata.json"
+# Lines exactly as meta-avocado's avocado-repo-map.bbclass writes them.
+REPO_MAP = (
+    b"core2_64=$releasever/target/qemux86-64/core2_64\n"
+    b"aarch64_avocadosdk=$releasever/sdk/qemux86-64\n"
+    b"repo=$releasever/sdk/all\n"
+)
 
 
 def _sha(data: bytes) -> str:
@@ -96,24 +104,29 @@ def test_constants_have_the_specified_values() -> None:
 # --- validate_description: path refusals -----------------------------------
 
 
+_ABSOLUTE = "is absolute"
+_BACKSLASH = "contains a backslash"
+_BAD_COMPONENT = "has an empty, '.' or '..' component"
+
+
 @pytest.mark.parametrize(
-    ("path", "why"),
+    ("path", "reason"),
     [
-        ("/rpm/core2_64/a.rpm", "absolute"),
-        ("rpm/../etc/a.rpm", "dotdot"),
-        ("../rpm/core2_64/a.rpm", "leading dotdot"),
-        ("rpm//core2_64/a.rpm", "empty component"),
-        ("rpm/core2_64/a.rpm/", "trailing slash"),
-        ("rpm\\core2_64\\a.rpm", "backslash"),
-        ("rpm/core2_64/a\\b.rpm", "backslash in name"),
-        ("rpm/./core2_64/a.rpm", "dot component"),
-        ("", "empty"),
+        ("/rpm/core2_64/a.rpm", _ABSOLUTE),
+        ("rpm/../etc/a.rpm", _BAD_COMPONENT),
+        ("../rpm/core2_64/a.rpm", _BAD_COMPONENT),
+        ("rpm//core2_64/a.rpm", _BAD_COMPONENT),
+        ("rpm/core2_64/a.rpm/", _BAD_COMPONENT),
+        ("rpm\\core2_64\\a.rpm", _BACKSLASH),
+        ("rpm/core2_64/a\\b.rpm", _BACKSLASH),
+        ("rpm/./core2_64/a.rpm", _BAD_COMPONENT),
+        ("", "is empty"),
     ],
 )
-def test_bad_paths_are_refused_naming_the_entry(path: str, why: str) -> None:
+def test_bad_paths_are_refused_naming_the_entry_and_the_reason(path: str, reason: str) -> None:
     with pytest.raises(PullRefused) as err:
         validate_description(_desc_for_paths(path))
-    assert repr(path) in str(err.value) or path in str(err.value), why
+    assert str(err.value) == f"described path {path!r} {reason}"
 
 
 def test_duplicate_entry_is_refused() -> None:
@@ -503,7 +516,7 @@ class _Host:
 def host(tmp_path: Path) -> _Host:
     return _Host(
         tmp_path / "host",
-        {RPM: b"busybox-bytes", RPM_B: b"zlib-bytes", MAP: b"map-bytes", TESTDATA: b"{}"},
+        {RPM: b"busybox-bytes", RPM_B: b"zlib-bytes", MAP: REPO_MAP, TESTDATA: b"{}"},
     )
 
 
@@ -743,6 +756,7 @@ def test_rsync_argv_names_exact_files_with_the_bounded_flags(host: _Host, tmp_pa
         "--no-devices",
         "--no-specials",
         "--protect-args",
+        "--chmod=Du+rwx,Fu+rw",
         "--timeout=60",
         f"--max-size={MAX_FILE_BYTES}",
         "--from0",
@@ -786,3 +800,154 @@ def test_description_with_a_deploy_directory_that_is_not_absolute_is_refused(dep
     desc = dataclasses.replace(_desc_for_paths("rpm/a.rpm"), deploy_dir=deploy_dir)
     with pytest.raises(PullRefused, match="not an absolute path"):
         validate_description(desc)
+
+
+@pytest.mark.parametrize("deploy_dir", ["/t/de\x00ploy", "/t/a\nb", "/t/\x1b[0m", "/t/a\x7f", "/t/a\rb"])
+def test_description_with_a_control_character_in_the_deploy_directory_is_refused(deploy_dir: str) -> None:
+    desc = dataclasses.replace(_desc_for_paths(RPM), deploy_dir=deploy_dir)
+    with pytest.raises(PullRefused, match="control character") as err:
+        validate_description(desc)
+    assert repr(deploy_dir) in str(err.value)
+
+
+# --- make_staging under a setgid parent --------------------------------------
+
+
+def test_make_staging_accepts_a_setgid_parent(tmp_path: Path) -> None:
+    parent = tmp_path / "shared"
+    parent.mkdir()
+    parent.chmod(parent.stat().st_mode | stat.S_ISGID)
+    if not parent.stat().st_mode & stat.S_ISGID:
+        pytest.skip("filesystem does not keep the setgid bit")
+    staging = make_staging(parent)
+    st = staging.lstat()
+    assert st.st_mode & 0o777 == 0o700
+    assert st.st_mode & stat.S_ISGID
+
+
+# --- check_repo_map ----------------------------------------------------------
+
+
+def test_repo_map_with_the_producer_line_shapes_is_accepted(tmp_path: Path) -> None:
+    path = tmp_path / "avocado-repo.map"
+    path.write_bytes(REPO_MAP + b"\n")
+    check_repo_map(path)
+
+
+def test_empty_repo_map_is_accepted(tmp_path: Path) -> None:
+    path = tmp_path / "avocado-repo.map"
+    path.write_bytes(b"")
+    check_repo_map(path)
+
+
+_BAD_MAP_LINES = [
+    "core2_64=$(touch x)$releasever/target/q",
+    "core2_64=`touch x`$releasever/target/q",
+    "repo=$releasever/../../../../home/u/x",
+    "core2_64=$releasever/target;touch x",
+    'core2_64=$releasever/"target"',
+    "core2_64=$releasever/target\r",
+    "repo=${HOME}/sdk/all",
+    "core2_64=target/qemux86-64/core2_64",
+    "core2_64=$releasever",
+    "core2_64=$releasever/.hidden",
+    "core 2=$releasever/target",
+    "repo = $releasever/sdk/all",
+]
+
+
+@pytest.mark.parametrize("line", _BAD_MAP_LINES)
+def test_repo_map_line_outside_the_producer_shape_is_refused(tmp_path: Path, line: str) -> None:
+    path = tmp_path / "avocado-repo.map"
+    path.write_bytes(b"core2_64=$releasever/target/qemux86-64/core2_64\n" + line.encode() + b"\n")
+    with pytest.raises(PullRefused) as err:
+        check_repo_map(path)
+    message = str(err.value)
+    assert "line 2" in message
+    assert repr(line) in message
+    assert "evaluate" in message
+
+
+def _staging_runner(contents: dict[str, bytes], staging: Path):
+    def runner(argv: list[str], timeout: float) -> tuple[int, str]:
+        for rel, data in contents.items():
+            dest = staging / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        return 0, ""
+
+    return runner
+
+
+@pytest.mark.parametrize("line", _BAD_MAP_LINES)
+def test_pull_refuses_a_hostile_repo_map_and_removes_staging(tmp_path: Path, line: str) -> None:
+    contents = {RPM: b"busybox-bytes", MAP: line.encode() + b"\n"}
+    desc = _desc([_described(rel, data) for rel, data in contents.items()])
+    staging = _new_staging(tmp_path)
+    with pytest.raises(PullRefused, match="evaluate"):
+        pull_files(HOST, desc, staging, describe_again=lambda: desc, runner=_staging_runner(contents, staging))
+    assert not staging.exists()
+
+
+def test_pull_without_a_repo_map_succeeds(tmp_path: Path) -> None:
+    contents = {RPM: b"busybox-bytes"}
+    desc = _desc([_described(rel, data) for rel, data in contents.items()])
+    staging = _new_staging(tmp_path)
+    pull_files(HOST, desc, staging, describe_again=lambda: desc, runner=_staging_runner(contents, staging))
+    assert _tree(staging) == contents
+
+
+# --- _run_rsync interrupted -------------------------------------------------
+
+
+def test_an_interrupt_while_waiting_stops_and_reaps_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    started: list[subprocess.Popen[bytes]] = []
+    real_popen = subprocess.Popen
+
+    class InterruptedOnce(real_popen):  # type: ignore[misc, valid-type]
+        interrupted = False
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            started.append(self)
+
+        def wait(self, timeout: float | None = None) -> int:
+            if not self.interrupted:
+                self.interrupted = True
+                raise KeyboardInterrupt
+            return super().wait(timeout)
+
+    monkeypatch.setattr(subprocess, "Popen", InterruptedOnce)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            remote_pull._run_rsync(["sleep", "30"], 60)
+        (proc,) = started
+        assert proc.returncode is not None
+        with pytest.raises(ChildProcessError):
+            os.waitpid(proc.pid, os.WNOHANG)
+    finally:
+        for proc in started:
+            if proc.returncode is None:
+                proc.kill()
+                real_popen.wait(proc)
+
+
+# --- remove_staging ----------------------------------------------------------
+
+
+def test_remove_staging_removes_a_tree_holding_a_read_only_directory(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    locked = staging / "rpm" / "core2_64"
+    locked.mkdir(parents=True)
+    (locked / "a.rpm").write_bytes(b"x")
+    locked.chmod(0o555)
+    try:
+        assert remove_staging(staging) is None
+        assert not staging.exists()
+    finally:
+        if locked.exists():
+            locked.chmod(0o755)
+
+
+def test_remove_staging_of_a_missing_directory_returns_none(tmp_path: Path) -> None:
+    assert remove_staging(tmp_path / "absent") is None

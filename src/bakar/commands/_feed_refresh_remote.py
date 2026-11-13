@@ -126,6 +126,8 @@ def plan_remote_refresh(
             raise _refuse(f"recipe {recipe} has no package file in run {desc.run_id}")
         chosen.append(entry)
     pair_release, pair_channel = _resolve_pair(desc, release, channel)
+    # The recipe map records each entry's release; it must be the one the delta is published under.
+    chosen = [dataclasses.replace(entry, release=pair_release) for entry in chosen]
     # The host reports bitbake beside the layer list, never in it, yet kas pins it like a layer.
     observed = desc.layers
     if desc.bitbake_commit is not None and all(layer.repo != "bitbake" for layer in observed):
@@ -204,6 +206,8 @@ def run_refresh_remote(
     assume_yes: bool,
     requested_release: str | None = None,
     requested_channel: str | None = None,
+    requested_base_release: str | None = None,
+    requested_base_channel: str | None = None,
     describe: Describe | None = None,
     puller: Callable[..., None] | None = None,
 ) -> RefreshResult:
@@ -216,6 +220,7 @@ def run_refresh_remote(
     and ``req.channel`` are the local defaults; only ``requested_release`` and
     ``requested_channel``, the values the caller explicitly asked for, are held
     against the pair the build declares, and the declared pair replaces them.
+    The base pair recorded in the delta is the typed one, else the declared pair.
     """
     recipes = tuple(dict.fromkeys(req.recipes))
     if not recipes:
@@ -248,7 +253,13 @@ def run_refresh_remote(
             local_head=_local_head(checkout),
             allow_pin_mismatch=allow_pin_mismatch,
         )
-        req = dataclasses.replace(req, release=plan.release, channel=plan.channel)
+        req = dataclasses.replace(
+            req,
+            release=plan.release,
+            channel=plan.channel,
+            base_release=requested_base_release or plan.release,
+            base_channel=requested_base_channel or plan.channel,
+        )
         for root in (req.delta_root, req.work_root):
             check_no_mirror_markers(feed.channel_root(root, release=req.release, channel=req.channel))
         try:
@@ -289,4 +300,6 @@ def run_refresh_remote(
         sync=sync,
         entries=list(plan.entries),
         warnings=plan.warnings,
+        release=req.release,
+        channel=req.channel,
     )

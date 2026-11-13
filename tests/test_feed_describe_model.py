@@ -140,6 +140,21 @@ def test_top_level_not_an_object() -> None:
     assert "document" in _err("[]")
 
 
+def test_integer_too_long_to_convert_is_a_description_error() -> None:
+    msg = _err('{"schema_version": ' + "9" * 5000 + "}")
+    assert "not valid JSON" in msg
+
+
+def test_nesting_deeper_than_the_recursion_limit_is_a_description_error() -> None:
+    msg = _err("[" * 100000)
+    assert "not valid JSON" in msg
+
+
+def test_duplicate_key_error_keeps_its_own_message() -> None:
+    msg = _err('{"run_id": "a", "run_id": "b"}')
+    assert msg == "duplicate key 'run_id' in document"
+
+
 @pytest.mark.parametrize(
     "key",
     [

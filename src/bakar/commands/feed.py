@@ -25,6 +25,7 @@ one reaches the user as a traceback.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -350,7 +351,9 @@ RefreshYesOption = Annotated[
 ]
 
 
-def _remote_usage_error(from_host: str | None, run_id: str | None, allow_pin_mismatch: bool, yes: bool) -> str | None:
+def _remote_usage_error(
+    from_host: str | None, run_id: str | None, *, allow_pin_mismatch: bool, yes: bool
+) -> str | None:
     """Return the usage message for a bad ``--from`` flag combination, before anything runs."""
     if from_host is None:
         if run_id is not None:
@@ -397,7 +400,7 @@ def refresh(
     Prints the repository stanzas and avocado commands that consume the delta;
     no project file is modified.
     """
-    usage = _remote_usage_error(from_host, run_id, allow_pin_mismatch, yes)
+    usage = _remote_usage_error(from_host, run_id, allow_pin_mismatch=allow_pin_mismatch, yes=yes)
     if usage:
         console.print(markup_safe(usage))
         raise typer.Exit(code=2)
@@ -424,6 +427,7 @@ def refresh(
     # Only a typed pair is held against the build's declared pair on a remote
     # refresh; the defaults filled in below are local guesses.
     requested_release, requested_channel = release, channel
+    requested_base_release, requested_base_channel = base_release, base_channel
     release, channel = _default_release_channel(cfg, release, channel)
     base_release = base_release or release
     base_channel = base_channel or channel
@@ -479,6 +483,8 @@ def refresh(
                 assume_yes=yes,
                 requested_release=requested_release,
                 requested_channel=requested_channel,
+                requested_base_release=requested_base_release,
+                requested_base_channel=requested_base_channel,
             )
     except (_feed_refresh.RefreshRefusedError, _feed_refresh.RefreshFailedError) as exc:
         console.print(f"feed refresh failed: {markup_safe(str(exc))}")
@@ -499,6 +505,9 @@ def refresh(
 
     for warning in result.warnings:
         console.print(f"warning: {markup_safe(warning)}")
+    if result.release is not None and result.channel is not None:
+        # A remote refresh publishes under the pair the host build declares, not the local default.
+        request = dataclasses.replace(request, release=result.release, channel=result.channel)
     code = _feed_refresh_output.present_refresh(request, result, opts)
     if code:
         raise typer.Exit(code=code)

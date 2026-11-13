@@ -5,7 +5,12 @@ judges whether that output can still change, and lists the files a pull needs
 with size and checksum. It creates and writes nothing under the build tree or
 the run registry, and holds no lock beyond one momentary shared test of the
 build directory's lock file. The one thing it runs besides that test is read-only
-``git rev-parse HEAD`` on each build layer directory.
+``git rev-parse HEAD`` on each build layer directory; it never runs kas or
+bitbake, so a recipe several repositories provide is recorded by its first layer
+with a warning rather than resolved by asking bitbake.
+
+It describes only the newest run of a build directory: every dispatch from one
+checkout reuses that directory, so an older run's output may have been replaced.
 
 The recipe entries come from :func:`bakar.commands._feed_refresh.build_entries`,
 the code a local refresh uses, against the host's own build data, so the cache
@@ -51,6 +56,7 @@ VENDOR_FAMILIES = ("nxp", "ti")
 _ENV_KEYS = ("BAKAR_DISPATCH_KAS", "BAKAR_DISPATCH_WORKSPACE")
 BUILD_DIR_ENV = "BAKAR_WORKTREE_BUILD_DIR"
 _FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
+_RUN_ID = re.compile(r"(\d{8}-\d{6})-(\d+)")
 
 LockState = Literal["held", "free", "unknown"]
 LockProbe = tuple[LockState, str | None]
@@ -124,14 +130,24 @@ def resolve_host_cfg(workspace: Path, kas_yaml: Path, *, mode: str | None, build
                 os.environ[key] = value
 
 
+def no_bitbake_provider(_cfg: BuildConfig, _kas_yaml: Path, _recipes: list[str]) -> None:
+    """Refuse to ask bitbake which layer built a recipe, so describing stays read-only.
+
+    The local refresh's provider opens a run, clears stale locks and runs kas and
+    bitbake in the build host's workspace; none of that may happen on a describe.
+    ``build_entries`` turns this refusal into a warning and records the first layer.
+    """
+    raise RuntimeError("refresh --from does not run bitbake on the build host")
+
+
 @dataclass(frozen=True)
 class DescribeDeps:
-    """Seams for tests; the defaults read the real run registry, lock, configuration and bitbake."""
+    """Seams for tests; the defaults read the real run registry, lock and configuration."""
 
     run_dir_for_run: Callable[[str], Path | None] = detach_records.run_dir_for_run
     lock_probe: Callable[[Path], LockProbe] = probe_lock
     resolve_cfg: Callable[..., BuildConfig] = resolve_host_cfg
-    resolve_provider: refresh.ResolveProvider = refresh._real_resolve_provider
+    resolve_provider: refresh.ResolveProvider = no_bitbake_provider
 
 
 def describe_build(
@@ -165,6 +181,7 @@ def describe_build(
             live=state == "running",
             live_reason=f"run is {state}" if state == "running" else None,
         )
+    _require_newest_run(run_dir, run_id)
     if tmpdir is None:
         raise DescribeError(f"run {run_id} recorded no build output location, so there is nothing to describe")
     recorded = _require_dispatch_env(run_dir, run_id)
@@ -335,6 +352,37 @@ def _run_state(run_dir: Path) -> tuple[str, int | None]:
     # bool is an int subclass; a boolean is not a recorded exit status.
     code = code if isinstance(code, int) and not isinstance(code, bool) else None
     return ("succeeded" if code == 0 else "failed"), code
+
+
+def _run_key(name: str) -> tuple[str, int] | None:
+    match = _RUN_ID.fullmatch(name)
+    return None if match is None else (match.group(1), int(match.group(2)))
+
+
+def _require_newest_run(run_dir: Path, run_id: str) -> None:
+    """Refuse a run that a later run of the same build directory followed.
+
+    Every dispatch from one checkout reuses one build directory, so the deploy
+    tree, package data and layer checkouts read now may be a later run's.
+    """
+    own = _run_key(run_id)
+    if own is None:
+        return  # _files refuses an id with no timestamp before reading anything
+    try:
+        siblings = list(run_dir.parent.iterdir())
+    except OSError as exc:
+        raise DescribeError(f"cannot list the runs in {run_dir.parent}: {exc.strerror or exc}") from exc
+    newer = [
+        (key, p.name)
+        for p in siblings
+        if (key := _run_key(p.name)) is not None and key > own and not p.is_symlink() and p.is_dir()
+    ]
+    if newer:
+        newest = max(newer)[1]
+        raise DescribeError(
+            f"run {run_id} is not the newest build in its build directory: run {newest} ran there after it, "
+            f"so the output of {run_id} may have been replaced; refresh from the newest run ({newest})"
+        )
 
 
 def _require_dispatch_env(run_dir: Path, run_id: str) -> dict[str, str]:

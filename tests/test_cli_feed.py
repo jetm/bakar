@@ -1090,8 +1090,20 @@ def test_refresh_from_calls_run_refresh_remote_with_exact_arguments(cli: CliRunn
         "assume_yes": True,
         "requested_release": None,
         "requested_channel": None,
+        "requested_base_release": None,
+        "requested_base_channel": None,
     }
     assert remote.call_args.args[0].recipes == ("htop",)
+
+
+def test_refresh_from_passes_only_the_typed_base_pair(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    result, _local, remote = _remote_refresh(
+        cli, cfg, tmp_path, "--from", "pc2", "--run", "r1", "--base-release", "2025", "--base-channel", "stable"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert remote.call_args.kwargs["requested_base_release"] == "2025"
+    assert remote.call_args.kwargs["requested_base_channel"] == "stable"
 
 
 def test_refresh_from_defaults_flags_to_false(cli: CliRunner, cfg, tmp_path: Path) -> None:
@@ -1168,6 +1180,52 @@ def test_refresh_from_failure_exits_1_with_message(cli: CliRunner, cfg, tmp_path
     assert result.exit_code == 1
     assert "feed refresh failed: host busy; nothing was pulled" in result.output
     printed.assert_not_called()
+
+
+def test_refresh_from_advertises_the_pair_the_delta_was_published_under(
+    cli: CliRunner, cfg, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    # A node with no local build falls back to 2024/edge; the host build declared
+    # 2026-wrynose/local, and that is where the delta landed.
+    from bakar.commands import _feed_refresh_output
+    from bakar.commands._feed_refresh import RefreshResult
+
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    feed_root = cfg.effective_feed_dir
+    channel_dir = feed_root.parent / f"{feed_root.name}-delta" / "2026-wrynose" / "local"
+    rpm = channel_dir / "target" / "qemux86-64" / "Packages" / "htop-3.5.0-r0.1.core2_64.rpm"
+    rpm.parent.mkdir(parents=True)
+    rpm.write_bytes(b"rpm")
+    published = RefreshResult(
+        channel_dir=channel_dir,
+        run_id="r1",
+        recipes=("htop",),
+        sync={"repos": ["target/qemux86-64"]},
+        entries=[],
+        release="2026-wrynose",
+        channel="local",
+    )
+    with (
+        mock.patch("bakar.commands.feed._resolve_refresh_cfg", return_value=cfg),
+        mock.patch("bakar.commands.feed._feed_refresh_output.preflight_blocks", return_value=False),
+        mock.patch("bakar.commands.feed._feed_refresh_output.check_port", return_value=None),
+        mock.patch("bakar.feed_ops.declared_release_channel", return_value=(None, None)),
+        mock.patch.object(_feed_refresh_output, "start_serving", return_value=4242),
+        mock.patch("bakar.commands.feed._feed_refresh_remote.run_refresh_remote", return_value=published),
+    ):
+        result = cli.invoke(
+            app,
+            [
+                *("feed", "refresh", str(_yaml(tmp_path)), "--recipe", "htop", "--project", str(project)),
+                *("--from", "pc2", "--run", "r1", "--serve", "--port", "9191"),
+            ],
+        )
+
+    output = result.output + capsys.readouterr().out
+    assert result.exit_code == 0, output
+    assert "url: http://127.0.0.1:9191/2026-wrynose/local/target/qemux86-64" in output
+    assert "/2024/edge/" not in output
 
 
 def test_refresh_without_from_still_calls_run_refresh(cli: CliRunner, cfg, tmp_path: Path) -> None:

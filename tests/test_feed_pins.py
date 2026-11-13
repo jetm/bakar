@@ -45,6 +45,12 @@ def test_short_value_under_seven_chars_is_not_a_prefix_match() -> None:
     assert _verdicts(report) == {"poky": "differs"}
 
 
+def test_prefix_is_matched_from_the_start_not_the_end() -> None:
+    observed = "0123456789abcdef0123456789abcdef01234567"
+    assert _verdicts(compare_pins({"poky": {"commit": observed[:9]}}, _obs(("poky", observed)))) == {"poky": "match"}
+    assert _verdicts(compare_pins({"poky": {"commit": observed[-9:]}}, _obs(("poky", observed)))) == {"poky": "differs"}
+
+
 def test_different_full_commit_differs() -> None:
     report = compare_pins({"poky": {"commit": A}}, _obs(("poky", B)))
     assert _verdicts(report) == {"poky": "differs"}

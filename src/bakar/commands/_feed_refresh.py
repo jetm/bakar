@@ -199,6 +199,9 @@ class RefreshResult:
     sync: dict[str, object]
     entries: list[feed_delta.RecipeEntry]
     warnings: tuple[str, ...] = ()
+    # The pair the delta was published under; a remote refresh takes it from the build.
+    release: str | None = None
+    channel: str | None = None
 
 
 _LAYER_DIRS = ("layers", "sources")
@@ -927,5 +930,12 @@ def run_refresh(
             run_id=result.run_id,
         )
     return RefreshResult(
-        channel_dir=channel_dir, run_id=result.run_id, recipes=recipes, sync=sync, entries=entries, warnings=warnings
+        channel_dir=channel_dir,
+        run_id=result.run_id,
+        recipes=recipes,
+        sync=sync,
+        entries=entries,
+        warnings=warnings,
+        release=req.release,
+        channel=req.channel,
     )

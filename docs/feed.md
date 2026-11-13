@@ -59,6 +59,10 @@ destructive happens.
 | `--advertise` | `refresh` only | Host printed in the served stanza; defaults to the bound address |
 | `--snapshot` | `refresh` only | Mint a snapshot in the delta, as `sync` does |
 | `--run-avocado` | `refresh` only | Run the printed `avocado unlock`, `install` and `build` commands in `--project` |
+| `--from HOST` | `refresh` only | Pull a build that `bakar build --on HOST` finished instead of building locally; needs `--run` |
+| `--run RUN_ID` | `refresh` only (with `--from`) | The run id dispatch printed as `remote run-id` |
+| `--allow-pin-mismatch` | `refresh` only (with `--from`) | Publish a remote build whose layer commits differ from the kas pins; recorded as `pin_override: true` |
+| `--yes`, `-y` | `refresh` only (with `--from`) | Accept a bakar version mismatch between this machine and the host |
 | `--metadata-only` | `mirror` only | Mirror repository metadata and no package files |
 | `--target` | `mirror` only | Machine name to resolve through the source's `targets.json` (repeatable) |
 | `--repo` | `mirror` only | Repository path to mirror directly, e.g. `sdk/all` (repeatable) |
@@ -198,10 +202,10 @@ the host's description.
   retry.
 
 The map check is shaped by one measured behavior: a build of a leaf recipe does
-not rewrite `avocado-repo.map` (it is written by the `avocado-complete`
-target, not by the recipe). The refresh therefore compares the map only against
-packages that were in the deploy tree before the build; comparing against the
-packages it just built would refuse every refresh.
+not rewrite `avocado-repo.map` (it is written by meta-target recipes such as
+`avocado-complete`, not by the recipe). The refresh therefore compares the map
+only against packages that were in the deploy tree before the build; comparing
+against the packages it just built would refuse every refresh.
 
 The preflight that `bakar feed doctor` reports runs before the build, so a
 missing prerequisite costs seconds. With `--serve` the port is also checked
@@ -269,10 +273,12 @@ gets a hit for work the remote machine built.
   older bakar did not record where its kas file and workspace were, so it is
   refused with a message saying the build must be dispatched again.
 - A build directory on the host that holds an `avocado-repo.map`. The map is
-  written by the `avocado-distro` recipe once every package is built, so a
-  build of only the recipe you want (`--target htop`) in a fresh build
-  directory has none and is refused. Dispatch `--target avocado-distro` once
-  into that directory first. A local refresh has the same requirement.
+  written by the meta-target recipes that inherit `avocado-repo-map` -
+  `avocado-distro`, `avocado-sdk`, `avocado-complete` and `avocado-feed-index` -
+  once every package they depend on is built, so a build of only the recipe you
+  want (`--target htop`) in a fresh build directory has none and is refused.
+  Dispatch `--target avocado-distro` once into that directory first. A local
+  refresh has the same requirement.
 
 ```bash
 bakar feed refresh meta-avocado/kas/machine/qemux86-64.yml \
@@ -329,7 +335,9 @@ built and the local checkout's head.
 **Release and channel.** The pair comes from the build's own deploy tree. A
 `--release` or `--channel` you typed that disagrees with it is refused naming
 both; one you left out is taken from the build. The local defaults are not held
-against the build.
+against the build. The printed stanzas and the `--serve` URL use the pair the
+delta was published under, and the `base` in `delta.json` is the
+`--base-release`/`--base-channel` you typed, else that same pair.
 
 **`--yes`.** It overrides only a bakar version mismatch between the two
 machines. It does not override a failed pin check (use `--allow-pin-mismatch`),
@@ -358,6 +366,22 @@ a live build or a refused file.
   the ssh path to it.
 - `bakar build --feed` combined with `--on` stays refused; run the sync on the
   host, or build with `--on` and then refresh with `--from`.
+- Only meta-avocado kas files are supported. A kas file in a separate layer
+  repository is refused with `no meta-avocado checkout holds ...`, because the
+  pins are read from that checkout.
+- The host finds runs through its run registry under `$XDG_RUNTIME_DIR`. A
+  reboot, or a logout without linger enabled, clears it, so a run from before
+  either is reported as not registered and must be dispatched again.
+- A run that is not the newest build in its build directory is refused, since
+  later builds have replaced its deploy tree. Refresh from the newest run.
+- The host does not run bitbake, so a recipe provided by layers of more than
+  one repository is recorded with the first such layer, and a warning says so.
+- The map staleness check compares package mtimes with the run's start time. A
+  leaf build whose dependencies were restored from shared sstate with older
+  mtimes can therefore be refused; rebuild the map target first.
+- A refresh killed outright (a closed terminal, `SIGKILL`) cannot clean up, and
+  can leave a `pull-*` directory beside the delta's stage root. Remove it by
+  hand.
 
 ## Mirroring a published feed
 

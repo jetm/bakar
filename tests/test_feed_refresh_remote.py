@@ -396,7 +396,7 @@ def _no_staging(world: World) -> bool:
 
 
 def test_success_publishes_pulled_package_and_records_source(world: World, host: Host) -> None:
-    result = _go(world, host)
+    result = _go(world, host, requested_base_release="2025", requested_base_channel="stable")
 
     chan = feed.channel_root(world.req.delta_root, release="2026", channel="edge")
     assert result.channel_dir == chan
@@ -472,6 +472,23 @@ def test_declared_pair_replaces_the_request_pair(world: World, host: Host) -> No
     assert result.channel_dir == feed.channel_root(world.req.delta_root, release="2027", channel="beta")
     assert _delta_files(world, "2027", "beta")
     assert not _delta_files(world, "2026", "edge")
+    assert (result.release, result.channel) == ("2027", "beta")
+    (entry,) = json.loads((result.channel_dir / feed_delta.RECIPE_MAP_NAME).read_text())["entries"]
+    assert entry["release"] == "2027"
+
+
+def test_untyped_base_follows_the_declared_pair(world: World, host: Host) -> None:
+    host.desc = host._build_desc(release="2027", channel="beta")
+    result = _go(world, host)
+    base = json.loads((result.channel_dir / feed_delta.DELTA_NAME).read_text())["base"]
+    assert (base["release"], base["channel"]) == ("2027", "beta")
+
+
+def test_typed_base_is_kept_over_the_declared_pair(world: World, host: Host) -> None:
+    host.desc = host._build_desc(release="2027", channel="beta")
+    result = _go(world, host, requested_base_release="2024", requested_base_channel="lts")
+    base = json.loads((result.channel_dir / feed_delta.DELTA_NAME).read_text())["base"]
+    assert (base["release"], base["channel"]) == ("2024", "lts")
 
 
 def test_requested_pair_that_differs_refuses_naming_both(world: World, host: Host) -> None:
@@ -739,4 +756,12 @@ def test_bitbake_pin_that_differs_from_the_hosts_bitbake_commit_is_refused() -> 
 
 def test_bitbake_pin_with_no_host_bitbake_commit_says_no_evidence() -> None:
     pins = {"meta-x": {"commit": PIN}, "bitbake": {"commit": OTHER}}
-    assert "bitbake declared" in _refusal(_desc(bitbake_commit=None), declared_pins=pins)
+    msg = _refusal(_desc(bitbake_commit=None), declared_pins=pins)
+    assert f"bitbake declared {OTHER} but the host reported no evidence for it" in msg
+
+
+def test_chosen_entries_carry_the_release_they_are_published_under() -> None:
+    plan = _plan(_desc(release="2027", channel="beta"))
+    assert plan.release == "2027"
+    assert [e.release for e in plan.entries] == ["2027"]
+    assert plan.entries == (dataclasses.replace(_entry(), release="2027"),)

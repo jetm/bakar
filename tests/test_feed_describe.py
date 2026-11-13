@@ -736,3 +736,79 @@ def test_typed_release_keys_entries_when_the_build_declares_none(host: Host) -> 
 def test_declared_release_beats_the_typed_one_for_entries(host: Host) -> None:
     doc = describe.describe_build(RUN_ID, ("htop",), release="other", deps=host.deps())
     assert doc.entries[0].release == doc.release != "other"
+
+
+def test_default_provider_runs_nothing_and_warns_that_bitbake_was_not_asked(
+    host: Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bakar.commands import bitbake as bitbake_cmd
+
+    real_run, real_popen = subprocess.run, subprocess.Popen
+
+    def forbidden(*args: object, **_kw: object) -> None:
+        pytest.fail(f"describe started a process or bitbake lookup: {args!r}")
+
+    def only_git(real):
+        def guard(argv: object, *args: object, **kw: object) -> object:
+            # The layer readers run read-only git queries; anything else is kas or bitbake.
+            if not (isinstance(argv, list) and argv and argv[0] == "git"):
+                forbidden(argv)
+            return real(argv, *args, **kw)
+
+        return guard
+
+    monkeypatch.setattr(subprocess, "run", only_git(real_run))
+    monkeypatch.setattr(subprocess, "Popen", only_git(real_popen))
+    monkeypatch.setattr(bitbake_cmd, "resolve_recipe_files", forbidden)
+    host.world.recipe("htop", layer="meta-extra")
+    deps = describe.DescribeDeps(run_dir_for_run=host.lookup, lock_probe=host.probe, resolve_cfg=host.resolve_cfg)  # type: ignore[arg-type]
+
+    doc = describe.describe_build(RUN_ID, ("htop",), deps=deps)
+
+    assert [e.recipe for e in doc.entries] == ["htop"]
+    assert doc.entries[0].layer_commit is None
+    assert "could not ask bitbake which layer built htop" in doc.warnings[0]
+    assert "does not run bitbake on the build host" in doc.warnings[0]
+
+
+def _sibling(host: Host, name: str) -> Path:
+    path = host.run_dir.parent / name
+    path.mkdir()
+    return path
+
+
+def test_a_newer_run_in_the_same_build_directory_refuses_naming_it(host: Host) -> None:
+    _sibling(host, "20260101-115959-9")
+    _sibling(host, "20260102-080000-17")
+    _sibling(host, "20260101-120001-3")
+    with pytest.raises(describe.DescribeError, match="20260102-080000-17") as err:
+        host.describe()
+    assert "not the newest build" in str(err.value)
+    assert "refresh from the newest run" in str(err.value)
+
+
+def test_an_older_run_in_the_same_build_directory_is_not_a_refusal(host: Host) -> None:
+    _sibling(host, "20251231-235959-1")
+    assert host.describe().state == "succeeded"
+
+
+def test_non_run_siblings_are_ignored(host: Host) -> None:
+    (host.run_dir.parent / "20991231-000000-1.txt").write_text("")
+    (host.run_dir.parent / "99999999-999999-9").write_text("not a directory")
+    (host.run_dir.parent / "zz-notes").mkdir()
+    newer = host.run_dir.parent.parent / "20991231-000000-2"
+    newer.mkdir()
+    (host.run_dir.parent / "latest").symlink_to(newer)
+    (host.run_dir.parent / "20991231-000000-3").symlink_to(newer)
+    assert host.describe().state == "succeeded"
+
+
+@pytest.mark.parametrize("terminal", [{"event": "run_error", "exit_code": 3}, {}])
+def test_failed_or_running_run_with_a_newer_sibling_still_returns_its_state(
+    host: Host, terminal: dict[str, object]
+) -> None:
+    host.write_run(terminal=terminal)
+    _sibling(host, "20260102-080000-17")
+    doc = host.describe()
+    assert doc.state in ("failed", "running")
+    assert doc.files == ()
