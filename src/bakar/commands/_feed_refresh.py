@@ -31,7 +31,7 @@ from bakar.gitutil import run_git
 from bakar.kas import _bblayers_bodies
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Mapping
 
     from bakar.commands.bitbake import BuildResult
     from bakar.config import BuildConfig
@@ -729,12 +729,15 @@ def publish_delta(
     entries: list[feed_delta.RecipeEntry],
     recipes: tuple[str, ...],
     run_id: str,
+    source: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, object], Path]:
     """Publish the entries as the delta and swap it in; return the sync dict and the channel directory.
 
     Shared by the local refresh and a refresh from another host, so both publish
     through the same filtered view, ``feed.sync``, self-contained repositories,
     ``delta.json`` and swap. Every failure leaves the previous delta in place.
+    ``source`` is the remote-refresh record for ``delta.json``; a local refresh
+    passes none.
     """
     channel_dir = feed.channel_root(req.delta_root, release=req.release, channel=req.channel)
     stage_dir = feed.channel_root(req.work_root, release=req.release, channel=req.channel)
@@ -787,6 +790,7 @@ def publish_delta(
             bakar_run_id=run_id,
             delta_path=str(channel_dir),
             snapshot_id=req.base_snapshot_id,
+            source=source,
         )
         new_stage_channel = feed.channel_root(new_stage, release=req.release, channel=req.channel)
         new_stage_channel.mkdir(parents=True, exist_ok=True)

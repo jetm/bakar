@@ -22,7 +22,9 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -209,6 +211,47 @@ def write_recipe_map(channel_dir: Path, entries: list[RecipeEntry]) -> Path:
     return path
 
 
+_SOURCE_KEYS = ("host", "run_id", "pulled_at", "observed_layers", "pin_override")
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _bad_source(key: str, want: str, got: object) -> ValueError:
+    return ValueError(f"source {key!r} must be {want}, got {got!r}")
+
+
+def _is_commit_or_none(value: object) -> bool:
+    return value is None or (isinstance(value, str) and _COMMIT_RE.fullmatch(value) is not None)
+
+
+def _validate_source(source: Mapping[str, object]) -> None:
+    """Reject a malformed source record before anything is written."""
+    for key in _SOURCE_KEYS:
+        if key not in source:
+            raise ValueError(f"source is missing {key!r}")
+    extra = sorted(str(k) for k in source if k not in _SOURCE_KEYS)
+    if extra:
+        raise ValueError(f"source has unknown key(s): {', '.join(extra)}")
+    for key in ("host", "run_id"):
+        value = source[key]
+        if not isinstance(value, str) or not value:
+            raise _bad_source(key, "a non-empty string", value)
+    pulled_at = source["pulled_at"]
+    try:
+        parsed = datetime.fromisoformat(pulled_at) if isinstance(pulled_at, str) else None
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.utcoffset() != timedelta(0):
+        raise _bad_source("pulled_at", "a UTC ISO-8601 string", pulled_at)
+    layers = source["observed_layers"]
+    if not isinstance(layers, Mapping):
+        raise _bad_source("observed_layers", "a mapping", layers)
+    for name, commit in layers.items():
+        if not isinstance(name, str) or not _is_commit_or_none(commit):
+            raise _bad_source("observed_layers", "a mapping of name to 40-hex commit or None", {name: commit})
+    if not isinstance(source["pin_override"], bool):
+        raise _bad_source("pin_override", "a bool", source["pin_override"])
+
+
 def write_delta(  # noqa: PLR0913 - keyword-only fields of one record
     channel_dir: Path,
     *,
@@ -218,9 +261,16 @@ def write_delta(  # noqa: PLR0913 - keyword-only fields of one record
     bakar_run_id: str,
     delta_path: str,
     snapshot_id: str | None = None,
+    source: Mapping[str, object] | None = None,
 ) -> Path:
-    """Write ``delta.json`` in the delta channel directory."""
-    payload = {
+    """Write ``delta.json`` in the delta channel directory.
+
+    ``source`` is recorded only for a refresh from another host; a local refresh
+    passes nothing and the file carries no ``source`` key at all.
+    """
+    if source is not None:
+        _validate_source(source)
+    payload: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "base": {
             "release": base_release,
@@ -231,6 +281,8 @@ def write_delta(  # noqa: PLR0913 - keyword-only fields of one record
         "bakar_run_id": bakar_run_id,
         "delta_path": delta_path,
     }
+    if source is not None:
+        payload["source"] = {key: source[key] for key in _SOURCE_KEYS}
     path = channel_dir / DELTA_NAME
     _write_json_atomic(path, payload)
     return path
