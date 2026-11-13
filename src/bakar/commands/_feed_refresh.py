@@ -413,7 +413,7 @@ def _version_key(text: str) -> _VersionKey:
     return tuple((1, int(tok), "") if tok.isdigit() else (0, 0, tok) for tok in re.findall(r"\d+|[A-Za-z]+", text))
 
 
-def _rpm_files(deploy: Path) -> dict[str, list[str]]:
+def rpm_files(deploy: Path) -> dict[str, list[str]]:
     """Map RPM package name to the file names of its newest build in the deploy tree.
 
     A PR bump leaves ``foo-1.0-r0`` and ``foo-1.0-r1`` side by side; only the
@@ -446,7 +446,7 @@ def _rpm_snapshot(deploy: Path) -> dict[str, int]:
     return out
 
 
-def _stale_map_message(deploy: Path, own_names: frozenset[str], before: dict[str, int]) -> str | None:
+def stale_map_message(deploy: Path, own_names: frozenset[str], before: dict[str, int]) -> str | None:
     """Refuse reason when ``avocado-repo.map`` predates packages that were there before the refresh.
 
     Spike 1.2 measured that a leaf-recipe build does not rewrite the map, so the
@@ -628,8 +628,10 @@ def _provider_of(built: Path | None, candidates: list[RecipeLocation]) -> Recipe
     return best
 
 
-def _build_entries(
-    req: RefreshRequest,
+def build_entries(
+    cfg: BuildConfig,
+    kas_yaml: Path,
+    release: str,
     *,
     recipes: tuple[str, ...],
     pkgdata: dict[str, RecipePkgdata],
@@ -649,7 +651,7 @@ def _build_entries(
     rather than a guess when the layers span repositories. A warning names every
     layer either way.
     """
-    hashes = layers.collect_layer_hashes(req.cfg)
+    hashes = layers.collect_layer_hashes(cfg)
     entries = []
     warnings: list[str] = []
     # Layers of one repository share a commit, so only a recipe spanning repositories needs bitbake's answer.
@@ -657,7 +659,7 @@ def _build_entries(
     resolved: dict[str, Path | None] = {}
     if ambiguous:
         try:
-            answer = resolve_provider(req.cfg, req.kas_yaml, ambiguous)
+            answer = resolve_provider(cfg, kas_yaml, ambiguous)
             # `or {}` would drop an empty answer's run_id, so test for None only.
             resolved = {} if answer is None else answer
         except Exception as exc:  # noqa: BLE001 - a lookup failure must never fail the refresh
@@ -707,7 +709,7 @@ def _build_entries(
                 srcrev=None,
                 layer_commit=commit,
                 machine=machine,
-                release=req.release,
+                release=release,
                 task_hash=None,
             )
         except ValueError as exc:
@@ -715,6 +717,94 @@ def _build_entries(
         task_hash = feed_delta.read_task_hash(tmpdir / "stamps", recipe, probe.pv)
         entries.append(dataclasses.replace(probe, task_hash=task_hash, srcrev=_srcrev_of(probe.pv)))
     return entries, tuple(warnings)
+
+
+def publish_delta(
+    req: RefreshRequest,
+    *,
+    deploy: Path,
+    scripts: Path,
+    own_names: frozenset[str],
+    rpms: dict[str, list[str]],
+    entries: list[feed_delta.RecipeEntry],
+    recipes: tuple[str, ...],
+    run_id: str,
+) -> tuple[dict[str, object], Path]:
+    """Publish the entries as the delta and swap it in; return the sync dict and the channel directory.
+
+    Shared by the local refresh and a refresh from another host, so both publish
+    through the same filtered view, ``feed.sync``, self-contained repositories,
+    ``delta.json`` and swap. Every failure leaves the previous delta in place.
+    """
+    channel_dir = feed.channel_root(req.delta_root, release=req.release, channel=req.channel)
+    stage_dir = feed.channel_root(req.work_root, release=req.release, channel=req.channel)
+    new_delta, new_stage = _sibling(req.delta_root, ".new"), _sibling(req.work_root, ".new")
+    kept = {f for n in own_names for f in rpms.get(n, [])}
+    try:
+        view = Path(tempfile.mkdtemp(prefix="feed-view-", dir=deploy.parent))
+    except OSError as exc:
+        raise RefreshFailedError(
+            f"could not create a scratch directory: {exc}; the previous delta is untouched"
+        ) from exc
+    for fresh in (new_delta, new_stage):
+        _wipe(fresh)
+    try:
+        try:
+            view_dir = feed_filter.build_filtered_view(deploy, view, own_names)
+        except FileNotFoundError as exc:
+            raise RefreshFailedError(f"{exc}; the previous delta is untouched") from exc
+        for linked in view_dir.glob("*/*.rpm"):
+            if linked.name not in kept:
+                linked.unlink()
+        sync = feed.sync(
+            req.cfg,
+            publish=feed.FeedPublish(
+                deploy_dir=view_dir,
+                scripts=scripts,
+                release=req.release,
+                channel=req.channel,
+                head_only=not req.snapshot,
+            ),
+            feed_root=new_delta,
+            stage_root=new_stage,
+        )
+        new_channel = feed.channel_root(new_delta, release=req.release, channel=req.channel)
+        new_channel.mkdir(parents=True, exist_ok=True)
+        sync = {
+            **sync,
+            "repos": make_repos_self_contained(
+                new_channel,
+                feed.channel_root(new_stage, release=req.release, channel=req.channel),
+                sync,
+            ),
+        }
+        feed_delta.write_recipe_map(new_channel, entries)
+        feed_delta.write_delta(
+            new_channel,
+            base_release=req.base_release,
+            base_channel=req.base_channel,
+            built_recipes=list(recipes),
+            bakar_run_id=run_id,
+            delta_path=str(channel_dir),
+            snapshot_id=req.base_snapshot_id,
+        )
+        new_stage_channel = feed.channel_root(new_stage, release=req.release, channel=req.channel)
+        new_stage_channel.mkdir(parents=True, exist_ok=True)
+        # A `bakar feed mirror` aimed at these roots writes no marker until its last
+        # phase, so the marker check alone can miss one that is still downloading.
+        # Take the lock the mirror holds for its whole run, then look again; the
+        # check stays as defence in depth for a mirror that finished meanwhile.
+        try:
+            with feed_lock.feed_lock(req.delta_root), feed_lock.feed_lock(req.work_root):
+                check_no_mirror_markers(channel_dir)
+                check_no_mirror_markers(stage_dir)
+                _swap_all([(new_channel, channel_dir), (new_stage_channel, stage_dir)])
+        except (feed_lock.FeedLockTimeout, ValueError) as exc:
+            raise RefreshFailedError(f"{exc}; the previous delta is untouched") from exc
+    finally:
+        for scratch in (view, new_delta, new_stage):
+            _wipe(scratch)
+    return sync, channel_dir
 
 
 def run_refresh(
@@ -789,14 +879,14 @@ def run_refresh(
         try:
             pkgdata = {r: read_recipe_pkgdata(tmpdir, r) for r in recipes}
             own_names = frozenset(n for pd in pkgdata.values() for n in pd.packages)
-            stale = _stale_map_message(deploy, own_names, before)
+            stale = stale_map_message(deploy, own_names, before)
         except OSError as exc:
             raise RefreshFailedError(
                 f"could not read the build output: {exc}; the previous delta is untouched"
             ) from exc
         if stale:
             raise RefreshFailedError(f"{stale}; the previous delta is untouched")
-        rpms = _rpm_files(deploy)
+        rpms = rpm_files(deploy)
         missing = [r for r, pd in pkgdata.items() if not any(n in rpms for n in pd.packages)]
         if missing:
             raise RefreshFailedError(
@@ -809,8 +899,10 @@ def run_refresh(
                 f"{feed_filter.REPO_MAP_NAME} is not valid UTF-8 ({exc.reason} at byte {exc.start}); "
                 "the previous delta is untouched"
             ) from exc
-        entries, warnings = _build_entries(
-            req,
+        entries, warnings = build_entries(
+            req.cfg,
+            req.kas_yaml,
+            req.release,
             recipes=recipes,
             pkgdata=pkgdata,
             rpms=rpms,
@@ -820,74 +912,16 @@ def run_refresh(
             resolve_provider=resolve_provider or _real_resolve_provider,
         )
 
-        channel_dir = feed.channel_root(req.delta_root, release=req.release, channel=req.channel)
-        stage_dir = feed.channel_root(req.work_root, release=req.release, channel=req.channel)
-        new_delta, new_stage = _sibling(req.delta_root, ".new"), _sibling(req.work_root, ".new")
-        kept = {f for n in own_names for f in rpms.get(n, [])}
-        try:
-            view = Path(tempfile.mkdtemp(prefix="feed-view-", dir=deploy.parent))
-        except OSError as exc:
-            raise RefreshFailedError(
-                f"could not create a scratch directory: {exc}; the previous delta is untouched"
-            ) from exc
-        for fresh in (new_delta, new_stage):
-            _wipe(fresh)
-        try:
-            try:
-                view_dir = feed_filter.build_filtered_view(deploy, view, own_names)
-            except FileNotFoundError as exc:
-                raise RefreshFailedError(f"{exc}; the previous delta is untouched") from exc
-            for linked in view_dir.glob("*/*.rpm"):
-                if linked.name not in kept:
-                    linked.unlink()
-            sync = feed.sync(
-                req.cfg,
-                publish=feed.FeedPublish(
-                    deploy_dir=view_dir,
-                    scripts=scripts,
-                    release=req.release,
-                    channel=req.channel,
-                    head_only=not req.snapshot,
-                ),
-                feed_root=new_delta,
-                stage_root=new_stage,
-            )
-            new_channel = feed.channel_root(new_delta, release=req.release, channel=req.channel)
-            new_channel.mkdir(parents=True, exist_ok=True)
-            sync = {
-                **sync,
-                "repos": make_repos_self_contained(
-                    new_channel,
-                    feed.channel_root(new_stage, release=req.release, channel=req.channel),
-                    sync,
-                ),
-            }
-            feed_delta.write_recipe_map(new_channel, entries)
-            feed_delta.write_delta(
-                new_channel,
-                base_release=req.base_release,
-                base_channel=req.base_channel,
-                built_recipes=list(recipes),
-                bakar_run_id=result.run_id,
-                delta_path=str(channel_dir),
-                snapshot_id=req.base_snapshot_id,
-            )
-            new_stage_channel = feed.channel_root(new_stage, release=req.release, channel=req.channel)
-            new_stage_channel.mkdir(parents=True, exist_ok=True)
-            # A `bakar feed mirror` aimed at these roots writes no marker until its last
-            # phase, so the marker check alone can miss one that is still downloading.
-            # Take the lock the mirror holds for its whole run, then look again; the
-            # check stays as defence in depth for a mirror that finished meanwhile.
-            try:
-                with feed_lock.feed_lock(req.delta_root), feed_lock.feed_lock(req.work_root):
-                    check_no_mirror_markers(channel_dir)
-                    check_no_mirror_markers(stage_dir)
-                    _swap_all([(new_channel, channel_dir), (new_stage_channel, stage_dir)])
-            except (feed_lock.FeedLockTimeout, ValueError) as exc:
-                raise RefreshFailedError(f"{exc}; the previous delta is untouched") from exc
-        finally:
-            for scratch in (view, new_delta, new_stage):
-                _wipe(scratch)
+        sync, channel_dir = publish_delta(
+            req,
+            deploy=deploy,
+            scripts=scripts,
+            own_names=own_names,
+            rpms=rpms,
+            entries=entries,
+            recipes=recipes,
+            run_id=result.run_id,
+        )
     return RefreshResult(
         channel_dir=channel_dir, run_id=result.run_id, recipes=recipes, sync=sync, entries=entries, warnings=warnings
     )
