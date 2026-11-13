@@ -152,7 +152,9 @@ def test_verb_is_hidden_from_the_visible_feed_help(cli: CliRunner) -> None:
 
 
 def test_verb_is_still_reachable_by_name(cli: CliRunner) -> None:
-    result = cli.invoke(app, ["feed", "describe", "--help"])
+    # typer forces a terminal under GITHUB_ACTIONS and keeps bold, which splits
+    # "--recipe" across escape codes; TERM=dumb drops every style.
+    result = cli.invoke(app, ["feed", "describe", "--help"], env={"COLUMNS": "200", "TERM": "dumb", "NO_COLOR": "1"})
 
     assert result.exit_code == 0
     assert "--recipe" in result.output

@@ -275,7 +275,9 @@ def test_live_build_is_refused_naming_the_signal_and_copies_nothing(
     _assert_refused_cleanly(fake, result, previous, signal, RUN_ID)
     if lock_state[0] == "held":
         assert "still live" in _words(result.output)
-        assert fake.build.lock_file.name in _words(result.output)
+        # rich splits an unbroken path token at the console width, so the name
+        # can straddle a newline; _words would turn that into a space.
+        assert fake.build.lock_file.name in "".join(result.output.split())
     assert fake.ssh_runs == runs_before
 
 
