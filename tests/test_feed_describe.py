@@ -3,33 +3,57 @@
 from __future__ import annotations
 
 import calendar
+import dataclasses
 import fcntl
 import hashlib
 import json
 import os
 import re
-from typing import TYPE_CHECKING
+import shutil
+import subprocess
+from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
-from bakar import feed_describe
+from bakar import feed, feed_describe, run_discovery
+from bakar.commands import _app as app_state
 from bakar.commands import _feed_describe as describe
-from tests._feed_world import World, make_rpm
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from bakar.commands import _feed_refresh as refresh
+from tests._feed_world import HASH, World, make_rpm
 
 RUN_ID = "20260101-120000-4242"
 RUN_START = calendar.timegm((2026, 1, 1, 12, 0, 0))
 KAS = "/srv/ws/meta-avocado/kas/m.yml"
 WORKSPACE = "/srv/ws"
 TESTDATA = '{"DISTRO_CODENAME": "2026/edge"}'
+FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
+# The layer the fake recipes live in; a bblayers.conf must name it for the recipes to be found, and it is no checkout.
+RECIPE_LAYER = feed_describe.LayerCommit(repo="meta-oe", commit=None)
 
 needs_unprivileged = pytest.mark.skipif(os.geteuid() == 0, reason="root reads files whatever their mode")
 
 
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def git_repo(path: Path, *, message: str = "init") -> str:
+    """Make ``path`` a git checkout with one empty commit and return its full HEAD."""
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    ident = ["-c", "user.email=t@example.invalid", "-c", "user.name=t"]
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", *ident, "init", "-q", str(path)], check=True, capture_output=True, env=env)
+    subprocess.run(
+        ["git", *ident, "-C", str(path), "commit", "-q", "--allow-empty", "-m", message],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    out = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"], check=True, capture_output=True, text=True, env=env
+    )
+    return out.stdout.strip()
 
 
 class Host:
@@ -43,6 +67,13 @@ class Host:
         self.probe_result: tuple[str, str | None] = ("free", None)
         self.probed: list[Path] = []
         self.deploy_root = self.world.tmpdir / "deploy"
+        ws = self.world.workspace
+        self.bblayers = ws / "build-qemux86-64" / "build" / "conf" / "bblayers.conf"
+        # The fake cfg stands in for what the real resolution returns for the recorded workspace and kas file.
+        self.world.cfg.bblayers_conf = self.bblayers  # type: ignore[attr-defined]
+        self.world.cfg.bsp_bitbake_path = tmp_path / "no-bitbake"  # type: ignore[attr-defined]
+        self.resolved: list[tuple[Path, Path, str | None, str | None]] = []
+        self.provider_calls: list[list[str]] = []
         testdata = self.deploy_root / "images" / "qemux86-64" / "avocado-qemux86-64.testdata.json"
         testdata.parent.mkdir(parents=True)
         testdata.write_text(TESTDATA)
@@ -56,12 +87,16 @@ class Host:
         family: str = "avocado",
         build_paths: bool = True,
         env: dict[str, str] | None = None,
+        mode: str | None = "host",
     ) -> None:
         terminal = {"event": "run_end", "exit_code": 0} if terminal is None else terminal
         events: list[dict[str, object]] = [{"event": "run_start"}]
         if build_paths:
             events.append({"event": "build_paths", "tmpdir": str(self.world.tmpdir), "sstate_dir": "/sstate"})
-        events.append({"event": "build_config", "family": family, "machine": "avocado-qemux86-64", "mode": "host"})
+        config: dict[str, object] = {"event": "build_config", "family": family, "machine": "avocado-qemux86-64"}
+        if mode is not None:
+            config["mode"] = mode
+        events.append(config)
         if terminal:
             events.append(terminal)
         (self.run_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
@@ -75,8 +110,26 @@ class Host:
         self.probed.append(path)
         return self.probe_result
 
+    def resolve_cfg(self, workspace: Path, kas_yaml: Path, *, mode: str | None, build_dir: str | None) -> object:
+        self.resolved.append((workspace, kas_yaml, mode, build_dir))
+        return self.world.cfg
+
+    def resolve_provider(self, _cfg: object, _kas: Path, recipes: list[str]) -> None:
+        self.provider_calls.append(list(recipes))
+
     def deps(self) -> describe.DescribeDeps:
-        return describe.DescribeDeps(run_dir_for_run=self.lookup, lock_probe=self.probe)
+        return describe.DescribeDeps(
+            run_dir_for_run=self.lookup,
+            lock_probe=self.probe,
+            resolve_cfg=self.resolve_cfg,  # type: ignore[arg-type]
+            resolve_provider=self.resolve_provider,
+        )
+
+    def layer_conf(self, *dirs: Path) -> None:
+        """Write a bblayers.conf naming ``dirs`` and the layer that holds the fake recipes, as absolute paths."""
+        self.bblayers.parent.mkdir(parents=True, exist_ok=True)
+        body = " ".join(str(d) for d in (*dirs, self.world.workspace / "sources" / "meta-oe"))
+        self.bblayers.write_text(f'BBLAYERS ?= " {body} "\n')
 
     def describe(self, *recipes: str) -> feed_describe.BuildDescription:
         return describe.describe_build(RUN_ID, recipes or ("htop",), deps=self.deps())
@@ -98,9 +151,10 @@ def test_succeeded_run_document_fields(host: Host) -> None:
     assert doc.deploy_dir == str(host.deploy_root)
     assert doc.live is False
     assert doc.live_reason is None
-    assert doc.entries == ()
+    assert [e.recipe for e in doc.entries] == ["htop"]
     assert doc.layers == ()
     assert doc.warnings == ()
+    assert (doc.release, doc.channel) == ("2026", "edge")
     assert host.probed == [host.lock_file]
 
 
@@ -267,7 +321,7 @@ def test_untestable_lock_means_live_and_says_the_state_was_unknown(host: Host) -
 
 def test_a_real_flock_holder_is_seen_through_the_default_probe(host: Host) -> None:
     host.lock_file.write_text("")
-    deps = describe.DescribeDeps(run_dir_for_run=host.lookup)
+    deps = dataclasses.replace(host.deps(), lock_probe=describe.probe_lock)
     with host.lock_file.open("rb") as holder:
         fcntl.flock(holder, fcntl.LOCK_EX)
         held = describe.describe_build(RUN_ID, ("htop",), deps=deps)
@@ -322,6 +376,334 @@ def _listing(root: Path) -> dict[str, tuple[int, int, int]]:
 
 def test_describing_writes_nothing_under_the_host_tree_or_the_run_registry(host: Host, tmp_path: Path) -> None:
     before = _listing(tmp_path)
-    describe.describe_build(RUN_ID, ("htop",), deps=describe.DescribeDeps(run_dir_for_run=host.lookup))
+    deps = dataclasses.replace(host.deps(), lock_probe=describe.probe_lock)
+    describe.describe_build(RUN_ID, ("htop",), deps=deps)
     assert _listing(tmp_path) == before
     assert not host.lock_file.exists()
+
+
+# --- recipe entries, layer commits, release and channel -------------------------------------------------------
+
+
+@pytest.fixture
+def local_refresh(host: Host, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Run the real local ``run_refresh`` on the host's tree; return the result and the entries it wrote."""
+    w = host.world
+    monkeypatch.setattr(run_discovery, "live_workspace_runs", lambda _p, **_k: [])
+    monkeypatch.setattr(refresh.feed_ops, "scripts_dir", lambda _y: tmp_path / "scripts")
+
+    def fake_sync(_cfg: object, *, publish: feed.FeedPublish, feed_root: Path, stage_root: Path, **_kw: object) -> dict:
+        chan = feed.channel_root(feed_root, release=publish.release, channel=publish.channel)
+        staged = feed.channel_root(stage_root, release=publish.release, channel=publish.channel)
+        for rpm in publish.deploy_dir.rglob("*.rpm"):
+            dest = staged / "target" / "qemux86-64" / rpm.parent.name / rpm.name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(rpm, dest)
+            pooled = chan / "_pkgs" / "09" / f"{rpm.name}.rpm"
+            pooled.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(rpm, pooled)
+        (chan / "target" / "qemux86-64" / "repodata").mkdir(parents=True, exist_ok=True)
+        (chan / "target" / "qemux86-64" / "repodata" / "pooled-primary.xml.gz").write_bytes(b"pooled")
+        return {"snapshot": None, "channel_root": chan, "repos": ["target/qemux86-64"]}
+
+    def fake_createrepo(repo: Path) -> None:
+        hrefs = "".join(f'<location href="{p.relative_to(repo)}"/>' for p in sorted(repo.rglob("*.rpm")))
+        (repo / "repodata").mkdir(exist_ok=True)
+        (repo / "repodata" / "primary.xml").write_text(hrefs)
+
+    monkeypatch.setattr(refresh.feed, "sync", fake_sync)
+    monkeypatch.setattr(refresh, "_createrepo", fake_createrepo)
+
+    def run(*recipes: str) -> tuple[refresh.RefreshResult, list[dict[str, object]]]:
+        req = dataclasses.replace(w.req, recipes=recipes or ("htop",))
+        result = refresh.run_refresh(req, builder=w.builder, resolve_provider=host.resolve_provider)  # type: ignore[arg-type]
+        chan = feed.channel_root(req.delta_root, release=req.release, channel=req.channel)
+        return result, json.loads((chan / "recipe-map.json").read_text())["entries"]
+
+    return run
+
+
+def test_entries_equals_local_refresh(host: Host, local_refresh) -> None:
+    """A1: the host's entries are the ones a local refresh of the same tree writes."""
+    git_repo(host.world.workspace / "sources" / "meta-oe")
+    host.world.recipe("glibc", {"glibc": "libc6", "glibc-dev": "libc6-dev"}, layer="meta-oe")
+    host.world.stamp("htop")
+    host.world.stamp("glibc")
+
+    result, written = local_refresh("htop", "glibc")
+    doc = host.describe("htop", "glibc")
+
+    assert [asdict(e) for e in doc.entries] == written
+    assert [e["recipe"] for e in written] == ["htop", "glibc"]
+    # The comparison is not vacuous: the cache-key fields are populated.
+    assert written[0]["task_hash"] == HASH
+    assert written[0]["layer_commit"]
+    assert doc.warnings == result.warnings == ()
+
+
+def test_entry_with_an_unreadable_task_hash_is_null_and_keeps_the_other_fields(host: Host, local_refresh) -> None:
+    git_repo(host.world.workspace / "sources" / "meta-oe")
+
+    _result, written = local_refresh("htop")
+    (entry,) = host.describe().entries
+
+    assert asdict(entry) == written[0]
+    assert entry.task_hash is None
+    assert (entry.recipe, entry.packages, entry.layer, entry.pv, entry.release) == (
+        "htop",
+        ["htop"],
+        "meta-oe",
+        "1.0",
+        "2026",
+    )
+    assert entry.layer_commit
+
+
+def test_recipe_provided_by_two_layers_carries_the_local_refresh_warning(host: Host, local_refresh) -> None:
+    host.world.recipe("htop", layer="meta-extra")
+
+    result, written = local_refresh("htop")
+    doc = host.describe()
+
+    assert doc.warnings == result.warnings
+    assert len(doc.warnings) == 1
+    assert "recipe htop is provided by layers meta-extra, meta-oe" in doc.warnings[0]
+    assert [asdict(e) for e in doc.entries] == written
+    assert host.provider_calls == [["htop"], ["htop"]]
+
+
+def test_provider_lookup_failure_is_a_warning_not_a_refusal(host: Host) -> None:
+    host.world.recipe("htop", layer="meta-extra")
+    deps = dataclasses.replace(host.deps(), resolve_provider=lambda *_: (_ for _ in ()).throw(RuntimeError("kas down")))
+    doc = describe.describe_build(RUN_ID, ("htop",), deps=deps)
+    assert len(doc.warnings) == 2
+    assert "could not ask bitbake which layer built htop: kas down" in doc.warnings[0]
+    assert doc.entries[0].layer_commit is None
+
+
+def test_release_and_channel_come_from_the_image_testdata(host: Host) -> None:
+    (host.deploy_root / "images" / "qemux86-64" / "avocado-qemux86-64.testdata.json").write_text(
+        '{"DISTRO_CODENAME": "2027/stable"}'
+    )
+    doc = host.describe()
+    assert (doc.release, doc.channel) == ("2027", "stable")
+    assert doc.entries[0].release == "2027"
+
+
+def test_build_declaring_no_release_leaves_them_empty_and_entries_use_the_default(host: Host) -> None:
+    (host.deploy_root / "images" / "qemux86-64" / "avocado-qemux86-64.testdata.json").unlink()
+    doc = host.describe()
+    assert (doc.release, doc.channel) == ("", "")
+    assert doc.entries[0].release == feed.DEFAULT_RELEASE
+
+
+def test_layer_directory_inside_a_repository_is_named_by_the_repository(host: Host) -> None:
+    ws = host.world.workspace
+    head = git_repo(ws / "sources" / "meta-openembedded")
+    layer = ws / "sources" / "meta-openembedded" / "meta-oe"
+    layer.mkdir()
+    host.layer_conf(layer)
+
+    doc = host.describe()
+
+    assert doc.layers == (feed_describe.LayerCommit(repo="meta-openembedded", commit=head), RECIPE_LAYER)
+    assert FULL_COMMIT.fullmatch(head)
+
+
+def test_layer_directory_named_for_its_kas_key_reports_its_commit(host: Host) -> None:
+    ws = host.world.workspace
+    head = git_repo(ws / "meta-avocado")
+    host.layer_conf(ws / "meta-avocado")
+    assert host.describe().layers == (feed_describe.LayerCommit(repo="meta-avocado", commit=head), RECIPE_LAYER)
+
+
+def test_side_checkout_is_named_by_its_parent_and_reports_its_own_commit_not_the_clones(host: Host) -> None:
+    ws = host.world.workspace
+    clone_head = git_repo(ws / "meta-avocado", message="clone")
+    side = ws / ".bakar" / "pins" / "meta-avocado" / "0123456789ab"
+    side_head = git_repo(side, message="pinned")
+    (side / "meta-avocado").mkdir()
+    assert side_head != clone_head
+    host.layer_conf(side / "meta-avocado")
+
+    doc = host.describe()
+
+    assert doc.layers == (feed_describe.LayerCommit(repo="meta-avocado", commit=side_head), RECIPE_LAYER)
+
+
+def test_directory_that_is_not_a_checkout_reports_a_null_commit(host: Host) -> None:
+    ws = host.world.workspace
+    plain = ws / "plain" / "meta-x"
+    plain.mkdir(parents=True)
+    host.layer_conf(plain)
+
+    doc = host.describe()
+
+    assert doc.layers == (feed_describe.LayerCommit(repo="meta-x", commit=None), RECIPE_LAYER)
+
+
+def test_two_layers_of_one_repository_are_reported_once(host: Host) -> None:
+    ws = host.world.workspace
+    head = git_repo(ws / "sources" / "meta-openembedded")
+    layers = [ws / "sources" / "meta-openembedded" / n for n in ("meta-oe", "meta-python")]
+    for layer in layers:
+        layer.mkdir()
+    host.layer_conf(*layers)
+    assert host.describe().layers == (feed_describe.LayerCommit(repo="meta-openembedded", commit=head), RECIPE_LAYER)
+
+
+def test_bitbake_commit_is_the_full_commit_of_the_bitbake_directory(host: Host, tmp_path: Path) -> None:
+    bitbake = tmp_path / "bitbake"
+    (bitbake / "lib" / "bb").mkdir(parents=True)
+    (bitbake / "lib" / "bb" / "__init__.py").write_text('__version__ = "2.8.0"\n')
+    head = git_repo(bitbake)
+    host.world.cfg.bsp_bitbake_path = bitbake  # type: ignore[attr-defined]
+    doc = host.describe()
+    assert doc.bitbake_commit == head
+    assert FULL_COMMIT.fullmatch(head)
+
+
+def test_missing_bitbake_directory_is_a_null_commit(host: Host) -> None:
+    assert host.describe().bitbake_commit is None
+
+
+def test_a_build_with_no_layer_configuration_reports_no_layers(host: Host) -> None:
+    assert not host.bblayers.exists()
+    assert host.describe().layers == ()
+
+
+def test_described_document_with_layers_round_trips_the_strict_parser(host: Host) -> None:
+    ws = host.world.workspace
+    git_repo(ws / "meta-avocado")
+    host.layer_conf(ws / "meta-avocado")
+    doc = host.describe()
+    assert feed_describe.parse(feed_describe.encode(doc)) == doc
+
+
+def test_describing_with_layers_writes_nothing_under_the_workspace(host: Host, tmp_path: Path) -> None:
+    ws = host.world.workspace
+    git_repo(ws / "meta-avocado")
+    host.layer_conf(ws / "meta-avocado")
+    before = _listing(tmp_path)
+    host.describe()
+    assert _listing(tmp_path) == before
+
+
+# --- resolving the host's build configuration ------------------------------------------------------------------
+
+
+def test_recorded_workspace_kas_mode_and_build_dir_reach_the_resolution(host: Host) -> None:
+    host.write_run(
+        mode="container",
+        env={
+            "BAKAR_DISPATCH_KAS": KAS,
+            "BAKAR_DISPATCH_WORKSPACE": WORKSPACE,
+            "BAKAR_WORKTREE_BUILD_DIR": "build-{stem}-dispatched",
+        },
+    )
+    host.describe()
+    assert host.resolved == [(Path(WORKSPACE), Path(KAS), "container", "build-{stem}-dispatched")]
+
+
+def test_a_run_recording_no_mode_or_build_dir_passes_none(host: Host) -> None:
+    host.write_run(mode=None)
+    host.describe()
+    assert host.resolved == [(Path(WORKSPACE), Path(KAS), None, None)]
+
+
+def test_failed_and_running_runs_resolve_no_configuration(host: Host) -> None:
+    host.write_run(terminal={"event": "run_end", "exit_code": 1})
+    host.describe()
+    host.write_run(terminal={})
+    host.describe()
+    assert host.resolved == []
+
+
+@pytest.fixture
+def spy_resolution(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Replace ``_resolve_refresh_cfg`` with a recorder of the process-wide state it runs under."""
+    from bakar.commands import feed as feed_cmd
+
+    seen: list[dict[str, object]] = []
+
+    def spy(workspace: Path | None, kas_yaml: Path) -> str:
+        opts = app_state._GLOBAL_OPTIONS
+        seen.append(
+            {
+                "host": opts.host,
+                "container": opts.container,
+                "build_dir": os.environ.get("BAKAR_WORKTREE_BUILD_DIR"),
+                "args": (workspace, kas_yaml),
+            }
+        )
+        return "cfg"
+
+    monkeypatch.setattr(feed_cmd, "_resolve_refresh_cfg", spy)
+    monkeypatch.delenv("BAKAR_WORKTREE_BUILD_DIR", raising=False)
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("mode", "flags"), [("host", (True, False)), ("container", (False, True)), (None, (False, False))]
+)
+def test_recorded_mode_is_applied_during_resolution_only(
+    spy_resolution: list[dict[str, object]], mode: str | None, flags: tuple[bool, bool]
+) -> None:
+    before = app_state._GLOBAL_OPTIONS
+    cfg = describe.resolve_host_cfg(Path("/ws"), Path("/ws/k.yml"), mode=mode, build_dir="build-x")
+    assert cfg == "cfg"
+    assert spy_resolution == [
+        {"host": flags[0], "container": flags[1], "build_dir": "build-x", "args": (Path("/ws"), Path("/ws/k.yml"))}
+    ]
+    assert app_state._GLOBAL_OPTIONS is before
+    assert "BAKAR_WORKTREE_BUILD_DIR" not in os.environ
+
+
+def test_global_state_and_environment_are_restored_when_resolution_raises(
+    monkeypatch: pytest.MonkeyPatch, spy_resolution: list[dict[str, object]]
+) -> None:
+    from bakar.commands import feed as feed_cmd
+
+    def boom(_w: object, _k: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(feed_cmd, "_resolve_refresh_cfg", boom)
+    before = app_state._GLOBAL_OPTIONS
+    monkeypatch.setenv("BAKAR_WORKTREE_BUILD_DIR", "kept")
+    with pytest.raises(RuntimeError, match="boom"):
+        describe.resolve_host_cfg(Path("/ws"), Path("/ws/k.yml"), mode="container", build_dir="other")
+    assert app_state._GLOBAL_OPTIONS is before
+    assert os.environ["BAKAR_WORKTREE_BUILD_DIR"] == "kept"
+    assert spy_resolution == []
+
+
+def test_real_resolution_from_the_recorded_kas_path_and_workspace(
+    meta_avocado_worktree_layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A2: the real ``_resolve_refresh_cfg`` resolves the dispatch's build directory from the two recorded values."""
+    layout = meta_avocado_worktree_layout
+    monkeypatch.delenv("BAKAR_WORKTREE_BUILD_DIR", raising=False)
+    before = app_state._GLOBAL_OPTIONS
+
+    host_cfg = describe.resolve_host_cfg(layout.ws, layout.kas_yaml, mode="host", build_dir="build-{stem}-dispatched")
+    container_cfg = describe.resolve_host_cfg(
+        layout.ws, layout.kas_yaml, mode="container", build_dir="build-{stem}-dispatched"
+    )
+
+    assert host_cfg.workspace == layout.ws
+    assert host_cfg.bsp_root == layout.ws / "build-m-dispatched"
+    assert host_cfg.host_mode is True
+    assert container_cfg.host_mode is False
+    assert container_cfg.bsp_root == layout.ws / "build-m-dispatched"
+    assert app_state._GLOBAL_OPTIONS is before
+    assert "BAKAR_WORKTREE_BUILD_DIR" not in os.environ
+
+
+def test_resolution_refusal_becomes_a_describe_error_and_leaves_stdout_clean(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(describe.DescribeError, match=r"nope\.yml"):
+        describe.resolve_host_cfg(tmp_path, tmp_path / "nope.yml", mode=None, build_dir=None)
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert "nope.yml" in out.err

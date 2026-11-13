@@ -4,28 +4,53 @@ Runs on the build host and only reads: it resolves a run to its build output,
 judges whether that output can still change, and lists the files a pull needs
 with size and checksum. It creates and writes nothing under the build tree or
 the run registry, and holds no lock beyond one momentary shared test of the
-build directory's lock file. ``entries`` and ``layers`` are filled by a later
-step; ``release`` and ``channel`` likewise.
+build directory's lock file. The one thing it runs besides that test is read-only
+``git rev-parse HEAD`` on each build layer directory.
+
+The recipe entries come from :func:`bakar.commands._feed_refresh.build_entries`,
+the code a local refresh uses, against the host's own build data, so the cache
+key a pulled delta carries equals the one a local refresh of the same tree writes.
 """
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import fcntl
 import hashlib
 import os
+import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from bakar import detach_records, feed_describe, feed_filter, observability
+import typer
+
+from bakar import (
+    detach_records,
+    feed,
+    feed_consolidate,
+    feed_describe,
+    feed_filter,
+    layers,
+    observability,
+)
 from bakar.commands import _feed_refresh as refresh
+from bakar.gitutil import run_git
+from bakar.release_workspace import REPO_POLICY_ENV
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from bakar import feed_delta
+    from bakar.config import BuildConfig
+
 CHUNK_SIZE = 1024 * 1024
 VENDOR_FAMILIES = ("nxp", "ti")
 _ENV_KEYS = ("BAKAR_DISPATCH_KAS", "BAKAR_DISPATCH_WORKSPACE")
+BUILD_DIR_ENV = "BAKAR_WORKTREE_BUILD_DIR"
+_FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 LockState = Literal["held", "free", "unknown"]
 LockProbe = tuple[LockState, str | None]
@@ -60,12 +85,53 @@ def probe_lock(path: Path) -> LockProbe:
         os.close(fd)
 
 
+def resolve_host_cfg(workspace: Path, kas_yaml: Path, *, mode: str | None, build_dir: str | None) -> BuildConfig:
+    """Resolve the build configuration the run used, from the values its environment recorded.
+
+    This is the refresh command's own resolution (``_resolve_refresh_cfg``), so
+    the recipe locator, layer reader and package-data reader see the tree the
+    build used. Three inputs of that resolution are process state rather than
+    arguments, so each is applied for the call and restored in a ``finally``:
+    the global ``--host``/``--container`` choice (``mode``, from the run's
+    ``build_config`` event), the dispatch's ``BAKAR_WORKTREE_BUILD_DIR`` (it
+    decides ``bsp_root``, which the describing process does not have set), and
+    ``BAKAR_REPO_POLICY``, which the workspace routing may set. Anything the
+    resolution prints goes to stderr so stdout carries only the document.
+    """
+    import bakar.commands._app as state
+    from bakar.commands.feed import _resolve_refresh_cfg  # deferred: feed.py imports this module
+
+    saved_opts = state._GLOBAL_OPTIONS
+    saved_env = {key: os.environ.get(key) for key in (BUILD_DIR_ENV, REPO_POLICY_ENV)}
+    if mode in ("host", "container"):
+        state._GLOBAL_OPTIONS = dataclasses.replace(saved_opts, host=mode == "host", container=mode == "container")
+    if build_dir:
+        os.environ[BUILD_DIR_ENV] = build_dir
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            return _resolve_refresh_cfg(workspace, kas_yaml)
+    except typer.Exit as exc:
+        raise DescribeError(
+            f"could not resolve the build configuration for {kas_yaml} in workspace {workspace} "
+            f"(exit {exc.exit_code}); the message above names the cause"
+        ) from exc
+    finally:
+        state._GLOBAL_OPTIONS = saved_opts
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 @dataclass(frozen=True)
 class DescribeDeps:
-    """Seams for tests; the defaults read the real run registry and lock."""
+    """Seams for tests; the defaults read the real run registry, lock, configuration and bitbake."""
 
     run_dir_for_run: Callable[[str], Path | None] = detach_records.run_dir_for_run
     lock_probe: Callable[[Path], LockProbe] = probe_lock
+    resolve_cfg: Callable[..., BuildConfig] = resolve_host_cfg
+    resolve_provider: refresh.ResolveProvider = refresh._real_resolve_provider
 
 
 def describe_build(
@@ -101,10 +167,30 @@ def describe_build(
         )
     if tmpdir is None:
         raise DescribeError(f"run {run_id} recorded no build output location, so there is nothing to describe")
-    _require_dispatch_env(run_dir, run_id)
+    recorded = _require_dispatch_env(run_dir, run_id)
     live, live_reason = _liveness(run_dir, deps)
     deploy_root = tmpdir / "deploy"
-    files = _files(run_id, tmpdir, deploy_root, recipes)
+    files, pkgdata, rpms = _files(run_id, tmpdir, deploy_root, recipes)
+    mode = config.get("mode")
+    cfg = deps.resolve_cfg(
+        Path(recorded["BAKAR_DISPATCH_WORKSPACE"]),
+        Path(recorded["BAKAR_DISPATCH_KAS"]),
+        mode=mode if mode in ("host", "container") else None,
+        build_dir=recorded.get(BUILD_DIR_ENV),
+    )
+    release, channel = feed_consolidate.declared_release_channel(deploy_root)
+    entries, warnings = _entries(
+        cfg,
+        Path(recorded["BAKAR_DISPATCH_KAS"]),
+        release or feed.DEFAULT_RELEASE,
+        recipes=recipes,
+        pkgdata=pkgdata,
+        rpms=rpms,
+        tmpdir=tmpdir,
+        deploy_rpm=deploy_root / "rpm",
+        resolve_provider=deps.resolve_provider,
+    )
+    layer_commits, bitbake_commit = _layer_commits(cfg)
     return _document(
         run_id,
         state,
@@ -114,7 +200,92 @@ def describe_build(
         live=live,
         live_reason=live_reason,
         files=files,
+        release=release or "",
+        channel=channel or "",
+        entries=tuple(entries),
+        layer_commits=layer_commits,
+        bitbake_commit=bitbake_commit,
+        warnings=warnings,
     )
+
+
+def _entries(
+    cfg: BuildConfig,
+    kas_yaml: Path,
+    release: str,
+    *,
+    recipes: tuple[str, ...],
+    pkgdata: dict[str, refresh.RecipePkgdata],
+    rpms: dict[str, list[str]],
+    tmpdir: Path,
+    deploy_rpm: Path,
+    resolve_provider: refresh.ResolveProvider,
+) -> tuple[list[feed_delta.RecipeEntry], tuple[str, ...]]:
+    """The entries a local refresh would write, computed by the code it uses."""
+    locations = {r: refresh.find_recipes(cfg, r) for r in recipes}
+    unknown = [r for r, found in locations.items() if not found]
+    if unknown:
+        raise DescribeError(
+            f"recipe not found in the configured layers: {', '.join(unknown)} "
+            f"(layers are read from {getattr(cfg, 'bblayers_conf', 'the build configuration')})"
+        )
+    try:
+        machine = refresh.target_slug(cfg.machine, deploy_rpm)
+    except UnicodeDecodeError as exc:
+        raise DescribeError(
+            f"{feed_filter.REPO_MAP_NAME} is not valid UTF-8 ({exc.reason} at byte {exc.start})"
+        ) from exc
+    try:
+        return refresh.build_entries(
+            cfg,
+            kas_yaml,
+            release,
+            recipes=recipes,
+            pkgdata=pkgdata,
+            rpms=rpms,
+            tmpdir=tmpdir,
+            machine=machine,
+            locations=locations,
+            resolve_provider=resolve_provider,
+        )
+    except refresh.RefreshFailedError as exc:
+        raise DescribeError(str(exc).removesuffix("; the previous delta is untouched")) from exc
+
+
+def _repo_key(repo: Path) -> str:
+    """The kas ``repos:`` key of a layer repository.
+
+    A directory ``<ws>/<key>`` is named ``<key>``. A side checkout lives at
+    ``<ws>/.bakar/pins/<key>/<commit12>``, so its key is its parent's name.
+    """
+    pins = repo.parent.parent
+    if pins.name == "pins" and pins.parent.name == ".bakar":
+        return repo.parent.name
+    return repo.name
+
+
+def _head_commit(path: Path) -> str | None:
+    """The full HEAD commit of the checkout at ``path``, else None (read-only)."""
+    out = run_git(["git", "-C", str(path), "rev-parse", "HEAD"])
+    if out is None or out.returncode != 0:
+        return None
+    commit = out.stdout.strip()
+    return commit if _FULL_COMMIT.fullmatch(commit) else None
+
+
+def _layer_commits(cfg: BuildConfig) -> tuple[tuple[feed_describe.LayerCommit, ...], str | None]:
+    """The commit each build layer repository, and the bitbake directory, holds now.
+
+    The repositories are the ones the build's ``bblayers.conf`` names, found by
+    the same reader the recipe locator uses, so a side checkout is reported by
+    its own commit and a directory that is not a checkout by a null commit.
+    """
+    repos: dict[str, Path] = {}
+    for _layer, _layer_dir, repo in refresh._bblayers_layers(cfg):
+        repos.setdefault(_repo_key(repo), repo)
+    commits = tuple(feed_describe.LayerCommit(repo=key, commit=_head_commit(repo)) for key, repo in repos.items())
+    bitbake_dir = layers._find_bitbake_dir(cfg, list(repos.values()))
+    return commits, None if bitbake_dir is None else _head_commit(bitbake_dir)
 
 
 def _document(
@@ -127,6 +298,12 @@ def _document(
     live: bool,
     live_reason: str | None,
     files: tuple[feed_describe.DescribedFile, ...] = (),
+    release: str = "",
+    channel: str = "",
+    entries: tuple[feed_delta.RecipeEntry, ...] = (),
+    layer_commits: tuple[feed_describe.LayerCommit, ...] = (),
+    bitbake_commit: str | None = None,
+    warnings: tuple[str, ...] = (),
 ) -> feed_describe.BuildDescription:
     return feed_describe.BuildDescription(
         schema_version=feed_describe.SCHEMA_VERSION,
@@ -134,17 +311,17 @@ def _document(
         state=state,
         exit_code=exit_code,
         machine=machine,
-        release="",
-        channel="",
+        release=release,
+        channel=channel,
         tmpdir="" if tmpdir is None else str(tmpdir),
         deploy_dir="" if tmpdir is None else str(tmpdir / "deploy"),
         live=live,
         live_reason=live_reason,
         files=files,
-        entries=(),
-        layers=(),
-        bitbake_commit=None,
-        warnings=(),
+        entries=entries,
+        layers=layer_commits,
+        bitbake_commit=bitbake_commit,
+        warnings=warnings,
     )
 
 
@@ -158,8 +335,8 @@ def _run_state(run_dir: Path) -> tuple[str, int | None]:
     return ("succeeded" if code == 0 else "failed"), code
 
 
-def _require_dispatch_env(run_dir: Path, run_id: str) -> None:
-    """Refuse a run whose environment snapshot lacks the two dispatch variables."""
+def _require_dispatch_env(run_dir: Path, run_id: str) -> dict[str, str]:
+    """The run's recorded environment; refuse one that lacks the two dispatch variables."""
     recorded: dict[str, str] = {}
     try:
         for line in (run_dir / "env.txt").read_text(errors="replace").splitlines():
@@ -174,6 +351,7 @@ def _require_dispatch_env(run_dir: Path, run_id: str) -> None:
             f"run {run_id} predates remote refresh support (its environment lacks {', '.join(missing)}); "
             "the build must be dispatched again"
         )
+    return recorded
 
 
 def _liveness(run_dir: Path, deps: DescribeDeps) -> tuple[bool, str | None]:
@@ -194,7 +372,8 @@ def _before_run(rpm_dir: Path, run_start: float) -> dict[str, int]:
 
 def _files(
     run_id: str, tmpdir: Path, deploy_root: Path, recipes: tuple[str, ...]
-) -> tuple[feed_describe.DescribedFile, ...]:
+) -> tuple[tuple[feed_describe.DescribedFile, ...], dict[str, refresh.RecipePkgdata], dict[str, list[str]]]:
+    """The files to pull, with the package data and package listing they were derived from."""
     rpm_dir = deploy_root / "rpm"
     repo_map = rpm_dir / feed_filter.REPO_MAP_NAME
     if not repo_map.is_file():
@@ -220,7 +399,7 @@ def _files(
             for filename in rpms.get(name, ()):
                 paths.update(arch / filename for arch in sorted(rpm_dir.iterdir()) if (arch / filename).is_file())
     paths.update(deploy_root.glob("images/*/*.testdata.json"))
-    return tuple(_describe_file(deploy_root, p) for p in sorted(paths))
+    return tuple(_describe_file(deploy_root, p) for p in sorted(paths)), pkgdata, rpms
 
 
 def _describe_file(deploy_root: Path, path: Path) -> feed_describe.DescribedFile:
