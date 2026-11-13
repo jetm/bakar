@@ -43,7 +43,7 @@ from bakar import (
     feed_retention,
     feed_serve,
 )
-from bakar.commands import _feed_refresh, _feed_refresh_output
+from bakar.commands import _feed_refresh, _feed_refresh_output, _feed_refresh_remote
 from bakar.commands._app import app, console
 from bakar.commands._feed_describe import DescribeError, describe_build
 from bakar.commands._helpers import WorkspaceOption, resolve_global_config
@@ -322,6 +322,51 @@ def _resolve_refresh_cfg(workspace: Path | None, kas_yaml: Path):
     )
 
 
+FromHostOption = Annotated[
+    str | None,
+    typer.Option(
+        "--from",
+        help="Pull the packages of a finished remote build from this ssh host instead of building (needs --run)",
+    ),
+]
+RunIdOption = Annotated[
+    str | None,
+    typer.Option("--run", help="Run id the host printed as `remote run-id` (needs --from)"),
+]
+AllowPinMismatchOption = Annotated[
+    bool,
+    typer.Option(
+        "--allow-pin-mismatch",
+        help="Publish even when the host's layer commits differ from the local kas pins (needs --from)",
+    ),
+]
+RefreshYesOption = Annotated[
+    bool,
+    typer.Option(
+        "--yes",
+        "-y",
+        help="Proceed despite a local/remote bakar version mismatch for --from (needs --from)",
+    ),
+]
+
+
+def _remote_usage_error(from_host: str | None, run_id: str | None, allow_pin_mismatch: bool, yes: bool) -> str | None:
+    """Return the usage message for a bad ``--from`` flag combination, before anything runs."""
+    if from_host is None:
+        if run_id is not None:
+            return "--run needs --from HOST: it names a run on the host to pull"
+        if allow_pin_mismatch:
+            return "--allow-pin-mismatch needs --from HOST: a local refresh has no remote pins to compare"
+        if yes:
+            return "--yes needs --from HOST: it only confirms a remote bakar version mismatch"
+        return None
+    if from_host.startswith("-"):
+        return f"--from takes an ssh host, not an option: {from_host}"
+    if run_id is None:
+        return "--from needs --run RUN_ID: the run id the host printed as `remote run-id`"
+    return None
+
+
 @feed_app.command("refresh")
 def refresh(
     kas_yaml: KasYamlArgument,
@@ -339,12 +384,23 @@ def refresh(
     base_snapshot: BaseSnapshotOption = None,
     snapshot: SnapshotOption = False,
     run: RunOption = False,
+    from_host: FromHostOption = None,
+    run_id: RunIdOption = None,
+    allow_pin_mismatch: AllowPinMismatchOption = False,
+    yes: RefreshYesOption = False,
 ) -> None:
     """Build the named recipes and publish only their packages as a delta feed.
+
+    With --from HOST --run RUN_ID nothing is built: the packages of that
+    finished remote build are pulled and published instead.
 
     Prints the repository stanzas and avocado commands that consume the delta;
     no project file is modified.
     """
+    usage = _remote_usage_error(from_host, run_id, allow_pin_mismatch, yes)
+    if usage:
+        console.print(markup_safe(usage))
+        raise typer.Exit(code=2)
     recipes = tuple(recipe or ())
     if not recipes:
         console.print("nothing to build: pass at least one --recipe")
@@ -365,6 +421,9 @@ def refresh(
 
     cfg = _resolve_refresh_cfg(workspace, kas_yaml)
     feed_root = feed_mod.resolve_feed_root(cfg)
+    # Only a typed pair is held against the build's declared pair on a remote
+    # refresh; the defaults filled in below are local guesses.
+    requested_release, requested_channel = release, channel
     release, channel = _default_release_channel(cfg, release, channel)
     base_release = base_release or release
     base_channel = base_channel or channel
@@ -409,7 +468,18 @@ def refresh(
         raise typer.Exit(code=1)
 
     try:
-        result = _feed_refresh.run_refresh(request)
+        if from_host is None:
+            result = _feed_refresh.run_refresh(request)
+        else:
+            result = _feed_refresh_remote.run_refresh_remote(
+                request,
+                host=from_host,
+                run_id=cast("str", run_id),
+                allow_pin_mismatch=allow_pin_mismatch,
+                assume_yes=yes,
+                requested_release=requested_release,
+                requested_channel=requested_channel,
+            )
     except (_feed_refresh.RefreshRefusedError, _feed_refresh.RefreshFailedError) as exc:
         console.print(f"feed refresh failed: {markup_safe(str(exc))}")
         raise typer.Exit(code=1) from exc

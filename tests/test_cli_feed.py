@@ -1024,3 +1024,155 @@ def test_refresh_cfg_equals_the_cfg_bakar_bitbake_resolves(
     assert refresh_cfg.workspace == bitbake_cfg.workspace
     assert refresh_cfg.resolved_tmpdir == bitbake_cfg.resolved_tmpdir
     assert refresh_cfg.bblayers_conf == bitbake_cfg.bblayers_conf
+
+
+# --- refresh --from (remote publish) ---------------------------------------
+
+
+def _remote_refresh(cli: CliRunner, cfg, tmp_path: Path, *extra: str, with_project: bool = True, recipes=("htop",)):
+    """Invoke ``feed refresh`` with both runners stubbed; return ``(result, local_mock, remote_mock)``."""
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    args = ["feed", "refresh", str(_yaml(tmp_path))]
+    for name in recipes:
+        args += ["--recipe", name]
+    if with_project:
+        args += ["--project", str(project)]
+    args += list(extra)
+    resolve, run, preflight, port, present = _refresh_patches(cfg)
+    with (
+        resolve,
+        run as local,
+        preflight,
+        port,
+        present,
+        mock.patch("bakar.commands.feed._feed_refresh_remote.run_refresh_remote") as remote,
+    ):
+        remote.return_value.warnings = ()
+        result = cli.invoke(app, args)
+    return result, local, remote
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (["--from", "pc2"], True, ("htop",), "--run"),
+        (["--run", "20260101-000000-1"], True, ("htop",), "--from"),
+        (["--from", "pc2", "--run", "r1"], False, ("htop",), "--project"),
+        (["--from", "pc2", "--run", "r1"], True, (), "--recipe"),
+        (["--allow-pin-mismatch"], True, ("htop",), "--from"),
+        (["--yes"], True, ("htop",), "--from"),
+        (["--from", "-oProxyCommand=x", "--run", "r1"], True, ("htop",), "host"),
+    ],
+)
+def test_refresh_from_usage_errors_exit_2_and_contact_no_host(cli: CliRunner, cfg, tmp_path: Path, case) -> None:
+    extra, with_project, recipes, needle = case
+    result, local, remote = _remote_refresh(cli, cfg, tmp_path, *extra, with_project=with_project, recipes=recipes)
+
+    assert result.exit_code == 2, result.output
+    assert needle in result.output
+    local.assert_not_called()
+    remote.assert_not_called()
+
+
+def test_refresh_from_calls_run_refresh_remote_with_exact_arguments(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    result, local, remote = _remote_refresh(
+        cli, cfg, tmp_path, "--from", "pc2", "--run", "r1", "--allow-pin-mismatch", "--yes"
+    )
+
+    assert result.exit_code == 0, result.output
+    local.assert_not_called()
+    remote.assert_called_once()
+    assert remote.call_args.kwargs == {
+        "host": "pc2",
+        "run_id": "r1",
+        "allow_pin_mismatch": True,
+        "assume_yes": True,
+        "requested_release": None,
+        "requested_channel": None,
+    }
+    assert remote.call_args.args[0].recipes == ("htop",)
+
+
+def test_refresh_from_defaults_flags_to_false(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    result, _local, remote = _remote_refresh(cli, cfg, tmp_path, "--from", "pc2", "--run", "r1")
+
+    assert result.exit_code == 0, result.output
+    assert remote.call_args.kwargs["allow_pin_mismatch"] is False
+    assert remote.call_args.kwargs["assume_yes"] is False
+
+
+def test_refresh_from_passes_typed_release_and_channel(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    result, _local, remote = _remote_refresh(
+        cli, cfg, tmp_path, "--from", "pc2", "--run", "r1", "--release", "2024", "--channel", "edge"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert remote.call_args.kwargs["requested_release"] == "2024"
+    assert remote.call_args.kwargs["requested_channel"] == "edge"
+    assert remote.call_args.args[0].release == "2024"
+
+
+def test_refresh_from_prints_stanzas_through_the_shared_output(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    resolve, run, preflight, port, present = _refresh_patches(cfg)
+    with (
+        resolve,
+        run,
+        preflight,
+        port,
+        present as printed,
+        mock.patch("bakar.commands.feed._feed_refresh_remote.run_refresh_remote") as remote,
+    ):
+        remote.return_value.warnings = ("pins differ",)
+        result = cli.invoke(
+            app,
+            [
+                *("feed", "refresh", str(_yaml(tmp_path)), "--recipe", "htop", "--project", str(project)),
+                *("--from", "pc2", "--run", "r1"),
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "warning: pins differ" in result.output
+    printed.assert_called_once()
+    assert printed.call_args.args[1] is remote.return_value
+
+
+def test_refresh_from_failure_exits_1_with_message(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    from bakar.commands._feed_refresh import RefreshFailedError
+
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    resolve, run, preflight, port, present = _refresh_patches(cfg)
+    with (
+        resolve,
+        run,
+        preflight,
+        port,
+        present as printed,
+        mock.patch(
+            "bakar.commands.feed._feed_refresh_remote.run_refresh_remote",
+            side_effect=RefreshFailedError("host busy; nothing was pulled"),
+        ),
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                *("feed", "refresh", str(_yaml(tmp_path)), "--recipe", "htop", "--project", str(project)),
+                *("--from", "pc2", "--run", "r1"),
+            ],
+        )
+
+    assert result.exit_code == 1
+    assert "feed refresh failed: host busy; nothing was pulled" in result.output
+    printed.assert_not_called()
+
+
+def test_refresh_without_from_still_calls_run_refresh(cli: CliRunner, cfg, tmp_path: Path) -> None:
+    result, local, remote = _remote_refresh(cli, cfg, tmp_path)
+
+    assert result.exit_code == 0, result.output
+    local.assert_called_once()
+    remote.assert_not_called()
