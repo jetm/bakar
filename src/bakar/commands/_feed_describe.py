@@ -172,16 +172,18 @@ def describe_build(
     deploy_root = tmpdir / "deploy"
     files, pkgdata, rpms = _files(run_id, tmpdir, deploy_root, recipes)
     mode = config.get("mode")
+    # A colon-joined kas argument names the primary file first, as the build itself reads it.
+    kas_yaml = Path(recorded["BAKAR_DISPATCH_KAS"].split(":")[0])
     cfg = deps.resolve_cfg(
         Path(recorded["BAKAR_DISPATCH_WORKSPACE"]),
-        Path(recorded["BAKAR_DISPATCH_KAS"]),
+        kas_yaml,
         mode=mode if mode in ("host", "container") else None,
         build_dir=recorded.get(BUILD_DIR_ENV),
     )
     release, channel = feed_consolidate.declared_release_channel(deploy_root)
     entries, warnings = _entries(
         cfg,
-        Path(recorded["BAKAR_DISPATCH_KAS"]),
+        kas_yaml,
         release or feed.DEFAULT_RELEASE,
         recipes=recipes,
         pkgdata=pkgdata,
@@ -398,7 +400,8 @@ def _files(
         for name in pd.packages:
             for filename in rpms.get(name, ()):
                 paths.update(arch / filename for arch in sorted(rpm_dir.iterdir()) if (arch / filename).is_file())
-    paths.update(deploy_root.glob("images/*/*.testdata.json"))
+    # The pull never follows links, and OE's unversioned image-link name is a link to the versioned file.
+    paths.update(p for p in deploy_root.glob("images/*/*.testdata.json") if not p.is_symlink())
     return tuple(_describe_file(deploy_root, p) for p in sorted(paths)), pkgdata, rpms
 
 

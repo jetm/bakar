@@ -779,3 +779,10 @@ def test_rerun_after_an_interrupted_pull_matches_an_uninterrupted_pull(
     clean = _new_staging(tmp_path)
     pull_files(HOST, desc, clean, describe_again=lambda: desc)
     assert _tree(rerun) == _tree(clean) == host.contents
+
+
+@pytest.mark.parametrize("deploy_dir", ["", "deploy", "~/deploy"])
+def test_description_with_a_deploy_directory_that_is_not_absolute_is_refused(deploy_dir: str) -> None:
+    desc = dataclasses.replace(_desc_for_paths("rpm/a.rpm"), deploy_dir=deploy_dir)
+    with pytest.raises(PullRefused, match="not an absolute path"):
+        validate_description(desc)

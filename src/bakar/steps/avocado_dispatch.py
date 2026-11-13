@@ -648,8 +648,12 @@ def _dispatch(
         rd.RemoteScriptSpec(
             remote_argv=remote_argv,
             cwd=target_dir,
+            # Recorded absolute: a later `feed describe` runs from the login directory, not target_dir.
             env_vars=remote_env(
-                build_dir_template, target.worktree_value, kas_arg=remote_kas, workspace=str(workspace)
+                build_dir_template,
+                target.worktree_value,
+                kas_arg=":".join(str(target_dir / segment) for segment in remote_kas.split(":")),
+                workspace=str(workspace),
             ),
             sccache_off=not sccache_dist,
             guard=layer_delivery_remote.build_guard(

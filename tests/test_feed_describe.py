@@ -708,3 +708,19 @@ def test_resolution_refusal_becomes_a_describe_error_and_leaves_stdout_clean(
     assert out.out == ""
     # rich wraps the message at the terminal width, which differs under xdist
     assert "nope.yml" in "".join(out.err.split())
+
+
+def test_colon_joined_kas_argument_resolves_its_first_file(host: Host) -> None:
+    host.write_run(
+        env={"BAKAR_DISPATCH_KAS": "/srv/ws/m/kas/a.yml:/srv/ws/m/kas/b.yml", "BAKAR_DISPATCH_WORKSPACE": WORKSPACE}
+    )
+    host.describe()
+    assert [kas for _ws, kas, _mode, _dir in host.resolved] == [Path("/srv/ws/m/kas/a.yml")]
+
+
+def test_testdata_symlink_is_not_described_beside_its_target(host: Host) -> None:
+    machine_dir = host.deploy_root / "images" / "qemux86-64"
+    (machine_dir / "avocado-qemux86-64-link.testdata.json").symlink_to("avocado-qemux86-64.testdata.json")
+    paths = [f.path for f in host.describe().files]
+    assert "images/qemux86-64/avocado-qemux86-64.testdata.json" in paths
+    assert "images/qemux86-64/avocado-qemux86-64-link.testdata.json" not in paths

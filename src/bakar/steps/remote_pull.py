@@ -76,6 +76,8 @@ def validate_description(
     desc: BuildDescription, *, max_file: int = MAX_FILE_BYTES, max_total: int = MAX_TOTAL_BYTES
 ) -> None:
     """Refuse a description whose file list is unsafe to copy, before any byte moves."""
+    if not desc.deploy_dir.startswith("/"):
+        raise PullRefused(f"described deploy directory {desc.deploy_dir!r} is not an absolute path")
     seen: set[str] = set()
     total = 0
     for item in desc.files:

@@ -697,3 +697,14 @@ def test_default_describe_unparseable_answer_refuses(world: World, host: Host, m
     with pytest.raises(RefreshFailedError, match=rf"{HOST}.*unreadable description") as info:
         _go(world, host, describe=None)
     assert str(info.value).endswith(TAIL)
+
+
+def test_only_release_requested_with_no_declared_channel_refused() -> None:
+    msg = _refusal(_desc(release="", channel=""), release="2025.1")
+    assert "the build declares no channel; request one with --channel" in msg
+
+
+@pytest.mark.parametrize("bad", ["..", ".", "../../x", "a/b", "a\\b"])
+def test_host_declared_release_or_channel_that_is_not_one_directory_name_refused(bad: str) -> None:
+    assert "is not a single directory name" in _refusal(_desc(release="2025.1", channel=bad))
+    assert "is not a single directory name" in _refusal(_desc(release=bad, channel="dev"))

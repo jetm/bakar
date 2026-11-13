@@ -626,7 +626,8 @@ def test_meta_avocado_dispatch_forwards_the_rewritten_kas_and_workspace(
     kas = str(checkout / "kas" / "machine" / "m.yml")
     assert _dispatch(checkout, kas, ["build", kas, "--on", HOST, "-y"]) == 0
     script = rec.remote_script
-    assert "BAKAR_DISPATCH_KAS=kas/machine/m.yml" in script
+    # absolute, so a later `feed describe` from the login directory resolves it
+    assert "BAKAR_DISPATCH_KAS=/srv/ws/scarthgap/.bakar/worktrees/feature-x/meta-avocado/kas/machine/m.yml" in script
     assert f"BAKAR_DISPATCH_WORKSPACE={WORKSPACE}" in script
     assert "/local/leak.yml" not in script
 
@@ -638,7 +639,7 @@ def test_layer_dispatch_forwards_the_rewritten_kas_and_workspace(
     kas = str(checkout / "kas" / "machine" / "m.yml")
     assert _layer_dispatch(checkout, layer, kas, ["build", kas, "--on", HOST, "-y"]) == 0
     script = lrec.rec.remote_script
-    assert "BAKAR_DISPATCH_KAS=kas/machine/m.yml" in script
+    assert "BAKAR_DISPATCH_KAS=/srv/ws/scarthgap/.bakar/worktrees/meta-foo/main/meta-foo/kas/machine/m.yml" in script
     assert f"BAKAR_DISPATCH_WORKSPACE={WORKSPACE}" in script
     assert "/local/leak-ws" not in script
 
@@ -1032,7 +1033,7 @@ GOLDEN_PUSH = [
 GOLDEN_SHA = {
     "capability": "1c78548f9ee41f8131ce5f7d1753a22388d8874806cb0e633c1fd132873e38c6",
     "ensure": "2bb9a5c3e104395f4ad14a6333bc8b2d58214b6d7737c88cac4898badb8ace96",
-    "remote": "ef102e23c4322d96ce0a5cf307fd429a657d8e8815555a0b49a8109de286b76f",
+    "remote": "1163bc362f2620dbbd3de281247fecf705761e1031ad013399c423bc0bf3c951",
 }
 
 

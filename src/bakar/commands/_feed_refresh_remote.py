@@ -86,9 +86,16 @@ def _resolve_pair(desc: BuildDescription, release: str | None, channel: str | No
     ):
         if requested is not None and actual and requested != actual:
             raise _refuse(f"requested {kind} {requested} but the build declares {declared}")
-    if release is None and channel is None and not (desc.release and desc.channel):
+    pair = (release if release is not None else desc.release, channel if channel is not None else desc.channel)
+    if not pair[0] and not pair[1]:
         raise _refuse("the build declares no release and channel; request one with --release and --channel")
-    return (release if release is not None else desc.release, channel if channel is not None else desc.channel)
+    for kind, value in zip(("release", "channel"), pair, strict=True):
+        if not value:
+            raise _refuse(f"the build declares no {kind}; request one with --{kind}")
+        # The host's document is untrusted and these values name directories under the delta root.
+        if value in (".", "..") or any(ch in value for ch in "/\\\0"):
+            raise _refuse(f"{kind} {value!r} is not a single directory name")
+    return pair
 
 
 def plan_remote_refresh(
