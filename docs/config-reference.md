@@ -392,6 +392,8 @@ tier decides. `BAKAR_CONTAINER` is parsed the same way.
 |----------|-------------|
 | `BAKAR_REPO_POLICY` | `reuse` or `kas`; any other value is refused by the build and the doctor. `reuse` classifies each pinned repository (at its pin and clean: left alone; missing: cloned; anywhere else: a side checkout under `<workspace>/.bakar/pins/`) so a build never moves a clone of a shared release workspace. It is the default for a meta-avocado build routed through `[workspaces]` and for an explicit `-w` that names a configured release workspace, and a dispatched build always runs under it. `kas` restores kas's own behaviour, which moves every clean clone to the pins of the file being built. |
 | `BAKAR_WORKTREE_BUILD_DIR` | Overrides `build.worktree_build_dir` for one invocation. A dispatched build always carries the dispatching host's template (the default when none is configured), so the remote never picks another directory than the plan names. |
+| `BAKAR_DISPATCH_KAS` | Set by `bakar build --on` on the remote build to the kas file path as delivered to the host, and recorded in the run's `env.txt`. `bakar feed refresh --from` reads it back to resolve the same kas file on the host. Not meant to be set by hand. |
+| `BAKAR_DISPATCH_WORKSPACE` | Set by `bakar build --on` on the remote build to the workspace path on the host, recorded in the run's `env.txt` for `bakar feed refresh --from`. Not meant to be set by hand. |
 | `BAKAR_FEED_LOCK_TIMEOUT` | Seconds a feed writer (`sync`, `mirror`, `index`, `gc`, `bakar build --feed`) waits for the exclusive feed lock before exiting non-zero without writing. Default 900. See [feed.md](feed.md#concurrent-writers). |
 
 ### Buildtools

@@ -706,4 +706,5 @@ def test_resolution_refusal_becomes_a_describe_error_and_leaves_stdout_clean(
         describe.resolve_host_cfg(tmp_path, tmp_path / "nope.yml", mode=None, build_dir=None)
     out = capsys.readouterr()
     assert out.out == ""
-    assert "nope.yml" in out.err
+    # rich wraps the message at the terminal width, which differs under xdist
+    assert "nope.yml" in "".join(out.err.split())
