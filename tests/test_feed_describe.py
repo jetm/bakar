@@ -724,3 +724,15 @@ def test_testdata_symlink_is_not_described_beside_its_target(host: Host) -> None
     paths = [f.path for f in host.describe().files]
     assert "images/qemux86-64/avocado-qemux86-64.testdata.json" in paths
     assert "images/qemux86-64/avocado-qemux86-64-link.testdata.json" not in paths
+
+
+def test_typed_release_keys_entries_when_the_build_declares_none(host: Host) -> None:
+    (host.deploy_root / "images" / "qemux86-64" / "avocado-qemux86-64.testdata.json").unlink()
+    doc = describe.describe_build(RUN_ID, ("htop",), release="2025.1", deps=host.deps())
+    assert doc.entries[0].release == "2025.1"
+    assert doc.release == ""
+
+
+def test_declared_release_beats_the_typed_one_for_entries(host: Host) -> None:
+    doc = describe.describe_build(RUN_ID, ("htop",), release="other", deps=host.deps())
+    assert doc.entries[0].release == doc.release != "other"

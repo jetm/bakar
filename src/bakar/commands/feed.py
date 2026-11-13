@@ -511,13 +511,17 @@ def describe(
         list[str] | None,
         typer.Option("--recipe", help="Recipe to describe (repeatable, required)"),
     ] = None,
+    release: Annotated[
+        str | None,
+        typer.Option("--release", help="Release for entries when the build declares none"),
+    ] = None,
 ) -> None:
     """Print one JSON document describing a finished build run (run on the build host by `refresh --from`)."""
     if not recipe:
         typer.echo("pass at least one --recipe", err=True)
         raise typer.Exit(code=2)
     try:
-        description = describe_build(run_id, tuple(recipe))
+        description = describe_build(run_id, tuple(recipe), release=release)
     except DescribeError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc

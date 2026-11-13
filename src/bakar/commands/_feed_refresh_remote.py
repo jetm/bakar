@@ -15,6 +15,7 @@ into a private staging directory, and the shared publishing tail
 from __future__ import annotations
 
 import dataclasses
+import functools
 import shlex
 import shutil
 from dataclasses import dataclass
@@ -147,11 +148,16 @@ def _first_line(text: str) -> str:
     return next((line.strip() for line in text.splitlines() if line.strip()), "no output")
 
 
-def _ssh_describe(host: str, run_id: str, recipes: Sequence[str]) -> BuildDescription:
-    """Run ``bakar feed describe`` on ``host`` and parse its answer, or refuse naming the host."""
+def _ssh_describe(host: str, run_id: str, recipes: Sequence[str], release: str | None = None) -> BuildDescription:
+    """Run ``bakar feed describe`` on ``host`` and parse its answer, or refuse naming the host.
+
+    ``release`` is the caller's typed release, used by the host only when the build declares none.
+    """
     argv = ["bakar", "feed", "describe", run_id]
     for recipe in recipes:
         argv += ["--recipe", recipe]
+    if release:
+        argv += ["--release", release]
     result = remote_dispatch._ssh_bash_capture(host, shlex.join(argv) + "\n", timeout=DESCRIBE_TIMEOUT_SECONDS)
     if isinstance(result, CaptureTimedOut):
         raise _refuse(f"describing run {run_id} on {host} timed out after {result.timeout:g}s")
@@ -213,7 +219,7 @@ def run_refresh_remote(
         feed_lock.validate_timeout()
     except ValueError as exc:
         raise RefreshFailedError(f"{exc}; nothing was pulled") from exc
-    describe_host = describe or _ssh_describe
+    describe_host = describe or functools.partial(_ssh_describe, release=requested_release)
     with refresh_lock(req.feed_root):
         # No live-build check: a remote refresh reads no local build output.
         for root in (req.delta_root, req.work_root):

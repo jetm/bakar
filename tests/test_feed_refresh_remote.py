@@ -708,3 +708,18 @@ def test_only_release_requested_with_no_declared_channel_refused() -> None:
 def test_host_declared_release_or_channel_that_is_not_one_directory_name_refused(bad: str) -> None:
     assert "is not a single directory name" in _refusal(_desc(release="2025.1", channel=bad))
     assert "is not a single directory name" in _refusal(_desc(release=bad, channel="dev"))
+
+
+def test_ssh_describe_forwards_a_typed_release_only_when_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def fake_capture(_host: str, script: str, timeout: float) -> object:
+        seen.append(script)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(remote_mod.remote_dispatch, "_ssh_bash_capture", fake_capture)
+    for release in ("2025.1", None):
+        with pytest.raises(RuntimeError):
+            remote_mod._ssh_describe("pc2", "RUN", ["htop"], release)
+    assert "--release 2025.1" in seen[0]
+    assert "--release" not in seen[1]

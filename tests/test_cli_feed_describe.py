@@ -34,8 +34,8 @@ def real_describe(host: Host, monkeypatch: pytest.MonkeyPatch) -> Host:
     """Route the verb through the real ``describe_build`` against the fake host tree."""
     deps = dataclasses.replace(host.deps(), lock_probe=describe.probe_lock)
 
-    def _describe(run_id: str, recipes: tuple[str, ...]) -> feed_describe.BuildDescription:
-        return describe.describe_build(run_id, recipes, deps=deps)
+    def _describe(run_id: str, recipes: tuple[str, ...], release: str | None = None) -> feed_describe.BuildDescription:
+        return describe.describe_build(run_id, recipes, release=release, deps=deps)
 
     monkeypatch.setattr("bakar.commands.feed.describe_build", _describe)
     return host
@@ -70,9 +70,9 @@ def test_recipe_option_is_repeatable_and_reaches_describe_build(
     deps = dataclasses.replace(real_describe.deps(), lock_probe=describe.probe_lock)
     real_describe.world.recipe("nano")
 
-    def _spy(run_id: str, recipes: tuple[str, ...]) -> feed_describe.BuildDescription:
+    def _spy(run_id: str, recipes: tuple[str, ...], release: str | None = None) -> feed_describe.BuildDescription:
         seen.append((run_id, recipes))
-        return inner(run_id, recipes, deps=deps)
+        return inner(run_id, recipes, release=release, deps=deps)
 
     monkeypatch.setattr("bakar.commands.feed.describe_build", _spy)
 
@@ -93,7 +93,7 @@ def test_recipe_option_is_repeatable_and_reaches_describe_build(
 def test_every_error_leaves_stdout_empty_and_exits_1(
     cli: CliRunner, monkeypatch: pytest.MonkeyPatch, exc: Exception, needle: str
 ) -> None:
-    def _boom(run_id: str, recipes: tuple[str, ...]) -> feed_describe.BuildDescription:
+    def _boom(run_id: str, recipes: tuple[str, ...], release: str | None = None) -> feed_describe.BuildDescription:
         raise exc
 
     monkeypatch.setattr("bakar.commands.feed.describe_build", _boom)
@@ -108,7 +108,7 @@ def test_every_error_leaves_stdout_empty_and_exits_1(
 
 
 def test_describe_error_message_has_no_class_prefix(cli: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
-    def _boom(run_id: str, recipes: tuple[str, ...]) -> feed_describe.BuildDescription:
+    def _boom(run_id: str, recipes: tuple[str, ...], release: str | None = None) -> feed_describe.BuildDescription:
         raise describe.DescribeError("plain message")
 
     monkeypatch.setattr("bakar.commands.feed.describe_build", _boom)
@@ -171,3 +171,15 @@ def test_a_run_changes_nothing_under_the_host_tree_or_run_registry(
     assert result.exit_code == 0, result.stderr
     assert _listing(tmp_path) == before
     assert not real_describe.lock_file.exists()
+
+
+def test_release_option_reaches_describe_build(cli: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str | None] = []
+
+    def _capture(run_id: str, recipes: tuple[str, ...], release: str | None = None) -> feed_describe.BuildDescription:
+        seen.append(release)
+        raise describe.DescribeError("stop")
+
+    monkeypatch.setattr("bakar.commands.feed.describe_build", _capture)
+    cli.invoke(app, ["feed", "describe", "X", "--recipe", "htop", "--release", "2025.1"])
+    assert seen == ["2025.1"]

@@ -135,7 +135,7 @@ class DescribeDeps:
 
 
 def describe_build(
-    run_id: str, recipes: tuple[str, ...], *, deps: DescribeDeps | None = None
+    run_id: str, recipes: tuple[str, ...], *, release: str | None = None, deps: DescribeDeps | None = None
 ) -> feed_describe.BuildDescription:
     """Describe run ``run_id`` for ``recipes``; raise :class:`DescribeError` when it cannot be.
 
@@ -180,11 +180,11 @@ def describe_build(
         mode=mode if mode in ("host", "container") else None,
         build_dir=recorded.get(BUILD_DIR_ENV),
     )
-    release, channel = feed_consolidate.declared_release_channel(deploy_root)
+    declared_release, channel = feed_consolidate.declared_release_channel(deploy_root)
     entries, warnings = _entries(
         cfg,
         kas_yaml,
-        release or feed.DEFAULT_RELEASE,
+        declared_release or release or feed.DEFAULT_RELEASE,
         recipes=recipes,
         pkgdata=pkgdata,
         rpms=rpms,
@@ -202,7 +202,7 @@ def describe_build(
         live=live,
         live_reason=live_reason,
         files=files,
-        release=release or "",
+        release=declared_release or "",
         channel=channel or "",
         entries=tuple(entries),
         layer_commits=layer_commits,
