@@ -35,6 +35,7 @@ from bakar.commands._feed_refresh import (
     refresh_lock,
     rpm_files,
 )
+from bakar.feed_describe import LayerCommit
 from bakar.feed_pins import compare_pins, describe_refusal
 from bakar.gitutil import run_git
 from bakar.release_workspace import ReleaseRoutingError
@@ -125,7 +126,11 @@ def plan_remote_refresh(
             raise _refuse(f"recipe {recipe} has no package file in run {desc.run_id}")
         chosen.append(entry)
     pair_release, pair_channel = _resolve_pair(desc, release, channel)
-    report = compare_pins(declared_pins, desc.layers)
+    # The host reports bitbake beside the layer list, never in it, yet kas pins it like a layer.
+    observed = desc.layers
+    if desc.bitbake_commit is not None and all(layer.repo != "bitbake" for layer in observed):
+        observed = (*observed, LayerCommit("bitbake", desc.bitbake_commit))
+    report = compare_pins(declared_pins, observed)
     if report.refusals and not allow_pin_mismatch:
         raise _refuse(
             f"the host build does not match the pins the kas file declares: {describe_refusal(report)}. "

@@ -723,3 +723,20 @@ def test_ssh_describe_forwards_a_typed_release_only_when_given(monkeypatch: pyte
             remote_mod._ssh_describe("pc2", "RUN", ["htop"], release)
     assert "--release 2025.1" in seen[0]
     assert "--release" not in seen[1]
+
+
+def test_bitbake_pin_is_judged_by_the_hosts_bitbake_commit() -> None:
+    pins = {"meta-x": {"commit": PIN}, "bitbake": {"commit": OTHER}}
+    plan = _plan(_desc(bitbake_commit=OTHER), declared_pins=pins)
+    assert plan.observed_layers["bitbake"] == OTHER
+
+
+def test_bitbake_pin_that_differs_from_the_hosts_bitbake_commit_is_refused() -> None:
+    pins = {"meta-x": {"commit": PIN}, "bitbake": {"commit": OTHER}}
+    msg = _refusal(_desc(bitbake_commit=PIN), declared_pins=pins)
+    assert f"bitbake declared {OTHER} but the host built {PIN}" in msg
+
+
+def test_bitbake_pin_with_no_host_bitbake_commit_says_no_evidence() -> None:
+    pins = {"meta-x": {"commit": PIN}, "bitbake": {"commit": OTHER}}
+    assert "bitbake declared" in _refusal(_desc(bitbake_commit=None), declared_pins=pins)

@@ -268,6 +268,11 @@ gets a hit for work the remote machine built.
 - Its run id, which dispatch prints as `remote run-id`. A build dispatched by an
   older bakar did not record where its kas file and workspace were, so it is
   refused with a message saying the build must be dispatched again.
+- A build directory on the host that holds an `avocado-repo.map`. The map is
+  written by the `avocado-distro` recipe once every package is built, so a
+  build of only the recipe you want (`--target htop`) in a fresh build
+  directory has none and is refused. Dispatch `--target avocado-distro` once
+  into that directory first. A local refresh has the same requirement.
 
 ```bash
 bakar feed refresh meta-avocado/kas/machine/qemux86-64.yml \
