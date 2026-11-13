@@ -33,9 +33,19 @@ from typing import Annotated, cast
 import typer
 
 from bakar import feed as feed_mod
-from bakar import feed_index, feed_lock, feed_mirror, feed_ops, feed_preflight, feed_retention, feed_serve
+from bakar import (
+    feed_describe,
+    feed_index,
+    feed_lock,
+    feed_mirror,
+    feed_ops,
+    feed_preflight,
+    feed_retention,
+    feed_serve,
+)
 from bakar.commands import _feed_refresh, _feed_refresh_output
 from bakar.commands._app import app, console
+from bakar.commands._feed_describe import DescribeError, describe_build
 from bakar.commands._helpers import WorkspaceOption, resolve_global_config
 from bakar.commands._workspace import _normalize_dispatch, _resolve_daemon_cfg, _resolve_workspace
 from bakar.diagnostics import Status, markup_safe
@@ -422,6 +432,29 @@ def refresh(
     code = _feed_refresh_output.present_refresh(request, result, opts)
     if code:
         raise typer.Exit(code=code)
+
+
+@feed_app.command("describe", hidden=True)
+def describe(
+    run_id: Annotated[str, typer.Argument(help="Run identifier printed as `remote run-id` by dispatch")],
+    recipe: Annotated[
+        list[str] | None,
+        typer.Option("--recipe", help="Recipe to describe (repeatable, required)"),
+    ] = None,
+) -> None:
+    """Print one JSON document describing a finished build run (run on the build host by `refresh --from`)."""
+    if not recipe:
+        typer.echo("pass at least one --recipe", err=True)
+        raise typer.Exit(code=2)
+    try:
+        description = describe_build(run_id, tuple(recipe))
+    except DescribeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        typer.echo(f"{type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(feed_describe.encode(description))
 
 
 @feed_app.command("mirror")
