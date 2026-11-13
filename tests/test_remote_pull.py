@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
+import shutil
 import stat
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 
 import pytest
 
@@ -18,12 +21,10 @@ from bakar.steps.remote_pull import (
     PullRefused,
     check_free_space,
     make_staging,
+    pull_files,
     validate_description,
     verify_staged_tree,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 RPM = "rpm/core2_64/busybox-1.36.rpm"
 MAP = "rpm/avocado-repo.map"
@@ -461,3 +462,320 @@ def test_free_space_check_asks_about_the_staging_directory(tmp_path: Path) -> No
 
     check_free_space(tmp_path, _desc([]), disk_usage=usage)
     assert seen == [tmp_path]
+
+
+# --- pull_files: end to end through the real rsync and a local stand-in for ssh ---
+
+HOST = "builder"
+RPM_B = "rpm/core2_64/zlib-1.3.rpm"
+
+
+@pytest.fixture
+def local_ssh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put an ``ssh`` on PATH that drops its options and host and runs the command locally."""
+    if shutil.which("rsync") is None:
+        pytest.skip("rsync not installed")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ssh = bin_dir / "ssh"
+    ssh.write_text('#!/bin/sh\nwhile [ "$1" = "-o" ]; do shift 2; done\nshift\nexec "$@"\n')
+    ssh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+class _Host:
+    """A host deploy directory plus the description of what is in it."""
+
+    def __init__(self, root: Path, contents: dict[str, bytes]) -> None:
+        self.deploy = root / "deploy"
+        self.contents = contents
+        for rel, data in contents.items():
+            dest = self.deploy / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+
+    def desc(self, **changes: object) -> BuildDescription:
+        base = _desc([_described(rel, data) for rel, data in self.contents.items()])
+        return dataclasses.replace(base, deploy_dir=str(self.deploy), **changes)
+
+
+@pytest.fixture
+def host(tmp_path: Path) -> _Host:
+    return _Host(
+        tmp_path / "host",
+        {RPM: b"busybox-bytes", RPM_B: b"zlib-bytes", MAP: b"map-bytes", TESTDATA: b"{}"},
+    )
+
+
+def _new_staging(tmp_path: Path) -> Path:
+    parent = tmp_path / "staging-parent"
+    parent.mkdir(exist_ok=True)
+    return make_staging(parent)
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_pull_copies_exactly_the_described_files(local_ssh: None, host: _Host, tmp_path: Path) -> None:
+    staging = _new_staging(tmp_path)
+    desc = host.desc()
+    pull_files(HOST, desc, staging, describe_again=lambda: desc)
+    assert _tree(staging) == host.contents
+
+
+def test_pull_does_not_copy_files_the_description_omits(local_ssh: None, host: _Host, tmp_path: Path) -> None:
+    (host.deploy / "rpm" / "core2_64" / "extra-1.0.rpm").write_bytes(b"not described")
+    (host.deploy / "secret.txt").write_bytes(b"not described")
+    staging = _new_staging(tmp_path)
+    desc = host.desc()
+    pull_files(HOST, desc, staging, describe_again=lambda: desc)
+    assert _tree(staging) == host.contents
+
+
+def test_planted_symlink_in_place_of_an_rpm_is_refused(local_ssh: None, host: _Host, tmp_path: Path) -> None:
+    target = tmp_path / "outside.txt"
+    target.write_bytes(b"busybox-bytes")
+    planted = host.deploy / RPM
+    planted.unlink()
+    planted.symlink_to(target)
+    staging = _new_staging(tmp_path)
+    desc = host.desc()
+    with pytest.raises(PullRefused, match=r"busybox-1\.36\.rpm"):
+        pull_files(HOST, desc, staging, describe_again=lambda: desc)
+    assert not staging.exists()
+
+
+def test_file_that_grew_after_the_description_is_refused(local_ssh: None, host: _Host, tmp_path: Path) -> None:
+    desc = host.desc()
+    (host.deploy / RPM).write_bytes(b"busybox-bytes-and-more")
+    staging = _new_staging(tmp_path)
+    with pytest.raises(PullRefused, match=r"busybox-1\.36\.rpm"):
+        pull_files(HOST, desc, staging, describe_again=lambda: desc)
+    assert not staging.exists()
+
+
+def test_a_build_that_started_during_the_pull_is_refused_naming_the_signal(
+    local_ssh: None, host: _Host, tmp_path: Path
+) -> None:
+    staging = _new_staging(tmp_path)
+    first = host.desc()
+    second = host.desc(live=True, live_reason="bitbake lock held by pid 42")
+    with pytest.raises(PullRefused, match="bitbake lock held by pid 42"):
+        pull_files(HOST, first, staging, describe_again=lambda: second)
+    assert not staging.exists()
+
+
+def test_a_state_other_than_succeeded_in_the_second_description_is_refused(
+    local_ssh: None, host: _Host, tmp_path: Path
+) -> None:
+    staging = _new_staging(tmp_path)
+    second = host.desc(state="failed")
+    with pytest.raises(PullRefused, match="failed"):
+        pull_files(HOST, host.desc(), staging, describe_again=lambda: second)
+    assert not staging.exists()
+
+
+def test_a_checksum_that_differs_in_the_second_description_is_refused_naming_the_file(
+    local_ssh: None, host: _Host, tmp_path: Path
+) -> None:
+    staging = _new_staging(tmp_path)
+    first = host.desc()
+    changed = tuple(DescribedFile(f.path, f.size, _sha(b"other")) if f.path == RPM_B else f for f in first.files)
+    second = dataclasses.replace(first, files=changed)
+    with pytest.raises(PullRefused, match=r"zlib-1\.3\.rpm"):
+        pull_files(HOST, first, staging, describe_again=lambda: second)
+    assert not staging.exists()
+
+
+def test_a_size_that_differs_in_the_second_description_is_refused_naming_the_file(
+    local_ssh: None, host: _Host, tmp_path: Path
+) -> None:
+    staging = _new_staging(tmp_path)
+    first = host.desc()
+    changed = tuple(DescribedFile(f.path, f.size + 1, f.sha256) if f.path == MAP else f for f in first.files)
+    second = dataclasses.replace(first, files=changed)
+    with pytest.raises(PullRefused, match=r"avocado-repo\.map"):
+        pull_files(HOST, first, staging, describe_again=lambda: second)
+    assert not staging.exists()
+
+
+def test_an_unreachable_host_is_refused_naming_the_host(
+    tmp_path: Path, host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if shutil.which("rsync") is None:
+        pytest.skip("rsync not installed")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ssh = bin_dir / "ssh"
+    ssh.write_text("#!/bin/sh\necho 'ssh: connect to host builder port 22: No route to host' >&2\nexit 255\n")
+    ssh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    staging = _new_staging(tmp_path)
+    desc = host.desc()
+    with pytest.raises(PullRefused) as err:
+        pull_files(HOST, desc, staging, describe_again=lambda: desc)
+    assert HOST in str(err.value)
+    assert "No route to host" in str(err.value)
+    assert not staging.exists()
+
+
+def test_a_host_starting_with_a_hyphen_is_refused_before_any_subprocess(host: _Host, tmp_path: Path) -> None:
+    calls: list[object] = []
+    staging = _new_staging(tmp_path)
+    desc = host.desc()
+    with pytest.raises(PullRefused, match="-oProxyCommand"):
+        pull_files(
+            "-oProxyCommand=x",
+            desc,
+            staging,
+            describe_again=lambda: desc,
+            runner=lambda argv, timeout: calls.append(argv) or (0, ""),
+        )
+    assert calls == []
+    assert not staging.exists()
+
+
+def test_free_space_below_the_need_is_refused_before_copying(host: _Host, tmp_path: Path) -> None:
+    calls: list[object] = []
+    staging = _new_staging(tmp_path)
+    desc = host.desc()
+    with pytest.raises(PullRefused, match="free"):
+        pull_files(
+            HOST,
+            desc,
+            staging,
+            describe_again=lambda: desc,
+            runner=lambda argv, timeout: calls.append(argv) or (0, ""),
+            disk_usage=_usage(1),
+        )
+    assert calls == []
+    assert not staging.exists()
+
+
+def test_a_description_with_an_unsafe_path_is_refused_before_copying(host: _Host, tmp_path: Path) -> None:
+    calls: list[object] = []
+    staging = _new_staging(tmp_path)
+    desc = _desc([_described("../escape.rpm")])
+    with pytest.raises(PullRefused, match="escape"):
+        pull_files(
+            HOST,
+            desc,
+            staging,
+            describe_again=lambda: desc,
+            runner=lambda argv, timeout: calls.append(argv) or (0, ""),
+        )
+    assert calls == []
+    assert not staging.exists()
+
+
+def test_runner_timeout_and_oserror_are_refused_naming_the_host(host: _Host, tmp_path: Path) -> None:
+    desc = host.desc()
+
+    def timed_out(argv: list[str], timeout: float) -> tuple[int, str]:
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    def no_rsync(argv: list[str], timeout: float) -> tuple[int, str]:
+        raise FileNotFoundError("rsync")
+
+    for runner in (timed_out, no_rsync):
+        staging = _new_staging(tmp_path)
+        with pytest.raises(PullRefused, match=HOST):
+            pull_files(HOST, desc, staging, describe_again=lambda: desc, runner=runner)
+        assert not staging.exists()
+
+
+def test_a_failing_describe_again_removes_staging(local_ssh: None, host: _Host, tmp_path: Path) -> None:
+    staging = _new_staging(tmp_path)
+
+    def boom() -> BuildDescription:
+        raise RuntimeError("host went away")
+
+    with pytest.raises(RuntimeError, match="host went away"):
+        pull_files(HOST, host.desc(), staging, describe_again=boom)
+    assert not staging.exists()
+
+
+def test_success_leaves_staging_for_the_caller_and_removes_the_file_list(
+    local_ssh: None, host: _Host, tmp_path: Path
+) -> None:
+    seen: list[list[str]] = []
+    staging = _new_staging(tmp_path)
+    desc = host.desc()
+
+    def spy(argv: list[str], timeout: float) -> tuple[int, str]:
+        seen.append(argv)
+        return remote_pull._run_rsync(argv, timeout)
+
+    pull_files(HOST, desc, staging, describe_again=lambda: desc, runner=spy)
+    assert staging.is_dir()
+    (argv,) = seen
+    list_arg = next(a for a in argv if a.startswith("--files-from="))
+    list_path = Path(list_arg.split("=", 1)[1])
+    assert not list_path.exists()
+    assert staging not in list_path.parents
+
+
+def test_rsync_argv_names_exact_files_with_the_bounded_flags(host: _Host, tmp_path: Path) -> None:
+    seen: list[list[str]] = []
+    listing: list[bytes] = []
+    staging = _new_staging(tmp_path)
+    desc = host.desc()
+
+    def spy(argv: list[str], timeout: float) -> tuple[int, str]:
+        seen.append(argv)
+        listing.append(Path(next(a for a in argv if a.startswith("--files-from=")).split("=", 1)[1]).read_bytes())
+        for rel, data in host.contents.items():
+            dest = staging / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        return 0, ""
+
+    pull_files(HOST, desc, staging, describe_again=lambda: desc, runner=spy)
+    (argv,) = seen
+    assert argv[0] == "rsync"
+    for flag in (
+        "--times",
+        "--no-links",
+        "--no-perms",
+        "--no-owner",
+        "--no-group",
+        "--no-devices",
+        "--no-specials",
+        "--protect-args",
+        "--timeout=60",
+        f"--max-size={MAX_FILE_BYTES}",
+        "--from0",
+    ):
+        assert flag in argv
+    ssh_cmd = argv[argv.index("-e") + 1]
+    assert "BatchMode=yes" in ssh_cmd
+    assert "ConnectTimeout=15" in ssh_cmd
+    assert argv[-2:] == [f"{HOST}:{host.deploy}/", f"{staging}/"]
+    assert not any(ch in arg for arg in argv[-2:] for ch in "*?[")
+    assert listing == [b"\0".join(p.encode() for p in host.contents) + b"\0"]
+
+
+def test_rerun_after_an_interrupted_pull_matches_an_uninterrupted_pull(
+    local_ssh: None, host: _Host, tmp_path: Path
+) -> None:
+    desc = host.desc()
+
+    def dies_halfway(argv: list[str], timeout: float) -> tuple[int, str]:
+        staging_dir = Path(argv[-1])
+        first = min(host.contents)
+        dest = staging_dir / first
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(host.contents[first])
+        raise OSError("connection killed")
+
+    interrupted = _new_staging(tmp_path)
+    with pytest.raises(PullRefused):
+        pull_files(HOST, desc, interrupted, describe_again=lambda: desc, runner=dies_halfway)
+    assert not interrupted.exists()
+
+    rerun = _new_staging(tmp_path)
+    pull_files(HOST, desc, rerun, describe_again=lambda: desc)
+    clean = _new_staging(tmp_path)
+    pull_files(HOST, desc, clean, describe_again=lambda: desc)
+    assert _tree(rerun) == _tree(clean) == host.contents

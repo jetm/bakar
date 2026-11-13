@@ -7,7 +7,8 @@ walks what actually landed and decides on type, containment, size and checksum.
 The walk is the authority, because the remote tree can change between the
 listing and the copy and a transfer option can be mis-set.
 
-Nothing here copies a file or starts a process.
+``pull_files`` is the one function here that starts a process: it copies exactly
+the described paths with rsync, then re-checks the tree and the host.
 """
 
 from __future__ import annotations
@@ -15,18 +16,26 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shlex
 import shutil
+import signal
 import stat
+import subprocess
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from bakar.feed_mirror_paths import UnsafePathError, resolve_destination
+from bakar.steps.remote_dispatch import RSYNC_IO_TIMEOUT_SECONDS, SSH_BOUND_OPTS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from bakar.feed_describe import BuildDescription
+
+    # (argv, timeout seconds) -> (exit code, stderr text); raises TimeoutExpired or OSError.
+    Runner = Callable[[list[str], float], tuple[int, str]]
 
 MAX_FILE_BYTES = 2 * 1024**3
 MAX_TOTAL_BYTES = 8 * 1024**3
@@ -190,3 +199,139 @@ def check_free_space(
             f"staging filesystem has {free} bytes free, below the {needed} bytes needed "
             f"({total} described plus {_FREE_SPACE_MARGIN_PERCENT} percent)"
         )
+
+
+# Total copy timeout: a floor plus the described bytes at a pessimistic 2 MiB/s.
+_PULL_TIMEOUT_FLOOR_SECONDS = 600
+_PULL_MIN_BYTES_PER_SECOND = 2 * 1024**2
+_KILL_GRACE_SECONDS = 5.0
+
+
+def _first_line(text: str) -> str:
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return "no output"
+
+
+def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
+    """Stop ``proc``'s own process group, and only that group."""
+    if os.getpgid(proc.pid) != proc.pid:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + _KILL_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return
+            time.sleep(0.05)
+
+
+def _run_rsync(argv: list[str], timeout: float) -> tuple[int, str]:
+    """Run ``argv`` in its own session with output in files; return (exit code, stderr text)."""
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(argv, stdout=out, stderr=err, stdin=subprocess.DEVNULL, start_new_session=True)
+        try:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _terminate_group(proc)
+            proc.wait()
+            raise
+        err.seek(0)
+        return code, err.read(65536).decode("utf-8", "replace")
+
+
+def build_pull_argv(host: str, desc: BuildDescription, staging: Path, list_file: Path) -> list[str]:
+    """The rsync argv: exact listed files only, links and special files never copied."""
+    ssh_cmd = shlex.join(["ssh", *SSH_BOUND_OPTS, "-o", "BatchMode=yes"])
+    return [
+        "rsync",
+        "--times",
+        "--no-links",
+        "--no-perms",
+        "--no-owner",
+        "--no-group",
+        "--no-devices",
+        "--no-specials",
+        "--protect-args",
+        f"--timeout={RSYNC_IO_TIMEOUT_SECONDS}",
+        f"--max-size={MAX_FILE_BYTES}",
+        "-e",
+        ssh_cmd,
+        f"--files-from={list_file}",
+        "--from0",
+        f"{host}:{desc.deploy_dir}/",
+        f"{staging}/",
+    ]
+
+
+def _compare_descriptions(first: BuildDescription, second: BuildDescription) -> None:
+    if second.live:
+        raise PullRefused(f"host reports a live build after the copy: {second.live_reason or 'no reason given'}")
+    if second.state != "succeeded":
+        raise PullRefused(f"host reports state {second.state!r} after the copy, expected 'succeeded'")
+    before = {f.path: f for f in first.files}
+    after = {f.path: f for f in second.files}
+    for path in sorted(before.keys() | after.keys()):
+        if path not in after:
+            raise PullRefused(f"file {path!r} is no longer described after the copy")
+        if path not in before:
+            raise PullRefused(f"file {path!r} appeared in the description after the copy")
+        if before[path].size != after[path].size:
+            raise PullRefused(
+                f"file {path!r} changed size during the pull: {before[path].size} then {after[path].size}"
+            )
+        if before[path].sha256 != after[path].sha256:
+            raise PullRefused(f"file {path!r} changed checksum during the pull")
+
+
+def _copy(host: str, desc: BuildDescription, staging: Path, runner: Runner) -> None:
+    total = sum(item.size for item in desc.files)
+    timeout = _PULL_TIMEOUT_FLOOR_SECONDS + total / _PULL_MIN_BYTES_PER_SECOND
+    # The list lives outside staging so it can never be mistaken for a pulled file.
+    fd, name = tempfile.mkstemp(prefix="bakar-pull-list-")
+    list_file = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(b"".join(item.path.encode() + b"\0" for item in desc.files))
+        argv = build_pull_argv(host, desc, staging, list_file)
+        try:
+            code, stderr = runner(argv, timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise PullRefused(f"copy from {host} timed out after {exc.timeout:g}s") from exc
+        except OSError as exc:
+            raise PullRefused(f"copy from {host} could not run rsync: {exc}") from exc
+        if code != 0:
+            raise PullRefused(f"copy from {host} failed with exit {code}: {_first_line(stderr)}")
+    finally:
+        list_file.unlink(missing_ok=True)
+
+
+def pull_files(  # noqa: PLR0913 - the spec fixes this signature
+    host: str,
+    desc: BuildDescription,
+    staging: Path,
+    *,
+    describe_again: Callable[[], BuildDescription],
+    runner: Runner | None = None,
+    disk_usage: Callable[[Path], Any] = shutil.disk_usage,
+) -> None:
+    """Copy exactly the described files from ``host`` into ``staging`` and re-check them.
+
+    On success ``staging`` is left for the caller, which removes it after
+    publishing. On any failure ``staging`` is removed before the error propagates.
+    """
+    try:
+        if host.startswith("-"):
+            raise PullRefused(f"invalid host {host!r}: must not begin with '-' (it would parse as an ssh/rsync option)")
+        validate_description(desc)
+        check_free_space(staging, desc, disk_usage=disk_usage)
+        _copy(host, desc, staging, runner or _run_rsync)
+        verify_staged_tree(staging, desc)
+        _compare_descriptions(desc, describe_again())
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
