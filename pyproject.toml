@@ -52,7 +52,7 @@ dev = [
   "pytest-timeout",
   "pytest-xdist",
   "ruff>=0.16",
-  "ty>=0.0.79",
+  "ty>=0.0.104",
 ]
 
 [build-system]
@@ -179,7 +179,7 @@ known-first-party = ["bakar"]
 # removed from this table, so only these three remain ignored.
 invalid-argument-type = "ignore"
 invalid-assignment = "ignore"
-invalid-return-type = "ignore"
+invalid-explicit-return = "ignore"
 
 [tool.uv]
 package = true

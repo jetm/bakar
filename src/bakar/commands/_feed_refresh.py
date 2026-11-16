@@ -31,7 +31,7 @@ from bakar.gitutil import run_git
 from bakar.kas import _bblayers_bodies
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping
+    from collections.abc import Callable, Generator, Mapping
 
     from bakar.commands.bitbake import BuildResult
     from bakar.config import BuildConfig
@@ -51,7 +51,7 @@ def lock_path(feed_dir: Path) -> Path:
 
 
 @contextmanager
-def refresh_lock(feed_dir: Path) -> Iterator[None]:
+def refresh_lock(feed_dir: Path) -> Generator[None]:
     """Hold an exclusive non-blocking ``flock`` on the sibling :func:`lock_path` of ``feed_dir``.
 
     The lock cannot exist before its file does, so the file is opened (created

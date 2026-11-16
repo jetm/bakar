@@ -27,7 +27,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -156,7 +156,7 @@ RunOption = Annotated[
 
 
 @contextlib.contextmanager
-def _locked(feed_root: Path) -> Iterator[None]:
+def _locked(feed_root: Path) -> Generator[None]:
     """Hold the feed lock for a writer, turning a refusal into a clean exit 1.
 
     Only acquiring is translated. The body's own failures keep their own

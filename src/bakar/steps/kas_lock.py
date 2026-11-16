@@ -28,7 +28,7 @@ from bakar import build_stop, mounts, observability, proc_tree, stop_container
 from bakar.fmt import neutralize
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
     from bakar.config import BuildConfig
     from bakar.observability import RunLogger
@@ -774,7 +774,7 @@ def peer_lock_reason(exc: LockHeldByPeerError) -> str:
 
 
 @contextmanager
-def lock_owner_marker(cfg: BuildConfig, log: RunLogger) -> Iterator[None]:
+def lock_owner_marker(cfg: BuildConfig, log: RunLogger) -> Generator[None]:
     """Claim the TOPDIR's ownership marker for the duration of one bitbake launch.
 
     On enter: atomically create the marker with its full content (temp file +

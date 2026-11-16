@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
 # Default state dir for callers that don't override it with a workspace-scoped path.
 STATE_DIR = Path.home() / ".local" / "state" / "bakar"
@@ -27,7 +27,7 @@ def stderr_log_path(binary: str, state_dir: Path) -> Path:
 
 
 @contextmanager
-def stderr_target(binary: str, state_dir: Path, log_path: Path | None = None) -> Iterator[IO[bytes] | None]:
+def stderr_target(binary: str, state_dir: Path, log_path: Path | None = None) -> Generator[IO[bytes] | None]:
     """Best-effort open a state-dir stderr log file for a spawned ``binary``.
 
     Yields the open file handle, or ``None`` when the state dir can't be

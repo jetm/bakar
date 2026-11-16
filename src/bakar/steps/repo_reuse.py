@@ -30,7 +30,7 @@ import yaml
 from bakar.gitutil import git_stdout
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Generator, Mapping, Sequence
     from typing import IO
 
 RepoStateKind = Literal["frozen", "missing", "side", "invalid"]
@@ -83,7 +83,7 @@ class RepoState:
 
 
 @contextmanager
-def workspace_lock(workspace: Path, *, wait_limit_s: float = LOCK_WAIT_LIMIT_S) -> Iterator[None]:
+def workspace_lock(workspace: Path, *, wait_limit_s: float = LOCK_WAIT_LIMIT_S) -> Generator[None]:
     """Hold the workspace's exclusive repository lock for the ``with`` body.
 
     Two builds that both classify a repository as ``missing`` would each let

@@ -331,6 +331,6 @@ def parallel_rmtree(root: Path, description: str = "Removing") -> tuple[Path, OS
 
 
 def _with_residue(exc: OSError, count: int, sample: list[tuple[Path, OSError]]) -> OSError:
-    exc.residue_count = count  # ty: ignore[unresolved-attribute]
-    exc.residue_sample = list(sample)  # ty: ignore[unresolved-attribute]
+    exc.residue_count = count  # ty: ignore[missing-attribute]
+    exc.residue_sample = list(sample)  # ty: ignore[missing-attribute]
     return exc

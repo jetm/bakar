@@ -24,7 +24,7 @@ import os
 import shlex
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
@@ -83,7 +83,7 @@ def _build_command(target: str, task: str | None, *, keep_going: bool) -> str:
 
 
 @contextlib.contextmanager
-def _capture_context(cfg, kas_yaml: str | Path) -> Iterator[tuple[KasBuildContext, Path]]:
+def _capture_context(cfg, kas_yaml: str | Path) -> Generator[tuple[KasBuildContext, Path]]:
     """Build the kas context ``bakar getvar`` builds, yielding it with its run dir."""
     main_yaml, user_extras = split_kas_yaml_arg(kas_yaml)
     _family, bsp, main_yaml, _manifest = _normalize_dispatch(main_yaml, None)

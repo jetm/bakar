@@ -45,7 +45,7 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from pathlib import Path
 
 LOCK_NAME = ".bakar-feed.lock"
@@ -85,7 +85,7 @@ def validate_timeout() -> None:
 
 
 @contextlib.contextmanager
-def feed_lock(feed_root: Path) -> Iterator[None]:
+def feed_lock(feed_root: Path) -> Generator[None]:
     """Hold the exclusive lock on ``feed_root`` for the body.
 
     Creates the feed root and the lock file when missing. A feed root that

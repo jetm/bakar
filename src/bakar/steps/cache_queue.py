@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
 _PAUSED_KEY = "paused"
 _RECONCILE_KEY = "last_reconcile"
@@ -110,7 +110,7 @@ class PushQueue:
             raise
 
     @contextlib.contextmanager
-    def _write(self) -> Iterator[sqlite3.Connection]:
+    def _write(self) -> Generator[sqlite3.Connection]:
         """Run one BEGIN IMMEDIATE...COMMIT, rolling back if anything fails."""
         self._conn.execute("BEGIN IMMEDIATE")
         try:

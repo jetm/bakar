@@ -11,7 +11,7 @@ import typer
 # ``click.exceptions.*``. Older Typer still raises from the external module.
 # Catch from both so the entry point works regardless of which Typer ships.
 try:
-    from typer._click import exceptions as _click_exc  # ty: ignore[unresolved-import]
+    from typer._click import exceptions as _click_exc  # ty: ignore[import-not-found]
 except ImportError:  # pragma: no cover - typer < 0.26 path
     from click import exceptions as _click_exc
 
