@@ -20,6 +20,7 @@ import bakar.commands.status as status_cmd
 from bakar.cli import main
 from bakar.steps import kas_build
 from bakar.triage import analyse
+from tests._ci_console_diag import console_diag
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -63,7 +64,7 @@ def test_missing_bitbake_bin_is_named_in_triage_status_and_console(
     assert (
         f"Error: host build requires the bundled bitbake bin directory on the launch PATH, "
         f"but it does not exist: {missing_bin}. "
-    ) in console_text
+    ) in console_text, console_diag()
 
     event_files = sorted(workspace.rglob("events.jsonl"))
     assert len(event_files) == 1, event_files
