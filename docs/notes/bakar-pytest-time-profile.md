@@ -443,3 +443,46 @@ The 15 largest, off-CPU seconds with wall and children CPU:
 | 0.452 | 0.455 | 0.000 | tests/test_native_ledger.py::test_recapture_older_hash_stays_visible_to_middle_run |
 | 0.414 | 0.469 | 0.050 | tests/test_cli_build.py::test_run_build_invokes_check_unclean_stop |
 | 0.403 | 0.509 | 0.100 | tests/integration/test_hashserv_real_daemon.py::test_hashserv_real_daemon_lifecycle |
+
+### Ten-second round: lever gates
+
+Gates are written before any lever is applied. The numbers come from the three
+baseline subsections above (idle pc3, rc 0 runs). Two collection measurements
+were taken for this subsection on pc3, single process, in the staged tree with
+its venv, after CPU pressure read `some avg10=0.00` and no pytest was running:
+
+- `.venv/bin/python -X importtime -m pytest --collect-only -q -s -n 0 --no-cov
+  -p no:randomly` (the `-s` is needed: pytest's fd capture swallows the import
+  log of every module imported during collection, leaving 327 lines and no
+  `bakar` entry without it). It collected 8355 tests; 1312 import lines. The
+  47 top-level imports sum to 0.280 s cumulative. The 15 largest cumulative
+  entries, microseconds (nested entries included): `bakar.cli` 154750,
+  `bakar.commands.bitbake` 54635, `pytest` 45938, `hypothesis` 38851,
+  `bakar.commands.graph` 30453, `bakar.graph_analyze` 30283,
+  `bakar.commands._helpers` 29292, `networkx` 28820, `_pytest._code` 22240,
+  `_pytest._code.code` 22201, `bakar.commands.init` 21637, `questionary`
+  21510, `prompt_toolkit.styles` 19917, `prompt_toolkit` 19911,
+  `hypothesis.core` 19896. The full output is in the plan scratch directory as
+  `importtime.txt`.
+- Three runs each under `/usr/bin/time -f %e` of
+  `.venv/bin/python -m pytest --collect-only -q -n 0 --no-cov -p no:randomly`:
+  full 1.66, 1.65, 1.67 s (median 1.66 s); restricted to
+  `tests/test_click_cache.py`: 0.41, 0.41, 0.41 s (median 0.41 s). Fixed
+  fraction = 0.41 / 1.66 = 0.247, so about 25% of single-process collection is
+  fixed cost and about 75% (1.25 s) scales with the number of files.
+
+| lever | gate | baseline numbers evaluated | can it pass its gate on these numbers |
+|-------|------|----------------------------|---------------------------------------|
+| collection pause plus freeze under the default worker count | applied only if the collection barrier moves at least 0.4 s earlier in three interleaved control and lever pairs (task 5.1) | barrier at 2.312 s, session start 0.391 s, so 1.921 s of start-up and collection sit before the barrier; single-process collect-only is 1.66 s here; the previous round's pause saved 0.47 s collect-only | Possible: 0.4 s is 21% of the 1.921 s before the barrier and the collect-only saving of 0.47 s exceeds it, but nothing in the baseline shows the saving survives 16 workers colliding for CPU; only the paired runs settle it |
+| per-test home directories under pytest's base temporary directory | applied only if the shutdown after the last test is at least 0.3 s and the homes' removal is part of it | last test completion 9.976 s, `sessionfinish` starts 12.215 s (2.239 s with no summarizer line), end phase 12.215 .. 13.668 s (1.453 s), last atexit 13.8003 s, so 3.824 s pass after the last test; the atexit hook runs after terminal summary 13.668 s, a 0.132 s window | Possible on size (3.824 s is far above 0.3 s), but the baseline does not attribute any of it to the homes' removal; the hook runs inside a 0.132 s window after the terminal summary, so the removal can only reach the gate if it also runs during `teardown_nodes` (1.022 s). Task 6.1 times the removal in a scratch copy |
+| slowest-first dealing | applied only if the tail holds at least 0.5 idle worker-seconds | tail 9.089 .. 9.976 s (0.887 s), idle worker-seconds 13.288 | The gate threshold is met by the baseline (13.288 is above 0.5). The keep rule of task 7.1 (tail shrinks at least 0.3 s) is bounded by the 0.887 s tail, so it can pass only if dealing removes a third of the tail |
+| collection sharding | decide only: record the fixed fraction of the collection cost and the one-tiny-file time | fixed fraction 0.247 (0.41 s tiny file against 1.66 s full), top-level imports 0.280 s of the 1.66 s | Not a pass or fail gate. Per-file work is 75% of collection, which sharding would split across processes; the decision line with the projected floor is written by task 8.1 |
+
+The only pre-barrier time attributed so far is `gateway ramp` 0.295 s and
+`collection` 0.241 s of the 1.921 s; the remaining 1.4 s has no summarizer line.
+
+Premise (barrier minus session start plus last exit minus last test
+completion): (2.312 - 0.391) + (13.8003 - 9.976) = 1.921 + 3.824 = 5.745 s,
+which is at or above 5 s.
+
+premise: holds
