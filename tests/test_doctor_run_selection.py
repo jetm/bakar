@@ -62,12 +62,12 @@ def test_default_call_returns_every_stub_in_order(monkeypatch: pytest.MonkeyPatc
 
 
 def test_deadline_overrides_default_and_message_reports_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install(monkeypatch, [_make_stub("slow", sleep=2.0)])
+    _install(monkeypatch, [_make_stub("slow", sleep=0.5)])
     start = time.monotonic()
-    results = run_all(_cfg(), deadline=0.5)
+    results = run_all(_cfg(), deadline=0.1)
     elapsed = time.monotonic() - start
-    assert elapsed < 1.5
+    assert elapsed < 0.4
     assert len(results) == 1
     assert results[0].status is Status.FAIL
-    assert "0.5" in results[0].message
+    assert "0.1" in results[0].message
     assert "180" not in results[0].message
