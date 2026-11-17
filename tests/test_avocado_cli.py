@@ -246,7 +246,10 @@ def test_keyboard_interrupt_terminates_the_child_group_and_reraises(
 
     # A SIGINT ignored at interpreter start (nohup, background shell) leaves
     # Python without its KeyboardInterrupt handler, so install it explicitly.
+    # A background job from fish also starts with SIGINT blocked in the signal
+    # mask, which survives exec and is never delivered, so unblock it too.
     previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    old_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
     try:
         threading.Thread(target=interrupt_once_running, daemon=True).start()
         with pytest.raises(KeyboardInterrupt):
@@ -257,3 +260,4 @@ def test_keyboard_interrupt_terminates_the_child_group_and_reraises(
             os.kill(child, 0)
     finally:
         signal.signal(signal.SIGINT, previous)
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
