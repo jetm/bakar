@@ -2283,7 +2283,7 @@ def test_capture_timeout_keeps_the_output_the_child_already_printed(
     ssh.write_text("#!/bin/sh\nprintf 'MOVED\\tr\\n\\377\\n'; printf 'warn\\n' >&2; exec sleep 30\n")
     ssh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    result = rd._ssh_bash_capture(HOST, "true", timeout=1.0)
+    result = rd._ssh_bash_capture(HOST, "true", timeout=0.2)
     assert isinstance(result, rd.CaptureTimedOut)
     assert result.returncode == 255
     assert result.stdout == "MOVED\tr\n�\n"

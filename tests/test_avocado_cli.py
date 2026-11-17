@@ -194,7 +194,7 @@ def test_timeout_kills_the_command_and_reports_failure(tmp_path: Path, monkeypat
     exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
 
-    result = run_avocado_commands(tmp_path, timeout=0.5, grace=0.5)
+    result = run_avocado_commands(tmp_path, timeout=0.2, grace=0.2)
 
     assert result.ok is False
     assert result.failed_command == "unlock"
@@ -244,10 +244,16 @@ def test_keyboard_interrupt_terminates_the_child_group_and_reraises(
             time.sleep(0.05)
         os.kill(os.getpid(), signal.SIGINT)
 
-    threading.Thread(target=interrupt_once_running, daemon=True).start()
-    with pytest.raises(KeyboardInterrupt):
-        run_avocado_commands(tmp_path, timeout=30, grace=1)
+    # A SIGINT ignored at interpreter start (nohup, background shell) leaves
+    # Python without its KeyboardInterrupt handler, so install it explicitly.
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        threading.Thread(target=interrupt_once_running, daemon=True).start()
+        with pytest.raises(KeyboardInterrupt):
+            run_avocado_commands(tmp_path, timeout=30, grace=1)
 
-    child = int(pidfile.read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(child, 0)
+        child = int(pidfile.read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(child, 0)
+    finally:
+        signal.signal(signal.SIGINT, previous)

@@ -181,7 +181,7 @@ def test_probe_host_timeout_is_incomplete(monkeypatch: pytest.MonkeyPatch, tmp_p
 
 def test_run_bash_local_timeout_keeps_partial_output() -> None:
     rc, out, err, timed_out = pin_probe.run_bash(
-        "printf 'first\\n'; printf 'oops\\n' >&2; exec sleep 30", host=None, timeout=1.0
+        "printf 'first\\n'; printf 'oops\\n' >&2; exec sleep 30", host=None, timeout=0.2
     )
     assert timed_out
     assert (rc, out, err) == (255, "first\n", "oops\n")
@@ -195,8 +195,8 @@ def test_timeout_output_decodes_bytes_str_or_none(value: bytes | str | None, tex
 def test_run_bash_local_timeout_with_an_escaped_descendant_still_returns(monkeypatch: pytest.MonkeyPatch) -> None:
     # setsid puts the sleep outside the killed group while it holds stdout, so
     # the drain times out and the partial output comes from the timeout itself.
-    monkeypatch.setattr(pin_probe, "_DRAIN_TIMEOUT_S", 0.5)
-    rc, out, _err, timed_out = pin_probe.run_bash("setsid sleep 30 & echo $!; wait", host=None, timeout=1.0)
+    monkeypatch.setattr(pin_probe, "_DRAIN_TIMEOUT_S", 0.15)
+    rc, out, _err, timed_out = pin_probe.run_bash("setsid sleep 30 & echo $!; wait", host=None, timeout=0.2)
     escaped = int(out.split()[0])
     with contextlib.suppress(ProcessLookupError):
         os.kill(escaped, signal.SIGKILL)
@@ -211,14 +211,16 @@ def _gone(pid: int) -> bool:
         # /proc raises ProcessLookupError, not FileNotFoundError, when the pid
         # disappears between open and read.
         return True
-    # A reaped-later zombie is dead too: field 3, after the parenthesised comm.
-    return stat.rsplit(")", 1)[1].split()[0] == "Z"
+    # Field 3, after the parenthesised comm. A zombie (Z) awaiting reaping and a task being released (X, or x on
+    # older kernels) are both dead; a killed child passes through Z then X before its entry disappears, so a caller
+    # that reads twice must not see "gone" flip back to "alive" between Z and X.
+    return stat.rsplit(")", 1)[1].split()[0] in ("Z", "X", "x")
 
 
 def test_run_bash_local_timeout_kills_the_whole_process_group() -> None:
     # The grandchild stands in for a git fetch the script started; it must not
     # outlive the timeout once the workspace locks are dropped.
-    rc, out, _err, timed_out = pin_probe.run_bash("sleep 30 & echo $!; wait", host=None, timeout=1.0)
+    rc, out, _err, timed_out = pin_probe.run_bash("sleep 30 & echo $!; wait", host=None, timeout=0.2)
     assert timed_out
     assert rc == 255
     grandchild = int(out.split()[0])
@@ -231,9 +233,9 @@ def test_run_bash_local_timeout_kills_the_whole_process_group() -> None:
 def test_run_bash_local_drain_timeout_keeps_output_read_during_the_drain(monkeypatch: pytest.MonkeyPatch) -> None:
     # The escaped descendant prints after the first timeout but inside the drain
     # window, so only the drain's own TimeoutExpired carries that line.
-    monkeypatch.setattr(pin_probe, "_DRAIN_TIMEOUT_S", 2.0)
-    script = "setsid sh -c 'sleep 1.5; echo late; exec sleep 30' & echo $!; wait"
-    rc, out, _err, timed_out = pin_probe.run_bash(script, host=None, timeout=1.0)
+    monkeypatch.setattr(pin_probe, "_DRAIN_TIMEOUT_S", 0.65)
+    script = "setsid sh -c 'sleep 0.4; echo late; exec sleep 30' & echo $!; wait"
+    rc, out, _err, timed_out = pin_probe.run_bash(script, host=None, timeout=0.15)
     escaped = int(out.split()[0])
     with contextlib.suppress(ProcessLookupError):
         os.kill(escaped, signal.SIGKILL)
@@ -267,7 +269,7 @@ def test_run_bash_local_interrupt_kills_the_whole_process_group(
 
     def interrupted(self: subprocess.Popen[str], input: str | None = None, timeout: float | None = None) -> object:
         with contextlib.suppress(subprocess.TimeoutExpired):
-            real_communicate(self, input, timeout=0.5)
+            real_communicate(self, input, timeout=0.25)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(subprocess.Popen, "communicate", interrupted)
@@ -301,7 +303,7 @@ def _fake_ssh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> Non
 def test_run_bash_host_timeout_keeps_partial_stdout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The real producer: an ssh that has printed rows and then hangs.
     _fake_ssh(tmp_path, monkeypatch, "printf 'MOVED\\tr\\n'; printf 'warn\\n' >&2; exec sleep 30")
-    assert pin_probe.run_bash("true", host="h", timeout=1.0) == (255, "MOVED\tr\n", "warn\n", True)
+    assert pin_probe.run_bash("true", host="h", timeout=0.2) == (255, "MOVED\tr\n", "warn\n", True)
 
 
 def test_probe_host_nonzero_exit_is_incomplete(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
