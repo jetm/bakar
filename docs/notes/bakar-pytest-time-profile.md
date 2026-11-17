@@ -159,3 +159,130 @@ No re-measurement: `tests/conftest.py` was not changed, so there was nothing
 to compare. The only timed run had rc=0.
 
 decision (git fixture environment): unchanged
+
+## Remaining time
+
+A fresh single-process profile of the finished suite, taken 2026-11-17 from the
+worktree after `bash wait_idle.sh 540` reported `idle: load=0.89 after 0s`. The
+host was idle, so these wall numbers are not indicative-only like the baseline.
+
+### Single-process run
+
+Command (after `uv run pytest`): `-p mktemp_time -n 0 -p no:randomly --no-cov -q
+--junitxml=...`. Real exit status from the `rc=` field of `times.txt`: `rc=0`
+(8342 passed, 13 skipped, 10 warnings).
+
+| run | load before | rc | wall s | user s | sys s | user+sys s |
+|-----|-------------|----|--------|--------|-------|------------|
+| baseline serial-default | 16.46 | 0 | 199.00 | 105.64 | 7.62 | 113.26 |
+| after-serial | 0.82 | 0 | 102.10 | 49.21 | 6.27 | 55.48 |
+
+Single-process wall is 102.10 s against the 199.00 s baseline, and CPU
+(user+sys) is 55.48 s against 113.26 s.
+
+### Time buckets
+
+From `buckets.py` over `after-serial.xml` (8,355 test cases, 97.18 s summed):
+
+| bucket (s) | tests | summed s |
+|------------|-------|----------|
+| >=0.0 | 7231 | 5.44 |
+| >=0.005 | 460 | 4.87 |
+| >=0.02 | 167 | 5.10 |
+| >=0.05 | 201 | 11.67 |
+| >=0.1 | 145 | 16.06 |
+| >=0.2 | 122 | 32.30 |
+| >=0.5 | 24 | 14.87 |
+| >=1.0 | 4 | 4.62 |
+| >=2.0 | 1 | 2.24 |
+
+Each bucket holds tests from its lower bound up to the next bound. 68 tests
+within about 3% above a round wait constant (0.25, 0.3, 0.5, 1.0, 1.5, 2.0, 3.0,
+5.0 s) sum to 24.45 s.
+
+### Tests still at or above 0.5 s
+
+`targets.py` at threshold 0.5: 29 tests, 21.74 s, in 15 files (76 tests and
+69.75 s in the baseline). Every one has a class:
+
+| File | Tests | Seconds | Class and reason |
+|------|-------|---------|------------------|
+| tests/test_e2e_cli.py | 9 | 6.38 | deliberately real: drives the installed binary by design |
+| tests/test_layer_delivery_remote.py | 3 | 2.25 | work-bound: bash and flock child processes on real git repos |
+| tests/test_doctor_cache_mounts.py | 1 | 2.24 | not targeted: no test-visible knob; bare `time.sleep(0.05)` polls at src/bakar/mounts.py:153 (the `_run_bounded` loop) |
+| tests/test_layer_repo_e2e.py | 4 | 2.13 | not targeted: end-to-end layer-repository scenarios with git work, no knob |
+| tests/test_cli_monitor.py | 1 | 1.56 | work-bound: CPU loop encoding a 3 MB string (multibyte test) |
+| tests/test_stress_parse.py | 2 | 1.55 | not targeted: same mounts.py:153 poll, no knob |
+| tests/test_pin_probe.py | 1 | 0.80 | wait left: the test sets a 0.65 s drain window and a 0.15 s timeout, and the descendant sleeps 0.4 s inside it |
+| tests/test_uninative_leak_scan.py | 1 | 0.68 | not targeted: post-build test, same mounts.py:153 poll |
+| tests/test_kas_build_failure_error.py | 1 | 0.65 | not targeted: kas build driver, no knob |
+| tests/test_cli_build.py | 1 | 0.63 | not targeted: build driver, no knob |
+| tests/test_reuse_lock.py | 1 | 0.63 | wait left: 0.2 s and 0.1 s sleeps in the test body order the holder and the front end |
+| tests/test_kas_build_plain.py | 1 | 0.61 | not targeted: kas build driver, no knob |
+| tests/test_eventlog_tail.py | 1 | 0.60 | not targeted: the literal `stop_event.wait(0.2)` in src/bakar/eventlog.py, no knob |
+| tests/integration/test_hashserv_real_daemon.py | 1 | 0.51 | deliberately real: tests/integration/ runs real daemons |
+| tests/test_cli_build_layer.py | 1 | 0.50 | not targeted: layer build path, no knob |
+
+The 29 tests sum to 21.72 s from the rows (21.74 s from `targets.py`, rounding).
+
+Not-targeted modules that no longer have a test at or above 0.5 s, with this
+run's whole-file totals: tests/test_getvar.py 4.31 s (slowest test 0.21 s),
+tests/test_layer_repo_kas_guard.py 1.89 s (four tests at 0.43 to 0.48 s),
+tests/test_home_isolation.py 0.78 s, tests/test_report_run_resolution.py 0.00 s,
+and tests/test_uninative_leak_scan.py::test_leak_via_dt_needed_edge (below 0.5 s;
+the file totals 1.14 s). They are not targeted because no test-visible knob
+exists: each runs real helper subprocess or import-time work spread over many
+short tests.
+
+Group-2 targets left unchanged for want of a knob, with the caller named:
+
+- The stress-parse pair (tests/test_stress_parse.py) and the doctor cache-mounts
+  test: bare 0.05 s `time.sleep` polls at src/bakar/mounts.py:153, the
+  `_run_bounded` loop.
+- The event-log tail test: the literal `stop_event.wait(0.2)` in
+  src/bakar/eventlog.py.
+- The uninative post-build test: the same mounts.py poll.
+- The monitor multibyte test (tests/test_cli_monitor.py): a CPU loop encoding a
+  3 MB string.
+
+### Parallel run over 15 s
+
+One parallel default run with `--durations=0 --durations-min=15`: `rc=0`, wall
+15.06 s (pytest reported 14.11 s), user 116.97 s, sys 9.61 s, 8342 passed.
+
+Tests over 15 s under 16 workers: none
+
+The log lists no durations at all; its only report line is `(25065 durations <
+15s hidden.)`.
+
+### Pytest temporary-directory cost
+
+mktemp time in a single-process run: 0.443 s
+
+That is 13,803 `TempPathFactory.mktemp` calls, below the 5 s level, so it is not
+a lever and no code was changed for it.
+
+### Known flaky test
+
+tests/test_pin_probe.py::test_run_bash_local_timeout_kills_the_whole_process_group
+is pre-existing flaky: about 1.2% failure per run under load at both the
+original 1.0 s and the shortened 0.2 s timeout. `run_bash` returns promptly with
+the pipes closed, so the grandchild was exiting, not escaping. This work did not
+change it.
+
+### Next levers
+
+Ranked by seconds in this profile, largest first:
+
+1. The bare `time.sleep(0.05)` poll at src/bakar/mounts.py:153 holds up three
+   tests at or above 0.5 s: doctor cache-mounts 2.24 s, stress parse 1.55 s and
+   uninative post-build 0.68 s, 4.47 s together. A production-side change for a
+   later change.
+2. tests/test_cli_monitor.py multibyte test, 1.56 s of CPU encoding a 3 MB
+   string; a smaller string that still splits a multibyte character would cut it.
+3. The `stop_event.wait(0.2)` in src/bakar/eventlog.py behind the 0.60 s
+   event-log tail test: a production-side follow-up for a later change.
+4. tests/test_layer_delivery_remote.py, 2.25 s of work-bound child processes in
+   three tests; only fewer real moves would shrink it.
+5. tests/test_e2e_cli.py, 6.38 s, stays: it drives the installed binary by
+   design.
