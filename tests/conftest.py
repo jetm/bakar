@@ -763,6 +763,37 @@ class HarnessGcPause:
             gc.freeze()
 
 
+_SLOWEST_TESTS_FILE = Path(__file__).with_name("slowest_tests.txt")
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Spread the slowest tests across the first quarter of the order, under xdist only.
+
+    ``trylast`` runs this after pytest-randomly's shuffle. The result depends only on the
+    list file and the shuffled order, so every worker computes the same order for a seed,
+    which xdist requires. Tests are only moved, never dropped or renamed.
+    """
+    if "PYTEST_XDIST_WORKER" not in os.environ or not _SLOWEST_TESTS_FILE.is_file():
+        return
+    slowest = [line for line in _SLOWEST_TESTS_FILE.read_text().splitlines() if line and not line.startswith("#")]
+    rank = {nodeid: i for i, nodeid in enumerate(slowest)}
+    slow = sorted((it for it in items if it.nodeid in rank), key=lambda it: rank[it.nodeid])
+    if not slow:
+        return
+    rest = [it for it in items if it.nodeid not in rank]
+    stride = max(len(items) // 4 // len(slow), 1)
+    out: list[pytest.Item] = []
+    taken = 0
+    for pos, it in enumerate(slow):
+        gap = pos * stride - len(out)
+        out.extend(rest[taken : taken + gap])
+        taken += gap
+        out.append(it)
+    out.extend(rest[taken:])
+    items[:] = out
+
+
 def pytest_configure(config: pytest.Config) -> None:
     # Registered by name so ``-p no:bakar_click_cache`` disables it.
     config.pluginmanager.register(ClickTreeCache(), "bakar_click_cache")

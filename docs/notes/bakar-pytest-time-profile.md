@@ -622,3 +622,51 @@ the exit hook and the two lines that drop COLUMNS and LINES, and the
 `HarnessGcPause` plugin and its registration are untouched. The three
 interleaved pc3 pairs and the killed-run check were not run because the gate
 was not met.
+
+### Ten-second round: slowest-first dealing
+
+Numbers used for the gate: the baseline subsection "Phase timeline" (tail
+9.089 .. 9.976 s, 0.887 s, idle worker-seconds 13.288), because the fresher
+subsection "where the post-run time goes" records the run and end phases but no
+tail or idle worker-seconds. The control runs below re-measured the tail on the
+current tree: idle worker-seconds 12.321, 12.584 and 11.967, so the gate (at
+least 0.5 idle worker-seconds) holds on both sets.
+
+Lever: a `pytest_collection_modifyitems` hook in `tests/conftest.py`
+(`trylast=True`, so it runs after pytest-randomly's shuffle) reads
+`tests/slowest_tests.txt` (the 64 tests with wall of at least 0.3 s in the
+off-CPU census on pc3, longest first; all 64 ids still exist in the current
+collection) and spreads them one every `len(items) // 4 // 64` positions (32
+here) across the first quarter of the order, longest first. The first quarter is
+the initial batch xdist's worksteal mode deals out in contiguous chunks, so one
+slow test lands in every chunk instead of all of them in one worker's. The hook
+returns at once unless `PYTEST_XDIST_WORKER` is set, so a single process keeps
+the shuffled order untouched. The distribution mode is unchanged.
+
+Order checks, `--collect-only` with seeds 1, 2 and 3 on the dev host (no timed
+run): the id set with the hook active equals the set without it (8363 ids, empty
+sorted diff), two workers (`gw0`, `gw1`) produce byte-identical order, and the
+order differs from the un-hooked one only when `PYTEST_XDIST_WORKER` is set. On
+pc3, `--collect-only -n 4` for the same three seeds exited 0 with no collection
+mismatch.
+
+Measurement: pc3, staged control tree (`git archive` of HEAD, no hook) and lever
+tree (hook plus list), one untimed warm-up per tree (rc 0), then three
+interleaved pairs (control first) with the phase timeline, each run gated on
+`some avg10` under 0.5 and no pytest. All rc 0, 8350 passed, 13 skipped.
+
+| run | load before | wall (s) | user (s) | barrier (s) | tail (s) | idle worker-s |
+|-----|-------------|----------|----------|-------------|----------|---------------|
+| sf-ctl-1 | 5.06 | 10.67 | 85.54 | 2.147 | 0.954 | 12.321 |
+| sf-lev-1 | 6.50 | 10.38 | 87.34 | 2.154 | 0.329 | 5.534 |
+| sf-ctl-2 | 6.39 | 10.71 | 85.85 | 2.140 | 0.851 | 12.584 |
+| sf-lev-2 | 6.44 | 10.34 | 87.09 | 2.160 | 0.335 | 5.332 |
+| sf-ctl-3 | 6.49 | 10.68 | 85.71 | 2.124 | 0.864 | 11.967 |
+| sf-lev-3 | 6.46 | 10.37 | 86.93 | 2.140 | 0.309 | 5.144 |
+
+Median tail: control 0.864 s, lever 0.329 s, a shrink of 0.535 s (pairs: 0.625,
+0.516, 0.555), above the 0.3 s bar. Median wall: control 10.68 s, lever 10.37 s
+(falls 0.29, 0.37, 0.31 s per pair; no pair rises). Idle worker-seconds fall from
+about 12.3 to 5.3.
+
+decision (slowest-first dealing): kept
