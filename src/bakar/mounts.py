@@ -93,6 +93,10 @@ def _lexical_normalize(path: Path) -> Path:
     return Path(os.path.normpath(absolute))
 
 
+_POLL_DELAY_MIN_S = 0.001
+_POLL_DELAY_MAX_S = 0.05
+
+
 def _run_bounded(specs: dict[Path, list[str]], deadline: float) -> dict[Path, tuple[int | None, str, str]]:
     """Fork one child per entry in ``specs``, all bounded by one ``deadline``.
 
@@ -108,7 +112,10 @@ def _run_bounded(specs: dict[Path, list[str]], deadline: float) -> dict[Path, tu
     the ENOENT message is locale-independent) and stdin from ``/dev/null``.
     The loop uses ``poll()``, never ``communicate()`` (which would wait on a
     child stuck in an uninterruptible NFS sleep), until every child exits or
-    the deadline passes. A child still running then gets SIGKILL and exactly
+    the deadline passes. Between polls it sleeps with a doubling backoff from
+    1 ms up to 50 ms, never past the deadline, so a child that exits within
+    milliseconds is seen within about a millisecond. A child still running then
+    gets SIGKILL and exactly
     one bounded ``wait(timeout=0.5)``; one that does not exit even then is
     abandoned rather than waited on further. Every pipe is closed on return.
 
@@ -142,15 +149,18 @@ def _run_bounded(specs: dict[Path, list[str]], deadline: float) -> dict[Path, tu
 
     exit_codes: dict[Path, int] = {}
     pending = set(procs)
+    delay = _POLL_DELAY_MIN_S
     while pending:
         for path in list(pending):
             rc = procs[path].poll()
             if rc is not None:
                 exit_codes[path] = rc
                 pending.discard(path)
-        if not pending or time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if not pending or remaining <= 0:
             break
-        time.sleep(0.05)
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, _POLL_DELAY_MAX_S)
 
     results: dict[Path, tuple[int | None, str, str]] = {}
     for path in pending:
