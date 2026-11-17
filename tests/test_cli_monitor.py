@@ -855,14 +855,20 @@ def test_recent_kas_errors_split_multibyte_first_line_reads_each_byte_once(tmp_p
         windows.append(w)
         w *= 2
     windows.append(monitor_module._KAS_TAIL_MAX_BYTES)
+    # Encode the 4 MB prefix once. Padding is ASCII, so a window start at or past
+    # len(prefix) cannot be mid-character; every window exceeds the 3002 pads tried,
+    # so each start falls inside the prefix and its byte is read straight from it.
+    assert min(windows) > 3002
+    prefix = (head + tail).encode()
     for pad in range(3001):
-        body = head + tail + "a" * pad + "\n"
-        raw = body.encode()
-        starts = [len(raw) - w for w in windows if len(raw) - w > 0]
-        if all(raw[s] & 0xC0 == 0x80 for s in starts):
+        total = len(prefix) + pad + 1
+        starts = [total - w for w in windows if total - w > 0]
+        if all(s < len(prefix) and prefix[s] & 0xC0 == 0x80 for s in starts):
             break
     else:
         pytest.fail("no padding puts every window start mid-character")
+    body = head + tail + "a" * pad + "\n"
+    raw = body.encode()
     kas_log = tmp_path / "kas.log"
     kas_log.write_bytes(raw)
     read_bytes = 0
