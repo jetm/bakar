@@ -15,6 +15,7 @@ Workspace shape mirrors ``test_cli_log.py``: tests build
 from __future__ import annotations
 
 import json
+import threading
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -811,7 +812,13 @@ def test_watch_sleeps_for_the_requested_interval(
     states = iter([(True, 1234, True), (False, None, False)])
     monkeypatch.setattr(monitor_module, "is_build_running", lambda _run_dir: next(states))
     slept: list[float] = []
-    monkeypatch.setattr(monitor_module.time, "sleep", slept.append)
+    test_thread = threading.get_ident()
+
+    def record_sleep(seconds: float) -> None:
+        if threading.get_ident() == test_thread:
+            slept.append(seconds)
+
+    monkeypatch.setattr(monitor_module.time, "sleep", record_sleep)
 
     result = runner.invoke(
         app,
