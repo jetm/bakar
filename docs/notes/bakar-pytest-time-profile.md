@@ -283,20 +283,23 @@ covers both.
 
 ### Next levers
 
-Ranked by seconds in this profile, largest first:
+Items 1 to 3 of the earlier list (the mounts.py poll, the multibyte test, the
+event-log tail wait) are closed: the final profile in "Ten-second round: result"
+has none of those tests at or above 0.5 s. Only what is still open is listed,
+largest first:
 
-1. The bare `time.sleep(0.05)` poll at src/bakar/mounts.py:153 holds up three
-   tests at or above 0.5 s: doctor cache-mounts 2.24 s, stress parse 1.55 s and
-   uninative post-build 0.68 s, 4.47 s together. A production-side change for a
-   later change.
-2. tests/test_cli_monitor.py multibyte test, 1.56 s of CPU encoding a 3 MB
-   string; a smaller string that still splits a multibyte character would cut it.
-3. The `stop_event.wait(0.2)` in src/bakar/eventlog.py behind the 0.60 s
-   event-log tail test: a production-side follow-up for a later change.
-4. tests/test_layer_delivery_remote.py, 2.25 s of work-bound child processes in
-   three tests; only fewer real moves would shrink it.
-5. tests/test_e2e_cli.py, 6.38 s, stays: it drives the installed binary by
-   design.
+1. The 2.151 s before the collection barrier and the 1.055 s between the end of
+   the run phase and `sessionfinish` in the final phase timeline. Collection
+   sharding stays a follow-up that the 10 s target does not need (median default
+   wall 9.36 s); the trigger is a median above 10 s on pc3.
+2. tests/test_e2e_cli.py, seven tests at or above 0.5 s in the final profile,
+   stays: it drives the installed binary by design.
+3. tests/test_mounts_run_bounded.py (0.94 s), the tests/test_pin_probe.py drain
+   test (0.80 s) and the layer-delivery SIGINT test (0.57 s): real bounded
+   subprocesses or fixed windows that are the behavior under test; only a
+   production-side knob would shrink them.
+4. CI skip reasons: pending the first CI run that prints them, to explain the
+   skip-count difference between CI and pc3.
 
 ## Result
 
@@ -857,3 +860,107 @@ there is nothing to lower or disable.
 CI skip reasons: pending the first run that prints them. If the skip counts
 still differ between CI and pc3 after that run, the explanation is recorded in a
 later change.
+
+### Ten-second round: result
+
+Three hashes. Change base: `b8c287905c4a6e4aac52c44fbc44bd9739fd0cf1`, read from
+`base_commits.bakar` in the change's `.devspec.yaml`. Control:
+`b8c287905c4a6e4aac52c44fbc44bd9739fd0cf1`, the same commit, staged on pc3 with
+`pc3-stage.sh control b8c28790` (a `git archive` of that commit, with the same
+untracked `CLAUDE.md` and `ARCHITECTURE.md` symlinks excluded as for the finished
+tree, so both trees skip the same tests). Finished tree:
+`cc4496f50f5318a0439a469d2324563c8a5aea79`, the worktree HEAD, staged with
+`pc3-stage.sh tree`. The control collects 8342 tests and the finished tree 8350;
+both skip 13.
+
+Host: pc3, `uv run --no-sync pytest -q` in each staged tree, launched from bash.
+One untimed warm-up of each tree, then three pairs, control first, finished tree
+second, 2026-11-17 starting 17:30 (UTC-6). Every run was gated on CPU pressure
+`some avg10` under 0.5 and no pytest running; every gate line reads
+`quiet psi_avg10=0.00`. The series stops on any rc other than 0. Load1 before
+each run is recorded and not gated. `pgrep -af pytest` on pc3 showed no other
+session's pytest before the first run.
+
+| run | tree | load1 before | rc | wall s | user+sys s | pytest summary |
+|-----|------|--------------|----|--------|------------|----------------|
+| warmup (untimed) | control | 1.05 | 0 | 14.29 | 104.60 + 8.32 | 8342 passed, 13 skipped, 97 warnings in 13.29s |
+| warmup (untimed) | finished | 3.66 | 0 | 10.03 | 85.73 + 8.28 | 8350 passed, 13 skipped, 113 warnings in 9.48s |
+| pair 1 | control | 4.21 | 0 | 14.07 | 102.70 + 8.31 | 8342 passed, 13 skipped, 105 warnings in 13.27s |
+| pair 1 | finished | 5.33 | 0 | 9.36 | 86.00 + 8.27 | 8350 passed, 13 skipped, 105 warnings in 8.81s |
+| pair 2 | control | 5.40 | 0 | 14.14 | 103.14 + 8.31 | 8342 passed, 13 skipped, 105 warnings in 13.33s |
+| pair 2 | finished | 5.40 | 0 | 9.41 | 86.58 + 8.28 | 8350 passed, 13 skipped, 97 warnings in 8.86s |
+| pair 3 | control | 6.64 | 0 | 14.14 | 102.62 + 8.23 | 8342 passed, 13 skipped, 97 warnings in 13.34s |
+| pair 3 | finished | 7.07 | 0 | 9.33 | 86.11 + 8.34 | 8350 passed, 13 skipped, 105 warnings in 8.78s |
+
+The warm-ups are not part of the medians. Median of the three timed runs,
+control: wall 14.14 s, user+sys 111.01 s. Finished tree: wall 9.36 s, user+sys
+94.45 s (runs 94.27, 94.86, 94.45), pytest-reported time 8.81 s.
+
+Median default wall: 9.36 s
+
+The median default wall of the finished tree is 9.36 s, which is 10 s or less, so
+the ten-second target is met on pc3 (all three finished runs are under 9.5 s; the
+control median is 14.14 s, a fall of 4.78 s).
+
+#### Single-process profile of the finished tree
+
+One run on pc3 after the series, `uv run --no-sync pytest -n 0 --no-cov -p
+no:randomly --durations=0 --durations-min=0.1 -q`: rc 0, wall 66.44 s, user+sys
+46.50 s, 8350 passed, 13 skipped. Untimed profile, so no pressure gate applies;
+load1 before was 5.78. 11 tests have a call duration at or above 0.5 s, each with
+a class:
+
+| Test | Call s | Class and reason |
+|------|--------|------------------|
+| tests/test_e2e_cli.py::TestSettings::test_host_swappiness_max_round_trip | 1.03 | deliberately real: drives the installed binary by design |
+| tests/test_e2e_cli.py::TestSettings::test_multiple_keys_survive_independently | 1.02 | deliberately real: same |
+| tests/test_e2e_cli.py::TestSettings::test_unset_clears_key | 0.77 | deliberately real: same |
+| tests/test_e2e_cli.py::TestHostDoctorThresholds::test_configured_floor_raises_doctor_bar | 0.55 | deliberately real: same |
+| tests/test_e2e_cli.py::TestHostDoctorThresholds::test_workspace_host_overrides_user_host | 0.55 | deliberately real: same |
+| tests/test_e2e_cli.py::TestSettings::test_non_positive_host_count_rejected | 0.52 | deliberately real: same |
+| tests/test_e2e_cli.py::TestSettings::test_set_get_round_trip | 0.51 | deliberately real: same |
+| tests/test_mounts_run_bounded.py::test_checks_fail_when_the_deadline_exit_is_removed | 0.94 | work-bound: runs every check in the list against a runner with its deadline exit removed, so the checks that need the deadline run real bounded subprocesses to their limit; the mutation is the point of the test |
+| tests/test_pin_probe.py::test_run_bash_local_drain_timeout_keeps_output_read_during_the_drain | 0.80 | wait with no test-visible knob: the test sets a 0.4 s first timeout and a 0.4 s drain window, and the line it asserts can only arrive inside that drain window |
+| tests/test_layer_delivery_remote.py::test_sigint_to_the_unit_lets_a_guarded_build_drain | 0.57 | deliberately real: a systemd user unit whose stand-in build drains for 0.5 s after SIGINT, which is the behavior under test |
+| tests/test_kas_build_failure_error.py::test_run_build_zero_exit_writes_no_step_fail | 0.52 | work-bound (not investigated further): the body has no sleep and calls the build driver with a stubbed pty outcome; no knob names a wait |
+
+The 11 tests sum to 7.78 s from the table. The retained scenarios of the previous
+change hold: no feed mirror test reaches 0.5 s (the slowest,
+tests/test_feed_mirror_meta.py::test_open_size_bound_stops_decompression_early,
+is 0.30 s) and the stop-command tests in tests/test_cli_stop.py appear nowhere in
+the 0.1 s and over list, so each runs under 0.1 s. The scenario that work-bound
+tests are classified holds: every test at or above 0.5 s has a class and reason
+above. The mounts.py poll tests (doctor cache-mounts, stress parse, uninative
+post-build), the event-log tail test and the monitor multibyte test have left the
+0.5 s list.
+
+#### Phase timeline of the final tree
+
+Command (run in the staged finished tree on pc3, one run, rc 0, wall 9.53 s, 8350
+passed, 13 skipped, same command line as the baseline's phase timeline above):
+
+```text
+cd <tree>; TL_T0=<date +%s.%N> TL_OUT=<tl-final.jsonl> PYTHONPATH=<helpers dir> uv run --no-sync pytest -q -p phase_timeline
+```
+
+Summarizer output, seconds from `TL_T0`, against the baseline timeline above:
+
+| phase | summarizer line | seconds | baseline seconds |
+|-------|-----------------|---------|------------------|
+| pre-session | `configure 0.376 sessionstart 0.3898` | sessionstart at 0.390 | 0.391 |
+| gateway ramp | `gateway ramp 0.413 .. 0.703` | 0.290 | 0.295 |
+| collection barrier | `collection 1.838 .. 2.151 (barrier 2.151)` | collection 0.313, barrier at 2.151 | 0.241, 2.312 |
+| run phase | `run phase 2.151 .. 7.752` | 5.600 | 7.664 |
+| tail | `tail 7.386 .. 7.752`, `idle worker-s 6.212` | 0.366, idle worker-seconds 6.212 | 0.887, 13.288 |
+| end phase | `sessionfinish 8.807 .. 9.356` | 0.549 | 1.453 |
+
+Other summarizer lines: `node_down 7.099 .. 7.778`, `teardown_nodes 8.807 ..
+8.920` (0.113 s), `terminal summary 9.311 .. 9.355` (0.045 s), `last atexit 9.4133`.
+The run phase ends at 7.752 and sessionfinish starts at 8.807, so 1.055 s pass
+between them; the summarizer has no line for that gap.
+
+Lever still needed: none for the target, which the median meets. The largest
+remaining shares are the 2.151 s before the collection barrier (the follow-up
+the collection sharding decision above would weigh, with its stated trigger of a
+median above 10 s) and the 1.055 s unaccounted between the run phase and
+sessionfinish.
