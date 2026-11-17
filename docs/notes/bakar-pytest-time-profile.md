@@ -134,3 +134,28 @@ Median: 0.47 s, below the 0.5 s threshold; all six runs have rc=0. The plugin,
 its registration and `tests/test_harness_gc.py` were removed.
 
 decision (collection GC pause): dropped
+
+### Git fixture environment
+
+A scratch probe (outside the repo) stamped every `git` child at `Popen`
+construction and summed the elapsed wall time when the child was reaped, per
+test node, over one serial run (`-n 0 -p no:randomly --no-cov`, 8342 passed,
+rc=0).
+
+The probe saw 7,177 git spawns against 7,173 in the census, so it missed
+none. Total git time: 6.05 s of a 99.83 s run, under the 10 s threshold.
+
+Five modules with the most git time:
+
+| Module | Git seconds | Git spawns |
+|--------|-------------|------------|
+| tests/test_layer_delivery.py | 0.77 | 1052 |
+| tests/test_native_provenance.py | 0.67 | 970 |
+| tests/test_pin_sync.py | 0.53 | 411 |
+| tests/test_layer_repo_e2e.py | 0.47 | 546 |
+| tests/test_cli_sync.py | 0.38 | 375 |
+
+No re-measurement: `tests/conftest.py` was not changed, so there was nothing
+to compare. The only timed run had rc=0.
+
+decision (git fixture environment): unchanged
