@@ -262,13 +262,24 @@ mktemp time in a single-process run: 0.443 s
 That is 13,803 `TempPathFactory.mktemp` calls, below the 5 s level, so it is not
 a lever and no code was changed for it.
 
-### Known flaky test
+### Flaky test, found and fixed
 
 tests/test_pin_probe.py::test_run_bash_local_timeout_kills_the_whole_process_group
-is pre-existing flaky: about 1.2% failure per run under load at both the
-original 1.0 s and the shortened 0.2 s timeout. `run_bash` returns promptly with
-the pipes closed, so the grandchild was exiting, not escaping. This work did not
-change it.
+failed once in 42 full parallel runs (`assert _gone(grandchild)`). It also failed
+at the original 1.0 s timeout (3 of 250 trials under suite load, against 5 of
+400 at 0.2 s), so the shortened waits did not cause it.
+
+The grandchild was never alive. The test polls `_gone()` and then asserts
+`_gone()` again, a second read. `_gone()` counted a missing `/proc` entry or a
+zombie (`Z`) as gone but not `X`, and a killed child passes through `Z`, then
+`X` (dead, being released), before its entry disappears. A first read on `Z`
+followed by a second on `X` made `_gone()` flip from True to False. A scratch
+probe that evaluated the old predicate right after the child was seen gone found
+10 disagreements in 1,500 trials (0.67%), each showing state `X` in
+`/proc/<pid>/stat`; no killed grandchild stayed non-zombie for even 50 ms in
+1,500 trials. With `X` counted as dead there were 0 disagreements in 2,500
+trials. The same double read is in the interrupt test, so the one helper fix
+covers both.
 
 ### Next levers
 
@@ -286,3 +297,64 @@ Ranked by seconds in this profile, largest first:
    three tests; only fewer real moves would shrink it.
 5. tests/test_e2e_cli.py, 6.38 s, stays: it drives the installed binary by
    design.
+
+## Result
+
+Measured 2026-11-17 from the worktree, with a base-commit control built from an
+archive of 97125fffecf7 plus the worktree's `ARCHITECTURE.md` and `CLAUDE.md`
+symlinks (so both trees skip the same 13 tests). Every `rc=` below is the value
+from the run's line in `times.txt`.
+
+### Collected ids
+
+`pytest --collect-only -qq -n 0 --no-cov -p no:randomly`, lines containing `::`:
+
+- Base: 8351 ids. Change: 8355 ids (four added tests).
+
+Collected ids missing from the change: 0
+
+### Default runs
+
+| run | load before | rc | wall s | user+sys s | result |
+|-----|-------------|----|--------|------------|--------|
+| control-default (base, single-process) | 0.58 | 0 | 188.08 | 104.78 | 8338 passed, 13 skipped |
+| change-default-1 | 0.64 | 0 | 14.87 | 123.80 | 8342 passed, 13 skipped, coverage 80.0% reached |
+| change-default-2 | 2.48 | 0 | 15.10 | 123.46 | 8342 passed, 13 skipped, coverage 80.0% reached |
+| change-default-3 | 3.25 | 0 | 14.94 | 124.39 | 8342 passed, 13 skipped, coverage 80.0% reached |
+| change-serial-rs (`-n 0`) | 5.47 | 0 | 106.89 | 60.21 | 8342 passed, 13 skipped |
+
+Run 3 started at load 3.25, which is the tail of run 2 and a sibling session on
+the shared host; run 1 started under 1. Runs 1 to 3 differ by 0.23 s, so load
+did not move the result. Failed runs among the three change runs: 0 of 3.
+
+Median default wall: 14.94 s
+
+The control wall of 188.08 s against the median change wall of 14.94 s is a
+12.6x speedup. Against the recorded baseline of 199.00 s wall and 113.26 CPU-s,
+the change default run uses 14.94 s wall (13.3x) and 123.8 CPU-s: wall time fell
+because the work spreads over workers, and CPU rose by about 9% from worker
+start-up and duplicated imports. The single-process change run is 106.89 s wall
+and 60.21 CPU-s, from the test-level fixes.
+
+### Skip reasons
+
+SKIPPED lines from `change-serial-rs` and `control-default` (10 each, line
+numbers stripped, sorted) compared with `diff`: no difference.
+
+Skip reasons identical: yes
+
+### Interrupt-ignored start
+
+`bash -c "trap '' INT; exec uv run pytest -q"`. The first run (change-int-ignored)
+gave rc=1: 1 failed, 8341 passed, 13 skipped. The failing test was
+`tests/test_avocado_cli.py::test_keyboard_interrupt_terminates_the_child_group_and_reraises`,
+which hit the 30 s pytest-timeout in `_run_one`. It fails identically on the
+untouched base under an ignored SIGINT (int-one-control, rc=1, 30.85 s), because
+Python installs no KeyboardInterrupt handler when SIGINT starts ignored. Commit
+5bdc2bbd fixed the test so it installs the default SIGINT handler itself.
+
+The repeat run, change-int-ignored-2, started at load 0.24: rc=0, wall 14.68 s,
+8342 passed, 13 skipped, and its log carries `Required test coverage of 80.0%
+reached`.
+
+Interrupt-ignored run: passed
