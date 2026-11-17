@@ -16,7 +16,6 @@ import typer
 
 from bakar.commands._helpers import _clean_build_dir
 from bakar.config import BuildConfig
-from tests._ci_console_diag import console_diag
 
 if TYPE_CHECKING:
     import subprocess
@@ -121,7 +120,7 @@ def test_remove_tree_report_returns_false_and_prints_the_leftover_without_exitin
     out = cap.get()
     assert result is False
     assert "could not fully remove" in out
-    assert "stuck" in out, console_diag()
+    assert "stuck" in out
     assert "busy" in out
     assert "(+2 more undeletable entries)" in out
     assert "removed" not in out.replace("could not fully remove", "")

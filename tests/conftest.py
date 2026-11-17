@@ -57,6 +57,14 @@ atexit.register(shutil.rmtree, _SESSION_HOME, ignore_errors=True)
 _HOMES_ROOT = Path(tempfile.mkdtemp(prefix="bakar-test-homes-"))
 atexit.register(shutil.rmtree, _HOMES_ROOT, ignore_errors=True)
 
+# A CI runner exports COLUMNS and LINES. Rich reads both when a Console is built and
+# from then on ignores any later COLUMNS, and the module-level consoles are built by
+# the ``bakar`` import below, so the width ``_isolated_home`` sets per test would never
+# apply and long temp paths would fold at 80 columns. Dropping both first keeps every
+# console following the environment at print time.
+os.environ.pop("COLUMNS", None)
+os.environ.pop("LINES", None)
+
 # Environment variables ``_isolated_home`` removes before every test: ones a
 # developer's shell may export that point at real paths or change behavior.
 # ``BAKAR_``-prefixed names are scrubbed by prefix (see SCRUBBED_ENV_PREFIXES).
