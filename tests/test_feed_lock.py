@@ -141,7 +141,7 @@ def test_feed_lock_waits_for_a_posix_lock_held_by_another_process(
     ready, release = tmp_path / "pready", tmp_path / "prelease"
     procs.append(_spawn(_POSIX_HOLDER, [feed_lock.lock_path(feed_root), ready, release], tmp_path / "ph.log"))
     _wait_for(ready)
-    monkeypatch.setenv("BAKAR_FEED_LOCK_TIMEOUT", "0.5")
+    monkeypatch.setenv("BAKAR_FEED_LOCK_TIMEOUT", "0.2")
     try:
         with pytest.raises(feed_lock.FeedLockTimeout), feed_lock.feed_lock(feed_root):
             pytest.fail("feed_lock ran its body while another process held a POSIX lock")
@@ -198,7 +198,7 @@ def test_killed_holder_frees_the_lock(feed_root: Path, held: Path, procs: list) 
 def test_acquire_times_out_without_writing(feed_root: Path, held: Path) -> None:
     ran = False
     with (
-        mock.patch.dict(os.environ, {"BAKAR_FEED_LOCK_TIMEOUT": "0.5"}),
+        mock.patch.dict(os.environ, {"BAKAR_FEED_LOCK_TIMEOUT": "0.2"}),
         pytest.raises(feed_lock.FeedLockTimeout) as excinfo,
         feed_lock.feed_lock(feed_root),
     ):
@@ -381,7 +381,7 @@ def test_sync_then_index_takes_the_lock_once_around_both_steps(cfg, tmp_path: Pa
 def test_writer_command_exits_nonzero_on_timeout_and_writes_nothing(
     cli: CliRunner, cfg, held: Path, feed_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("BAKAR_FEED_LOCK_TIMEOUT", "0.5")
+    monkeypatch.setenv("BAKAR_FEED_LOCK_TIMEOUT", "0.2")
     with (
         mock.patch("bakar.commands.feed._resolve_daemon_cfg", return_value=cfg),
         mock.patch("bakar.commands.feed.feed_retention.plan_retention") as planned,

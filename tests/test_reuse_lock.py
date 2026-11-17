@@ -76,7 +76,8 @@ def test_lock_file_lives_under_dot_bakar(tmp_path: Path) -> None:
     assert not _is_locked(lock)
 
 
-def test_lock_waits_for_another_process(tmp_path: Path) -> None:
+def test_lock_waits_for_another_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(repo_reuse, "_LOCK_POLL_S", 0.02)
     holder = _hold(tmp_path / ".bakar" / "repos.lock")
     entered = threading.Event()
 
@@ -87,7 +88,7 @@ def test_lock_waits_for_another_process(tmp_path: Path) -> None:
     worker = threading.Thread(target=take, daemon=True)
     try:
         worker.start()
-        assert not entered.wait(0.3)
+        assert not entered.wait(0.1)
     finally:
         _release(holder)
     assert entered.wait(_WAIT_S)
@@ -99,24 +100,28 @@ def test_waiter_names_the_lock_then_gives_up(
 ) -> None:
     lock = tmp_path / ".bakar" / "repos.lock"
     holder = _hold(lock)
-    # The real notice comes after 3 s; the limit here is 1 s.
-    monkeypatch.setattr(repo_reuse, "_LOCK_NOTICE_AFTER_S", 0.2)
+    # The real notice comes after 3 s; the limit here is 0.2 s.
+    monkeypatch.setattr(repo_reuse, "_LOCK_NOTICE_AFTER_S", 0.05)
+    monkeypatch.setattr(repo_reuse, "_LOCK_POLL_S", 0.02)
     try:
-        with pytest.raises(RuntimeError) as exc, workspace_lock(tmp_path, wait_limit_s=1):
+        with pytest.raises(RuntimeError) as exc, workspace_lock(tmp_path, wait_limit_s=0.2):
             raise AssertionError("the body must not run while another process holds the lock")
     finally:
         _release(holder)
     assert str(lock) in str(exc.value)
-    assert "1s" in str(exc.value)
+    assert "gave up after waiting 0s for" in str(exc.value)
     err = capsys.readouterr().err
     assert err.count("\n") == 1
     assert str(lock) in err
     assert "another bakar build" in err
 
 
-def test_short_wait_prints_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_short_wait_prints_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(repo_reuse, "_LOCK_POLL_S", 0.02)
     holder = _hold(tmp_path / ".bakar" / "repos.lock")
-    timer = threading.Timer(0.3, _release, args=(holder,))
+    timer = threading.Timer(0.1, _release, args=(holder,))
     timer.start()
     try:
         with workspace_lock(tmp_path, wait_limit_s=5):
@@ -159,6 +164,7 @@ def _cfg(tmp_path: Path) -> tuple[BuildConfig, Path, Path]:
 def test_build_kas_arg_holds_the_lock_from_classify_through_the_dump(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(repo_reuse, "_LOCK_POLL_S", 0.02)
     monkeypatch.setenv("BAKAR_REPO_POLICY", "reuse")
     cfg, kas_yaml, overlay = _cfg(tmp_path)
     lock = tmp_path / ".bakar" / "repos.lock"
@@ -187,7 +193,7 @@ def test_build_kas_arg_holds_the_lock_from_classify_through_the_dump(
         worker = threading.Thread(target=build, daemon=True)
         try:
             worker.start()
-            assert not done.wait(0.3)
+            assert not done.wait(0.1)
             classify_mock.assert_not_called()
         finally:
             _release(holder)
@@ -251,10 +257,11 @@ def test_in_use_lock_waits_then_times_out(
 ) -> None:
     lock = tmp_path / ".bakar" / repo_reuse.IN_USE_LOCK_NAME
     holder = _hold(lock)
-    monkeypatch.setattr(repo_reuse, "_LOCK_NOTICE_AFTER_S", 0.2)
+    monkeypatch.setattr(repo_reuse, "_LOCK_NOTICE_AFTER_S", 0.05)
+    monkeypatch.setattr(repo_reuse, "_LOCK_POLL_S", 0.02)
     try:
         with pytest.raises(RuntimeError) as exc:
-            repo_reuse.hold_workspace_in_use(tmp_path, wait_limit_s=1)
+            repo_reuse.hold_workspace_in_use(tmp_path, wait_limit_s=0.2)
     finally:
         _release(holder)
     assert str(lock) in str(exc.value)
@@ -303,7 +310,7 @@ def test_keep_in_use_until_exit_outlives_the_front_end(tmp_path: Path) -> None:
     build = subprocess.Popen(["sleep", "30"])
     try:
         repo_reuse.keep_in_use_until_exit(tmp_path, build)
-        time.sleep(0.5)  # the detached holder takes its shared hold while the front end still has its own
+        time.sleep(0.2)  # the detached holder takes its shared hold while the front end still has its own
         repo_reuse._IN_USE_HELD.pop(tmp_path.resolve()).close()  # the front end dies
         assert not _flock_state(lock, fcntl.LOCK_EX)
     finally:
