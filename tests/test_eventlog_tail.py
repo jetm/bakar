@@ -33,6 +33,28 @@ TASK_SUCCEEDED_LINE = next(ln for ln in _FIXTURE_LINES if "bb.build.TaskSucceede
 RUNQUEUE_LINE = next(ln for ln in _FIXTURE_LINES if "runQueueTaskStarted" in ln)
 
 
+class _CountingStop(threading.Event):
+    """Stop event whose ``wait`` is capped at 10 ms and counts its calls.
+
+    ``tail_events`` waits on the stop event between EOF polls, so counting the
+    waits measures real polls instead of guessing with a wall-clock sleep.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waits = 0
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits += 1
+        return super().wait(0.01 if timeout is None else min(timeout, 0.01))
+
+
+def _wait_for_polls(stop: _CountingStop, polls: int = 3) -> None:
+    """Block until ``stop`` has counted ``polls`` further waits."""
+    target = stop.waits + polls
+    assert _wait_for(lambda: stop.waits >= target), f"fewer than {polls} polls happened"
+
+
 def _drain_in_thread(path: Path, stop: threading.Event, collected: list[tuple[str, object]]) -> threading.Thread:
     """Run ``tail_events`` in a daemon thread, appending pairs to ``collected``."""
 
@@ -117,13 +139,13 @@ def test_stop_while_waiting_at_eof_terminates(tmp_path: Path) -> None:
     log = tmp_path / "bitbake_eventlog.json"
     log.write_text(TASK_STARTED_LINE + "\n", encoding="utf-8")
 
-    stop = threading.Event()
+    stop = _CountingStop()
     collected: list[tuple[str, object]] = []
     thread = _drain_in_thread(log, stop, collected)
     try:
         # Let it consume the one line and settle into the EOF wait loop.
         assert _wait_for(lambda: len(collected) >= 1)
-        time.sleep(0.3)
+        _wait_for_polls(stop)
     finally:
         stop.set()
         thread.join(timeout=5)
@@ -137,12 +159,12 @@ def test_stop_before_file_creation_terminates(tmp_path: Path) -> None:
     log = tmp_path / "never_created.json"
     assert not log.exists()
 
-    stop = threading.Event()
+    stop = _CountingStop()
     collected: list[tuple[str, object]] = []
     thread = _drain_in_thread(log, stop, collected)
     try:
         # Give the wait-for-file poll a chance to spin before stopping.
-        time.sleep(0.3)
+        _wait_for_polls(stop)
         stop.set()
         thread.join(timeout=5)
     finally:
@@ -161,15 +183,18 @@ def test_partial_trailing_line_not_yielded_until_complete(tmp_path: Path) -> Non
     partial = head + '"vars"'  # truncated mid-record, no newline
     log.write_text(TASK_STARTED_LINE + "\n" + partial, encoding="utf-8")
 
-    stop = threading.Event()
+    stop = _CountingStop()
     collected: list[tuple[str, object]] = []
     thread = _drain_in_thread(log, stop, collected)
     try:
         assert _wait_for(lambda: len(collected) >= 1), "complete line not yielded"
         assert collected[0][0] == "bb.build.TaskStarted"
 
-        # The partial line must not be yielded while it lacks a newline.
-        time.sleep(0.4)
+        # The partial line must not be yielded while it lacks a newline; hold
+        # that across three real EOF polls rather than a wall-clock sleep.
+        polls_before = stop.waits
+        _wait_for_polls(stop)
+        assert stop.waits >= polls_before + 3
         assert len(collected) == 1, "partial trailing line was yielded prematurely"
 
         # Complete the line: append the remainder plus a trailing newline.
