@@ -112,3 +112,25 @@ Per-seed wall differences (control minus lever): 101: 46.89 s, 202: 45.96 s,
 have rc=0.
 
 decision (command-tree reuse): kept
+
+### Collection GC pause
+
+A pytest plugin wrapped `pytest_collection`: `gc.disable()` before collection,
+then `gc.enable()`, `gc.collect()` and `gc.freeze()` in a `finally`. Measured
+with three interleaved `--collect-only -q -n 0 --no-cov` pairs, the control run
+passing `-p no:bakar_harness_gc`, after `wait_idle.sh 540`.
+
+| run | load before | rc | wall (s) |
+|-----|-------------|----|----------|
+| gc-ctl-1 | 2.47 | 0 | 1.74 |
+| gc-lev-1 | 2.47 | 0 | 1.27 |
+| gc-ctl-2 | 2.47 | 0 | 1.73 |
+| gc-lev-2 | 2.35 | 0 | 1.27 |
+| gc-ctl-3 | 2.35 | 0 | 1.74 |
+| gc-lev-3 | 2.35 | 0 | 1.27 |
+
+Per-pair wall differences (control minus lever): 0.47 s, 0.46 s, 0.47 s.
+Median: 0.47 s, below the 0.5 s threshold; all six runs have rc=0. The plugin,
+its registration and `tests/test_harness_gc.py` were removed.
+
+decision (collection GC pause): dropped
