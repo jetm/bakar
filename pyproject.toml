@@ -84,7 +84,8 @@ exclude_lines = [
 ]
 
 [tool.pytest.ini_options]
-addopts = ["-v", "--tb=short", "--cov=bakar", "--cov-report=term-missing"]
+# `uv run pytest -n 0` runs the suite in one process.
+addopts = ["-v", "--tb=short", "--cov=bakar", "--cov-report=term-missing", "-n", "auto", "--maxprocesses=16", "--dist=worksteal"]
 filterwarnings = ["error:.*unknown (key|top-level section):UserWarning"]
 markers = [
   "unit: fast hermetic tests with no external tools or services",

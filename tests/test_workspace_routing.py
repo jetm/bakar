@@ -203,6 +203,7 @@ def test_routing_error_falls_back_for_read_only_commands(
         raise ReleaseRoutingError("kas not found on PATH")
 
     monkeypatch.setattr(kas_pins, "probe_release", boom)
+    monkeypatch.setenv("COLUMNS", "500")
 
     ws = _resolve_workspace(
         None, kas_yaml=meta_avocado_worktree_layout.kas_yaml, family="generic", strict_routing=False
