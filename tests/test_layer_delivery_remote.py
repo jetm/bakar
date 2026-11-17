@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import functools
 import json
 import os
 import shlex
@@ -547,31 +548,68 @@ def _flock_probe(lock: str, mode: str) -> int:
     return subprocess.run(["flock", "-n", mode, lock, "true"], timeout=10, check=False).returncode
 
 
-def _slow_checkout_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
-    """Return an env whose ``git checkout`` touches a mark file, then sleeps."""
+def _flock_entries(lock: str) -> list[tuple[bool, str, int]]:
+    """``(waiting, mode, pid)`` for every flock on ``lock``'s inode, read from ``/proc/locks``."""
+    st = os.stat(lock)
+    key = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+    entries = []
+    for line in Path("/proc/locks").read_text().splitlines():
+        fields = line.split()
+        waiting = len(fields) > 1 and fields[1] == "->"
+        if waiting:
+            del fields[1]
+        if len(fields) >= 6 and fields[1] == "FLOCK" and fields[5] == key:
+            entries.append((waiting, fields[3], int(fields[4])))
+    return entries
+
+
+def _descends_from(pid: int, ancestor: int) -> bool:
+    """Whether ``pid`` is ``ancestor`` or one of its descendants, walking ``/proc/<pid>/stat``."""
+    while pid > 1:
+        if pid == ancestor:
+            return True
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+        except FileNotFoundError, ProcessLookupError:
+            return False
+        pid = int(stat.rsplit(")", 1)[1].split()[1])
+    return False
+
+
+def _slow_checkout_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
+    """Return an env whose ``git checkout`` touches a mark file, then waits for a release file.
+
+    The checkout stays parked, with the move holding the build lock, until the test
+    creates the release file, so nothing the test checks races a fixed sleep. The
+    wait is bounded (about 20 s) so a failing test cannot leave the move behind.
+    """
     shim = tmp_path / "shim"
     shim.mkdir()
     mark = tmp_path / "in-checkout"
+    release = tmp_path / "release-checkout"
     real_git = shutil.which("git")
     assert real_git is not None
     (shim / "git").write_text(
         "#!/bin/bash\n"
         'for a in "$@"; do\n'
-        f'    if [ "$a" = checkout ]; then : > {shlex.quote(str(mark))}; sleep 0.8; fi\n'
+        '    if [ "$a" = checkout ]; then\n'
+        f"        : > {shlex.quote(str(mark))}\n"
+        f"        for _ in $(seq 2000); do [ -e {shlex.quote(str(release))} ] && break; sleep 0.01; done\n"
+        "    fi\n"
         "done\n"
         f'exec {shlex.quote(real_git)} "$@"\n'
     )
     (shim / "git").chmod(0o755)
-    return {**os.environ, **_GIT_ENV, "PATH": f"{shim}:{os.environ['PATH']}"}, mark
+    return {**os.environ, **_GIT_ENV, "PATH": f"{shim}:{os.environ['PATH']}"}, mark, release
 
 
-def _start_slow_move(workspace: Path, root: Path, tmp_path: Path) -> tuple[subprocess.Popen, str, str]:
-    """Deliver HEAD, then start moving to a new commit with a checkout that lingers."""
+def _start_slow_move(workspace: Path, root: Path, tmp_path: Path) -> tuple[subprocess.Popen, str, str, Path]:
+    """Deliver HEAD, then start moving to a new commit whose checkout waits for the returned release file."""
     repo = workspace / "meta-avocado"
     first = _head(repo)
     assert _run(workspace, root, first).returncode == 0
     second = _commit(repo, "b.txt", "b\n")
-    env, mark = _slow_checkout_env(tmp_path)
+    env, mark, release = _slow_checkout_env(tmp_path)
     proc = subprocess.Popen(
         ["bash", "-c", _script(workspace, root, second)],
         env=env,
@@ -580,16 +618,21 @@ def _start_slow_move(workspace: Path, root: Path, tmp_path: Path) -> tuple[subpr
         text=True,
     )
     _wait_for(mark.exists, "the move to reach git checkout")
-    return proc, first, second
+    return proc, first, second, release
 
 
 def test_move_holds_the_build_lock_through_the_checkout(workspace: Path, tmp_path: Path):
     root = tmp_path / "wts"
-    proc, _, second = _start_slow_move(workspace, root, tmp_path)
+    proc, _, second, release = _start_slow_move(workspace, root, tmp_path)
     lock = build_lock_path(str(root), "wt1")
-    held = _flock_probe(lock, "-s")
-    _, err = proc.communicate(timeout=30)
+    try:
+        held = _flock_probe(lock, "-s")
+        parked = proc.poll() is None
+    finally:
+        release.touch()
+        _, err = proc.communicate(timeout=30)
     assert proc.returncode == 0, err
+    assert parked, "the move left its checkout before the probe ran"
     assert held != 0
     assert _flock_probe(lock, "-s") == 0
     assert _head(root / "wt1" / "meta-avocado") == second
@@ -597,17 +640,33 @@ def test_move_holds_the_build_lock_through_the_checkout(workspace: Path, tmp_pat
 
 def test_build_started_during_a_move_refuses_the_moved_tree(workspace: Path, tmp_path: Path):
     root = tmp_path / "wts"
-    proc, first, second = _start_slow_move(workspace, root, tmp_path)
-    guarded = subprocess.run(
-        ["bash", "-c", build_guard(worktree_root=str(root), name="wt1", commit=first) + " true"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    _, err = proc.communicate(timeout=30)
+    proc, first, second, release = _start_slow_move(workspace, root, tmp_path)
+    lock = build_lock_path(str(root), "wt1")
+    try:
+        guarded = subprocess.Popen(
+            ["bash", "-c", build_guard(worktree_root=str(root), name="wt1", commit=first) + " true"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        def guard_queued() -> bool:
+            return any(
+                waiting and mode == "READ" and _descends_from(pid, guarded.pid)
+                for waiting, mode, pid in _flock_entries(lock)
+            )
+
+        # The guard's ``flock -s 9`` must be queued behind the move's exclusive hold:
+        # that is what "started during a move" means, and what a fixed sleep never proved.
+        _wait_for(lambda: guarded.poll() is not None or guard_queued(), "the build guard to wait on the build lock")
+        assert guarded.poll() is None, "the guard finished before the move released the build lock"
+        assert proc.poll() is None, "the move left its checkout before the guard queued"
+    finally:
+        release.touch()
+        _, err = proc.communicate(timeout=30)
+    _, guard_err = guarded.communicate(timeout=30)
     assert proc.returncode == 0, err
-    assert guarded.returncode == EXIT_MOVED, guarded.stderr
+    assert guarded.returncode == EXIT_MOVED, guard_err
     assert _head(root / "wt1" / "meta-avocado") == second
 
 
@@ -631,6 +690,7 @@ def test_build_guard_holds_the_lock_while_the_build_runs(workspace: Path, tmp_pa
     assert _flock_probe(lock, "-x") == 0
 
 
+@functools.cache
 def _user_systemd_available() -> bool:
     if shutil.which("systemd-run") is None or shutil.which("systemctl") is None:
         return False
@@ -638,8 +698,9 @@ def _user_systemd_available() -> bool:
     return probe.returncode == 0
 
 
-@pytest.mark.skipif(not _user_systemd_available(), reason="needs a systemd user manager")
 def test_sigint_to_the_unit_lets_a_guarded_build_drain(workspace: Path, tmp_path: Path):
+    if not _user_systemd_available():
+        pytest.skip("needs a systemd user manager")
     root = tmp_path / "wts"
     commit = _head(workspace / "meta-avocado")
     assert _run(workspace, root, commit).returncode == 0
