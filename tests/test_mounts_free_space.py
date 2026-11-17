@@ -47,10 +47,10 @@ def test_unresponsive_path_reports_none_within_the_deadline(monkeypatch: pytest.
     _stub_stat(monkeypatch, tmp_path, "sleep 30")
     target = tmp_path / "x"
     start = time.monotonic()
-    result = probe_free_bytes([target], deadline_s=1.0)
+    result = probe_free_bytes([target], deadline_s=0.3)
     elapsed = time.monotonic() - start
     assert result == {target: None}
-    assert elapsed < 2.5
+    assert elapsed < 1.0
 
 
 def test_wedged_path_does_not_poison_healthy_one(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -62,8 +62,8 @@ def test_wedged_path_does_not_poison_healthy_one(monkeypatch: pytest.MonkeyPatch
     wedged = tmp_path / "sick"
     healthy = tmp_path / "fine"
     start = time.monotonic()
-    result = probe_free_bytes([wedged, healthy], deadline_s=1.0)
-    assert time.monotonic() - start < 2.5
+    result = probe_free_bytes([wedged, healthy], deadline_s=0.3)
+    assert time.monotonic() - start < 1.0
     assert result == {wedged: None, healthy: 10240}
 
 

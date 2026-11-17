@@ -23,7 +23,7 @@ def _serve(status: int):
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
     return server
 
 
@@ -53,5 +53,5 @@ def test_silent_listener_respects_the_deadline():
         s.listen(1)
         port = s.getsockname()[1]
         start = time.monotonic()
-        assert http_exists(f"http://127.0.0.1:{port}/x", timeout=0.5) is False
-        assert time.monotonic() - start < 1.0
+        assert http_exists(f"http://127.0.0.1:{port}/x", timeout=0.2) is False
+        assert time.monotonic() - start < 0.4

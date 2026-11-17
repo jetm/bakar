@@ -23,7 +23,7 @@ def _serve(status: int):
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     return server
 
@@ -51,14 +51,14 @@ def test_silent_listener_times_out_within_twice_timeout():
         s.listen(1)
         port = s.getsockname()[1]
         start = time.monotonic()
-        assert http_reachable(f"http://127.0.0.1:{port}/", timeout=0.5) is False
-        assert time.monotonic() - start < 1.0
+        assert http_reachable(f"http://127.0.0.1:{port}/", timeout=0.2) is False
+        assert time.monotonic() - start < 0.4
 
 
 def test_timeout_is_a_total_deadline_not_per_operation():
     # Server accepts, reads the request after ~0.8x the timeout, then stalls.
     # Per-operation timeouts would allow ~2x; a total deadline stays near 1x.
-    timeout = 1.0
+    timeout = 0.3
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         s.listen(1)
@@ -75,7 +75,7 @@ def test_timeout_is_a_total_deadline_not_per_operation():
         t.start()
         start = time.monotonic()
         assert http_reachable(f"http://127.0.0.1:{port}/", timeout=timeout) is False
-        assert time.monotonic() - start < timeout + 0.5
+        assert time.monotonic() - start < timeout + 0.25
 
 
 def test_redirect_is_not_followed_and_counts_as_reachable():
@@ -90,7 +90,7 @@ def test_redirect_is_not_followed_and_counts_as_reachable():
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
     try:
         assert http_reachable(f"http://127.0.0.1:{server.server_port}/") is True
     finally:
@@ -121,7 +121,7 @@ def test_non_http_listener_is_unreachable_not_an_exception():
 
 
 def test_dribbling_server_cannot_extend_the_deadline():
-    timeout = 1.0
+    timeout = 0.25
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         s.listen(1)
@@ -134,11 +134,11 @@ def test_dribbling_server_cannot_extend_the_deadline():
                 try:
                     for _ in range(10):
                         conn.sendall(b"H")
-                        time.sleep(0.4)
+                        time.sleep(0.1)
                 except OSError:
                     pass
 
         threading.Thread(target=dribble, daemon=True).start()
         start = time.monotonic()
         assert http_reachable(f"http://127.0.0.1:{port}/", timeout=timeout) is False
-        assert time.monotonic() - start < timeout + 0.5
+        assert time.monotonic() - start < timeout + 0.2
