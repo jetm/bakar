@@ -358,3 +358,88 @@ The repeat run, change-int-ignored-2, started at load 0.24: rc=0, wall 14.68 s,
 reached`.
 
 Interrupt-ignored run: passed
+
+## Ten-second round
+
+### Baseline default runs
+
+Host: pc3 (rog-strix-x870i-jetm), AMD Ryzen 9 9950X3D 16-Core, 32 threads,
+governor performance, Python 3.14.10, uv 0.13.8. The runs were taken on pc3,
+not on the dev host, with `uv run --no-sync pytest -q` in a staged tree. The
+series ran 2026-11-17 starting 16:37 (UTC-6). load1 was 4 to 6 at the starts
+while CPU pressure (`some avg10`) read 0.00, so the gate waited on pressure
+under 0.5 and no running pytest, not on load1. Every gate line reads
+`quiet psi_avg10=0.00 after 0s`.
+
+| run | load1 before | rc | wall s | user+sys s | pytest summary |
+|-----|--------------|----|--------|------------|----------------|
+| warmup (untimed) | 4.02 | 0 | 14.22 | 105.27 + 7.89 | 8342 passed, 13 skipped, 105 warnings in 13.39s |
+| base-default-1 | 4.92 | 0 | 13.74 | 104.13 + 8.14 | 8342 passed, 13 skipped, 97 warnings in 12.91s |
+| base-default-2 | 5.14 | 0 | 13.93 | 105.66 + 7.86 | 8342 passed, 13 skipped, 97 warnings in 13.10s |
+| base-default-3 | 5.83 | 0 | 14.36 | 104.28 + 8.17 | 8342 passed, 13 skipped, 94 warnings in 13.53s |
+
+The warm-up run is not part of the median. Pressure before every run was 0.00.
+Median of the three timed runs: wall 13.93 s (run 2), user+sys 112.45 s
+(runs: 112.27, 113.52, 112.45), pytest-reported time 13.10 s.
+
+### Phase timeline
+
+Command (run in the staged tree on pc3, one run, rc=0, wall 14.13 s, 8342
+passed, 13 skipped):
+
+```text
+cd <tree>; TL_T0=<date +%s.%N> TL_OUT=<tl-baseline.jsonl> PYTHONPATH=<helpers dir> uv run --no-sync pytest -q -p phase_timeline
+```
+
+Summarizer output, seconds from `TL_T0`, mapped to the phases:
+
+| phase | summarizer line | seconds |
+|-------|-----------------|---------|
+| pre-session | `configure 0.3768 sessionstart 0.3908` | sessionstart at 0.391 |
+| gateway ramp | `gateway ramp 0.415 .. 0.710` | 0.295 |
+| collection barrier | `collection 2.071 .. 2.312 (barrier 2.312)` | collection 0.241, barrier at 2.312 |
+| run phase | `run phase 2.312 .. 9.976` | 7.664 |
+| tail | `tail 9.089 .. 9.976`, `idle worker-s 13.288` | 0.887, idle worker-seconds 13.288 |
+| end phase | `sessionfinish 12.215 .. 13.668` | 1.453 |
+
+Other summarizer lines: `node_down 8.602 .. 9.999`, `teardown_nodes 12.215 ..
+13.237` (1.022 s), `terminal summary 13.623 .. 13.668` (0.045 s), `last
+atexit 13.8003`. The run phase ends at 9.976 and sessionfinish starts at
+12.215, so 2.239 s pass between them; the summarizer has no line for that gap.
+
+### Off-CPU census
+
+Command (single process, one run, rc=0, wall 96.38 s, user 43.93 s, sys 5.83
+s, 8342 passed, 13 skipped):
+
+```text
+uv run --no-sync pytest -p offcpu_census -n 0 -p no:randomly --no-cov -q
+```
+
+`offcpu_summary.py` over `oc/offcpu-main.jsonl` (8355 rows, one per test phase
+record):
+
+- Summed off-CPU: 46.56 s of 93.41 s summed test wall.
+- Tests with off-CPU above 0.2 s: 74.
+- Summed own CPU 18.06 s against summed children CPU 28.76 s, so children
+  account for 61.4% of the CPU measured inside tests.
+
+The 15 largest, off-CPU seconds with wall and children CPU:
+
+| off-CPU s | wall s | kids s | test |
+|-----------|--------|--------|------|
+| 1.001 | 1.040 | 0.010 | tests/test_stress_parse.py::test_all_iterations_pass |
+| 0.802 | 0.804 | 0.000 | tests/test_pin_probe.py::test_run_bash_local_drain_timeout_keeps_output_read_during_the_drain |
+| 0.800 | 0.834 | 0.030 | tests/test_layer_delivery_remote.py::test_build_started_during_a_move_refuses_the_moved_tree |
+| 0.799 | 0.833 | 0.030 | tests/test_layer_delivery_remote.py::test_move_holds_the_build_lock_through_the_checkout |
+| 0.603 | 0.605 | 0.000 | tests/test_eventlog_tail.py::test_partial_trailing_line_not_yielded_until_complete |
+| 0.603 | 0.641 | 0.020 | tests/test_uninative_leak_scan.py::test_post_build_excluded_by_default |
+| 0.557 | 0.571 | 0.010 | tests/test_layer_delivery_remote.py::test_sigint_to_the_unit_lets_a_guarded_build_drain |
+| 0.514 | 0.571 | 0.050 | tests/test_kas_build_plain.py::test_run_build_persist_tail_failure_does_not_duplicate_terminal_event |
+| 0.505 | 0.521 | 0.000 | tests/test_stress_parse.py::test_one_iteration_fails |
+| 0.504 | 0.572 | 0.060 | tests/test_kas_build_failure_error.py::test_run_build_zero_exit_writes_no_step_fail |
+| 0.489 | 0.530 | 0.040 | tests/test_reuse_lock.py::test_keep_in_use_until_exit_ignores_a_reused_pid |
+| 0.454 | 0.486 | 0.030 | tests/test_feed_lock.py::test_second_process_waits_until_first_releases |
+| 0.452 | 0.455 | 0.000 | tests/test_native_ledger.py::test_recapture_older_hash_stays_visible_to_middle_run |
+| 0.414 | 0.469 | 0.050 | tests/test_cli_build.py::test_run_build_invokes_check_unclean_stop |
+| 0.403 | 0.509 | 0.100 | tests/integration/test_hashserv_real_daemon.py::test_hashserv_real_daemon_lifecycle |
