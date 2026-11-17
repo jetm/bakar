@@ -11,7 +11,9 @@ so the fixture chdirs into ``<workspace>/nxp/`` and ``cfg.bsp_root`` is
 
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -1394,6 +1396,9 @@ def test_no_run_host_wide_fallback_peer_held_root_is_diagnosed_not_dropped(
     # was sent to it" is provable by observing it is still alive afterward,
     # not merely by the absence of a recorded call.
     proc = subprocess.Popen(["sleep", "5"])
+    # os.kill is patched below on the shared os module; keep the real one so
+    # cleanup can signal the stand-in instead of waiting out its sleep.
+    real_kill = os.kill
     try:
         sock = build_dir / "bitbake.sock"
 
@@ -1449,7 +1454,7 @@ def test_no_run_host_wide_fallback_peer_held_root_is_diagnosed_not_dropped(
         assert killpg_calls == []
         assert proc.poll() is None
     finally:
-        proc.terminate()
+        real_kill(proc.pid, signal.SIGTERM)
         proc.wait()
 
 

@@ -557,7 +557,7 @@ def _slow_checkout_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     (shim / "git").write_text(
         "#!/bin/bash\n"
         'for a in "$@"; do\n'
-        f'    if [ "$a" = checkout ]; then : > {shlex.quote(str(mark))}; sleep 1.5; fi\n'
+        f'    if [ "$a" = checkout ]; then : > {shlex.quote(str(mark))}; sleep 0.8; fi\n'
         "done\n"
         f'exec {shlex.quote(real_git)} "$@"\n'
     )
@@ -646,9 +646,9 @@ def test_sigint_to_the_unit_lets_a_guarded_build_drain(workspace: Path, tmp_path
     fake = tmp_path / "fakebuild"
     fake.write_text(
         "#!/bin/bash\n"
-        "trap 'echo draining; sleep 1; echo drained; exit 0' INT\n"
+        "trap 'echo draining; sleep 0.5; echo drained; exit 0' INT\n"
         "echo started\n"
-        "for i in $(seq 60); do sleep 1; done\n"
+        "for i in $(seq 150); do sleep 0.2; done\n"
     )
     fake.chmod(0o755)
     log = tmp_path / "log"
