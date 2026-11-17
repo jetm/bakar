@@ -195,8 +195,9 @@ def test_timeout_output_decodes_bytes_str_or_none(value: bytes | str | None, tex
 def test_run_bash_local_timeout_with_an_escaped_descendant_still_returns(monkeypatch: pytest.MonkeyPatch) -> None:
     # setsid puts the sleep outside the killed group while it holds stdout, so
     # the drain times out and the partial output comes from the timeout itself.
-    monkeypatch.setattr(pin_probe, "_DRAIN_TIMEOUT_S", 0.15)
-    rc, out, _err, timed_out = pin_probe.run_bash("setsid sleep 30 & echo $!; wait", host=None, timeout=0.2)
+    # The 0.3 s first timeout leaves bash its start-up; a 0.05 s drain keeps the 0.35 s total.
+    monkeypatch.setattr(pin_probe, "_DRAIN_TIMEOUT_S", 0.05)
+    rc, out, _err, timed_out = pin_probe.run_bash("setsid sleep 30 & echo $!; wait", host=None, timeout=0.3)
     escaped = int(out.split()[0])
     with contextlib.suppress(ProcessLookupError):
         os.kill(escaped, signal.SIGKILL)
@@ -220,7 +221,8 @@ def _gone(pid: int) -> bool:
 def test_run_bash_local_timeout_kills_the_whole_process_group() -> None:
     # The grandchild stands in for a git fetch the script started; it must not
     # outlive the timeout once the workspace locks are dropped.
-    rc, out, _err, timed_out = pin_probe.run_bash("sleep 30 & echo $!; wait", host=None, timeout=0.2)
+    # No drain window here, so the 0.3 s start-up margin must come from the timeout itself.
+    rc, out, _err, timed_out = pin_probe.run_bash("sleep 30 & echo $!; wait", host=None, timeout=0.3)
     assert timed_out
     assert rc == 255
     grandchild = int(out.split()[0])
@@ -231,11 +233,17 @@ def test_run_bash_local_timeout_kills_the_whole_process_group() -> None:
 
 
 def test_run_bash_local_drain_timeout_keeps_output_read_during_the_drain(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The escaped descendant prints after the first timeout but inside the drain
-    # window, so only the drain's own TimeoutExpired carries that line.
-    monkeypatch.setattr(pin_probe, "_DRAIN_TIMEOUT_S", 0.65)
-    script = "setsid sh -c 'sleep 0.4; echo late; exec sleep 30' & echo $!; wait"
-    rc, out, _err, timed_out = pin_probe.run_bash(script, host=None, timeout=0.15)
+    # The escaped descendant prints only once its old group leader (the bash the
+    # timeout killed) is dead, so the line can only arrive inside the drain window
+    # and only the drain's own TimeoutExpired carries it. Waiting on that event
+    # instead of a fixed 0.4 s sleep leaves the 0.4 s first timeout entirely to
+    # bash starting and forking the descendant, at the same 0.8 s total.
+    monkeypatch.setattr(pin_probe, "_DRAIN_TIMEOUT_S", 0.4)
+    script = (
+        "setsid sh -c 'while read -r l < /proc/$PPID/stat 2>/dev/null; do set -- $l; "
+        "case $3 in Z|X|x) break;; esac; sleep 0.01; done; echo late; exec sleep 30' & echo $!; wait"
+    )
+    rc, out, _err, timed_out = pin_probe.run_bash(script, host=None, timeout=0.4)
     escaped = int(out.split()[0])
     with contextlib.suppress(ProcessLookupError):
         os.kill(escaped, signal.SIGKILL)
