@@ -774,3 +774,86 @@ decision (temp path retention policy): dropped
 `pyproject.toml` is untouched. The median-wall bar (0.2 s fall, no pair
 rising) is not met either: the only pair has the lever 0.88 s slower (invalid
 run, indicative only).
+
+### Ten-second round: remaining lever decisions
+
+Levers measured or reasoned rather than built. The two timed series ran on pc3
+with the tree staged by `pc3-stage.sh tree`, each preceded by one untimed
+warm-up, three interleaved control and lever pairs, every run gated on CPU
+pressure some avg10 under 0.5 and no pytest running, and the series set to stop
+on any rc other than 0. All 14 runs (two warm-ups included) were rc 0, 8350
+passed, 13 skipped. Load1 climbed from 1.7 to 10 across the series with nothing
+running and is recorded, not gated. Series script: `pc3-lev8-series.sh`.
+
+decision (collection sharding): not needed. The fixed fraction of collection
+cost is 0.247 (0.41 s for one tiny file against 1.66 s for the full tree, from
+the lever-gates subsection), so at most 75% (1.25 s) of single-process
+collection scales with the number of files. Splitting that across 16 shards
+would leave about 0.41 + 1.25 / 16 = 0.49 s, a ceiling of about 1.2 s saved per
+collecting process, and only if the shards did not collide for CPU (the
+collection GC subsection showed they do). Projected floor with the levers kept
+in this change: the tree's median wall on pc3 is now about 9.5 s (coverage
+subsection, 9.49 s; this round's runs 9.16 to 10.10 s), so the floor with
+sharding would be at best about 8.3 s. Sharding is not needed to reach 10 s: the
+median is already below it. The lever would be a follow-up change if the median
+on pc3 rises above 10 s or the target drops under 9 s; the measurement that
+would justify it is a prototype's collection barrier against the current 2.312 s
+in three interleaved pairs, with at least a 0.4 s earlier barrier.
+
+decision (module-scoped scenarios fixture): not applied. The four tests in
+`tests/test_layer_repo_kas_guard.py` pay 0.47 to 0.53 s of setup each, about 1.4
+worker-seconds in total, which is under 0.1 s of wall at 16 workers (1.4 / 16 =
+0.09 s), below the 0.2 s bar used for the other levers. A module-scoped fixture
+also runs before the per-test isolation fixture (the isolated home and
+environment are set up per test), so the scenarios would be built against the
+real home or an unisolated environment. The gain does not pay for that hazard.
+
+decision (dependency-sync check): not applied. Three interleaved pairs of
+`uv run pytest -q -p phase_timeline` (control) against `uv run --no-sync pytest
+-q -p phase_timeline` (lever):
+
+| pair | control wall s | lever wall s | fall s |
+|------|----------------|--------------|--------|
+| 1 | 9.34 | 9.16 | 0.18 |
+| 2 | 9.44 | 9.35 | 0.09 |
+| 3 | 10.10 | 9.42 | 0.68 |
+
+Median wall: control 9.44 s, lever 9.35 s, a fall of 0.09 s, under the 0.2 s
+bar (the 0.68 s pair is one control run at 10.10 s, with user+sys unchanged).
+The sync check is cheap on a synced tree (`uv sync` reports 41 packages checked
+in 0.21 ms), and dropping it would let a stale environment run silently, so the
+default command keeps it.
+
+decision (verbose flag): not applied, `-v` stays in `addopts`. Measured on pc3
+with the output on a pseudo-terminal (`script -qec`), no `-q`, so the default
+verbosity is what is timed. The control is `uv run --no-sync pytest`; the lever
+replaces the whole option string with
+`-o addopts="--tb=short --cov=bakar --cov-report= -n auto --maxprocesses=16 --dist=worksteal"`
+(the current `addopts` minus `-v`; a command-line option also in `addopts` is
+appended, not replaced). The script checked each arm's log: control must contain
+`PASSED` lines, lever must contain none; all six passed that check.
+
+| pair | control wall s | lever wall s | fall s |
+|------|----------------|--------------|--------|
+| 1 | 9.40 | 9.45 | -0.05 |
+| 2 | 9.41 | 9.55 | -0.14 |
+| 3 | 9.43 | 9.36 | 0.07 |
+
+Median wall: control 9.41 s, lever 9.45 s, so removing `-v` is 0.04 s slower
+(noise, no pair beyond 0.14 s). The per-test lines cost nothing measurable.
+
+decision (property-test deadline): not applied. CI selects Hypothesis's
+built-in CI profile (no deadline); `.github/workflows/ci.yml` sets no
+`HYPOTHESIS_PROFILE`, and no profile is registered in the repository
+(`rg register_profile tests src` finds nothing). Failed property tests due to a
+deadline across all runs of this change: 0. Searched for `DeadlineExceeded`
+under `/var/tmp/claude-code/bakar` on the dev host (no match) and for
+`DeadlineExceeded` and `Flaky` in the 113 logs of the plan and runtime scratch
+directories and the 74 logs under
+`/var/tmp/claude-code/bakar/2026-11-17-pytest-10s-pc3/` on pc3 (excluding this
+subsection's own series): no match for either. With zero deadline failures
+there is nothing to lower or disable.
+
+CI skip reasons: pending the first run that prints them. If the skip counts
+still differ between CI and pc3 after that run, the explanation is recorded in a
+later change.
