@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import gc
 import importlib
 import os
 import shutil
@@ -748,6 +749,22 @@ class ClickTreeCache:
         self._trees.clear()
 
 
+class HarnessGcPause:
+    """Pause the cyclic collector while tests are collected, then freeze survivors."""
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_collection(self, session: pytest.Session):
+        gc.disable()
+        try:
+            return (yield)
+        finally:
+            gc.enable()
+            gc.collect()
+            gc.freeze()
+
+
 def pytest_configure(config: pytest.Config) -> None:
     # Registered by name so ``-p no:bakar_click_cache`` disables it.
     config.pluginmanager.register(ClickTreeCache(), "bakar_click_cache")
+    # Registered by name so ``-p no:bakar_harness_gc`` disables it.
+    config.pluginmanager.register(HarnessGcPause(), "bakar_harness_gc")

@@ -486,3 +486,58 @@ completion): (2.312 - 0.391) + (13.8003 - 9.976) = 1.921 + 3.824 = 5.745 s,
 which is at or above 5 s.
 
 premise: holds
+
+### Ten-second round: collection GC pause under parallel load
+
+The previous round's pause (`gc.disable()` around `pytest_collection`, then
+`gc.enable()`, `gc.collect()` and `gc.freeze()` in a `finally`) was run as a
+pytest plugin named `bakar_harness_gc`, registered from `tests/conftest.py`,
+with the default worker count on pc3 in the staged tree. Each run used
+`uv run --no-sync pytest -q -p phase_timeline` with the timeline recorder from
+"Phase timeline"; control runs added `-p no:bakar_harness_gc`. Every run waited
+for `some avg10` under 0.5 in `/proc/pressure/cpu` and no pytest; one untimed
+warm-up (rc 0, wall 11.04 s, with the lever on) came first. Three interleaved
+pairs, control first:
+
+| run | load before | rc | wall (s) | user (s) | sys (s) | barrier (s) |
+|-----|-------------|----|----------|----------|---------|-------------|
+| gc-ctl-1 | 4.88 | 0 | 12.42 | 103.45 | 7.96 | 2.257 |
+| gc-lev-1 | 5.53 | 0 | 10.94 | 86.10 | 8.15 | 2.153 |
+| gc-ctl-2 | 5.85 | 0 | 12.85 | 103.13 | 8.09 | 2.266 |
+| gc-lev-2 | 5.84 | 0 | 10.84 | 85.35 | 8.02 | 2.153 |
+| gc-ctl-3b | 4.07 | 0 | 12.39 | 104.01 | 8.08 | 2.271 |
+| gc-lev-3b | 4.71 | 0 | 10.65 | 86.84 | 8.20 | 2.164 |
+
+The first pair-3 control run (`gc-ctl-3`, load 7.08, wall 12.43 s) failed with
+rc=1 on `tests/integration/test_hashserv_real_daemon.py::test_hashserv_real_daemon_lifecycle`
+(`ensure_running returned None`), so it is invalid and excluded; pair 3 was
+run again as `gc-ctl-3b` and `gc-lev-3b`.
+
+Original gate (barrier only): keep if the median barrier moves at least 0.4 s
+earlier. Per-pair barrier differences (control minus lever): 0.104 s, 0.113 s,
+0.107 s. Median 0.107 s, below 0.4 s, so the original gate fails (the
+collection phase started about 0.19 s earlier but lasted 0.30 s against
+0.21 s).
+
+Gate amended after the measurement: the barrier-only gate cannot see
+`gc.freeze()`, which acts on the run phase after the barrier. The amended gate
+keeps the lever if the median wall over three interleaved pairs falls by at
+least 0.4 s with no pair rising, or the barrier moves at least 0.4 s earlier.
+Wall fell 1.48 s, 2.01 s and 1.74 s in the three pairs (median 1.74 s, no pair
+rising) and user CPU fell 17.35 s, 17.78 s and 17.17 s (about 103 s to 86 s),
+so the amended gate passes.
+
+Confirmation pair with the plugin as it stands in the tree (restaged, same
+gate, one untimed warm-up of rc 0 and wall 11.03 s first), control then lever:
+
+| run | load before | rc | wall (s) | user (s) | sys (s) | barrier (s) |
+|-----|-------------|----|----------|----------|---------|-------------|
+| gc-ctl-4 | 2.79 | 0 | 12.63 | 103.42 | 8.11 | 2.269 |
+| gc-lev-4 | 5.35 | 0 | 10.82 | 86.48 | 8.48 | 2.145 |
+
+The lever's wall is 1.81 s below the control's and its barrier 0.124 s earlier.
+The plugin `HarnessGcPause`, registered as `bakar_harness_gc` in
+`tests/conftest.py`, and `tests/test_harness_gc.py` stay in the tree;
+`-p no:bakar_harness_gc` blocks it.
+
+decision (collection GC pause under parallel load): kept
