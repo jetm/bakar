@@ -541,3 +541,84 @@ The plugin `HarnessGcPause`, registered as `bakar_harness_gc` in
 `-p no:bakar_harness_gc` blocks it.
 
 decision (collection GC pause under parallel load): kept
+
+### Ten-second round: where the post-run time goes
+
+Measured 2026-11-17 on pc3 in the staged current tree (after the test fixes,
+the mounts backoff and the GC pause plugin). Series: one untimed warm-up
+(rc 0, wall 10.73 s), then `tl-a` (phase timeline only, rc 0, wall 10.80 s,
+load1 1.32) and `tl-b` (phase timeline plus a scratch attribution plugin,
+rc 0, wall 11.02 s, load1 2.23); CPU pressure `some avg10` was 0.00 before every
+run. The attribution plugin lives outside the repository and timestamps, in
+seconds since `TL_T0`, one jsonl file per process: the start and end of
+`NodeManager.teardown_nodes`, of each worker's `pytest_testnodedown`, of
+`coverage.Coverage.stop`, `save`, `load`, `combine`, `report` (and
+`xml_report`, `html_report`, `json_report`, `lcov_report`, none of which was
+called), of the pytest-cov `DistMaster` and `DistWorker` `finish` and
+`testnodedown`, of the sessionfinish and terminal-summary hooks, of every call
+of the standard-library directory-tree removal (including both conftest exit
+hooks and pytest's own retention cleanup), and an exit hook registered first
+(runs last) and one registered at sessionfinish (runs first).
+
+The two timeline runs agree: `tl-a` has the last test done at 8.120 s,
+sessionfinish at 10.091 s (gap 1.971 s) and the last exit hook at 10.686 s;
+`tl-b` has 8.350 s, 10.319 s (gap 1.969 s) and 10.910 s. Breakdown of `tl-b`,
+last test completion to its last exit hook (10.921 s in the plugin's own
+record, 2.571 s after the last test):
+
+| step | process | seconds |
+|------|---------|---------|
+| last test done to last worker down (8.350 .. 8.373), including every worker's own pytest-cov stop and save (median 0.025 s, max 0.039 s) | workers | 0.023 |
+| pytest-cov `DistMaster.finish`: stop 0.000, save 0.030, combine 0.071, save 0.000 (8.373 .. 8.474) | controller | 0.101 |
+| `coverage.report`, first call (the `total` format pytest-cov takes for the fail-under check), 8.474 .. 9.397 | controller | 0.923 |
+| `coverage.report`, second call (the `term-missing` table), 9.397 .. 10.319 | controller | 0.922 |
+| `teardown_nodes` (10.319 .. 10.418) | controller | 0.098 |
+| pytest's retention cleanup, one directory-tree removal of a `garbage-` directory from an earlier run, inside sessionfinish between `teardown_nodes` and the terminal summary (10.418 .. 10.807) | controller | 0.390 |
+| terminal summary (10.808 .. 10.852) | controller | 0.045 |
+| rest of sessionfinish, unconfigure and the gap up to the first exit hook (10.853 .. 10.910) | controller | 0.062 |
+| exit hooks, first to last (10.910 .. 10.921), including both conftest homes removals (0.0001 s and 0.0000 s) | controller | 0.010 |
+
+The rows sum to 2.574 s against 2.571 s measured (rounding).
+
+The 1.97 s between the last test and sessionfinish is the controller's two
+`coverage.report` calls (1.845 s) plus `DistMaster.finish` (0.101 s) and the last
+worker's coverage save (0.023 s). Both reports run inside pytest-cov's
+`pytest_runtestloop` wrapper, after the loop and before `pytest_sessionfinish`,
+which is why the summarizer had no line there. `sessionfinish` itself (0.534 s
+in `tl-b`) is `teardown_nodes` 0.098 s, pytest's retention cleanup 0.390 s and
+the terminal summary 0.045 s. Worker exit: all 16 workers reached their first
+exit hook within 0.0001 s of each other at 10.3193 s (when the controller sent
+the shutdown) and their last at 10.3259 s at most, so the workers' own exit path
+is under 0.01 s each; each worker had been idle since its own last test.
+
+Per-test homes: the removal of the per-worker homes root (about 520 directories
+each) took 0.0503 s summed over the 16 workers, 0.0031 s median, 0.0064 s max,
+and the 16 workers do it in parallel. Against the 0.3 s gate it is 47 times
+under on the worst worker and about 6 times under on the sum.
+
+Still unmeasured: the interpreter finalisation after the last exit hook (10.921
+s to the end of the run; the `/usr/bin/time` wall of 11.02 s bounds it at about
+0.1 s, and that includes `uv run` waiting on its child); and why `teardown_nodes`
+fell from 1.022 s in the baseline to 0.098 s here, since the tree changed in
+several ways between the two measurements and only the GC pause plugin was
+isolated (by task 5.1).
+
+Findings for the orchestrator, not acted on here: the controller's two
+`coverage.report` calls cost 1.845 s of the 2.571 s after the last test, and
+the first is only the `total` figure for the coverage floor, which the second
+(the table) recomputes at the same 0.92 s each. Pytest's retention cleanup is
+0.390 s in sessionfinish.
+
+decision (per-test homes under base temp): dropped
+
+The gate (the homes' removal is at least 0.3 s of the end phase) is not met:
+the removal measures 0.0064 s on the worst worker (0.0503 s summed over 16
+parallel workers). Moving the homes under the base temporary directory would
+also hand about 520 directories per worker to pytest's retention cleanup, which
+already spends 0.390 s on one earlier run's `garbage-` directory on the
+controller, so the move would not shrink the end phase (reasoned, not
+measured). No code was changed: `tests/conftest.py` keeps its per-test homes,
+the exit hook and the two lines that drop COLUMNS and LINES, and the
+`HarnessGcPause` plugin and its registration are untouched. The three
+interleaved pc3 pairs and the killed-run check were not run because the gate
+was not met.
