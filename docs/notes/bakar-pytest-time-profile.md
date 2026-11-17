@@ -736,3 +736,41 @@ note and `pyproject.toml`). CI passes its own `--cov-report=xml`
 logs lose the table; use `--cov-report=term-missing` there if it is wanted.
 `.claude/rules/pytest.md` (a symlink into another repository) has no coverage
 report text, so no change is needed there.
+
+### Ten-second round: temp path retention
+
+Lever: `tmp_path_retention_policy = "failed"`, to remove each passing test's
+directory as it finishes in the workers instead of in the controller's
+sessionfinish (0.39 s). Measured on pc3 (control as is, lever with
+`-o tmp_path_retention_policy=failed`, quiet gate psi avg10 under 0.5, one
+untimed warm-up, tree including the coverage table change).
+
+| run | load1 before | rc | wall s | user s | sys s | result |
+|-----|--------------|----|--------|--------|-------|--------|
+| warm-up | 0.87 | 0 | 9.37 | 85.93 | 8.21 | 8350 passed |
+| ret-ctl-1 | 2.56 | 0 | 9.28 | 85.55 | 8.05 | 8350 passed |
+| ret-lev-1 | 6.88 | 1 | 10.16 | 87.90 | 7.56 | 584 failed, 86 errors, 7680 passed |
+
+The lever run fails, so the series stopped after pair 1 (a failing run is
+invalid). The failure is deterministic and caused by the lever, not by load:
+on the dev host `pytest tests/test_getvar.py -n 0 -p no:randomly` passes 49 of
+49 by default and fails 40 of 49 with `-o tmp_path_retention_policy=failed`.
+The dominant error is `FileNotFoundError: [Errno 2] No such file or directory`
+(about 230 of the failures), consistent with tests that use a `tmp_path`
+directory as the working directory: it is removed at the end of the test
+before the other fixtures finish, and the suite then reads a deleted current
+directory. Making the suite pass under the policy would mean editing tests,
+outside this task.
+
+Policy proof with a scratch test outside the repository
+(`/var/tmp/claude-code/bakar/2026-11-17-ret-proof/test_ret.py`, one passing and
+one failing test, each using `tmp_path`): with `all` both directories exist
+after the run; with `failed` the passing test's directory is removed and the
+failing test's directory is kept. So the option is in effect and behaves as
+documented; the cost is the suite failures above.
+
+decision (temp path retention policy): dropped
+
+`pyproject.toml` is untouched. The median-wall bar (0.2 s fall, no pair
+rising) is not met either: the only pair has the lever 0.88 s slower (invalid
+run, indicative only).
