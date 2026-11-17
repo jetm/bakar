@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import functools
+import os
 import shutil
 import subprocess
 import sys
@@ -304,13 +306,30 @@ def test_in_use_lock_holders_share(tmp_path: Path) -> None:
     assert len(repo_reuse._IN_USE_HELD) == 1
 
 
+def _other_shared_holders(lock: Path) -> list[int]:
+    """Pids other than this one holding ``lock`` shared, from ``/proc/locks`` (waiters excluded)."""
+    st = lock.stat()
+    key = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+    with open("/proc/locks") as fh:
+        rows = [line.split() for line in fh]
+    return [
+        int(f[4])
+        for f in rows
+        if len(f) >= 6 and f[1] == "FLOCK" and f[3] == "READ" and f[5] == key and int(f[4]) != os.getpid()
+    ]
+
+
 def test_keep_in_use_until_exit_outlives_the_front_end(tmp_path: Path) -> None:
     lock = tmp_path / ".bakar" / repo_reuse.IN_USE_LOCK_NAME
     repo_reuse.hold_workspace_in_use(tmp_path, wait_limit_s=1)
     build = subprocess.Popen(["sleep", "30"])
     try:
         repo_reuse.keep_in_use_until_exit(tmp_path, build)
-        time.sleep(0.2)  # the detached holder takes its shared hold while the front end still has its own
+        # The detached holder must take its shared hold while the front end still has its own.
+        deadline = time.monotonic() + 10
+        while not _other_shared_holders(lock) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert _other_shared_holders(lock), "the detached holder never took the lock"
         repo_reuse._IN_USE_HELD.pop(tmp_path.resolve()).close()  # the front end dies
         assert not _flock_state(lock, fcntl.LOCK_EX)
     finally:
@@ -318,7 +337,7 @@ def test_keep_in_use_until_exit_outlives_the_front_end(tmp_path: Path) -> None:
         build.wait()
     deadline = time.monotonic() + 5
     while not _flock_state(lock, fcntl.LOCK_EX) and time.monotonic() < deadline:
-        time.sleep(0.1)
+        time.sleep(0.01)
     assert _flock_state(lock, fcntl.LOCK_EX)
 
 
@@ -331,7 +350,7 @@ def test_keep_in_use_until_exit_is_a_noop_without_a_hold(tmp_path: Path) -> None
 # Inside a fresh user and PID namespace: the build exits, an impostor is forced
 # onto its PID through ns_last_pid, and the lock must still come free.
 _PID_REUSE = (
-    "import fcntl, subprocess, sys, time\n"
+    "import fcntl, os, subprocess, sys, time\n"
     "from pathlib import Path\n"
     "from bakar.steps import repo_reuse\n"
     "ws = Path(sys.argv[1])\n"
@@ -339,7 +358,16 @@ _PID_REUSE = (
     "repo_reuse.hold_workspace_in_use(ws, wait_limit_s=1)\n"
     "build = subprocess.Popen(['sleep', '30'])\n"
     "repo_reuse.keep_in_use_until_exit(ws, build)\n"
-    "time.sleep(0.5)\n"
+    "def holder():\n"
+    "    st = lock.stat()\n"
+    "    key = f'{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}'\n"
+    "    rows = [line.split() for line in open('/proc/locks')]\n"
+    "    return any(len(f) >= 6 and f[1] == 'FLOCK' and f[3] == 'READ' and f[5] == key\n"
+    "               and int(f[4]) != os.getpid() for f in rows)\n"
+    "deadline = time.monotonic() + 10\n"
+    "while not holder() and time.monotonic() < deadline:\n"
+    "    time.sleep(0.01)\n"
+    "print('holding' if holder() else 'no-holder')\n"
     "repo_reuse._IN_USE_HELD.pop(ws.resolve()).close()\n"
     "build.kill()\n"
     "build.wait()\n"
@@ -355,12 +383,13 @@ _PID_REUSE = (
     "        return True\n"
     "deadline = time.monotonic() + 4\n"
     "while not free() and time.monotonic() < deadline:\n"
-    "    time.sleep(0.1)\n"
+    "    time.sleep(0.01)\n"
     "print('released' if free() else 'held')\n"
     "impostor.kill()\n"
 )
 
 
+@functools.cache
 def _can_force_pid_reuse() -> bool:
     if shutil.which("unshare") is None:
         return False
@@ -372,8 +401,9 @@ def _can_force_pid_reuse() -> bool:
     return probe.returncode == 0
 
 
-@pytest.mark.skipif(not _can_force_pid_reuse(), reason="needs an unprivileged user and PID namespace")
 def test_keep_in_use_until_exit_ignores_a_reused_pid(tmp_path: Path) -> None:
+    if not _can_force_pid_reuse():
+        pytest.skip("needs an unprivileged user and PID namespace")
     proc = subprocess.run(
         ["unshare", "-Urpf", "--mount-proc", sys.executable, "-c", _PID_REUSE, str(tmp_path)],
         capture_output=True,
@@ -382,7 +412,7 @@ def test_keep_in_use_until_exit_ignores_a_reused_pid(tmp_path: Path) -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.split() == ["reused", "released"]
+    assert proc.stdout.split() == ["holding", "reused", "released"]
 
 
 # ---------------------------------------------------------------------------
