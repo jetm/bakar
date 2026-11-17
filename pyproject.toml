@@ -85,7 +85,11 @@ exclude_lines = [
 
 [tool.pytest.ini_options]
 # `uv run pytest -n 0` runs the suite in one process.
-addopts = ["-v", "--tb=short", "--cov=bakar", "--cov-report=term-missing", "-n", "auto", "--maxprocesses=16", "--dist=worksteal"]
+# The per-file coverage table is off by default (`--cov-report=` with an empty
+# value; omitting the option would print the plain table) because rendering it
+# cost about 0.8 s per run; the 80 percent floor is still enforced. The table is
+# opt-in with `--cov-report=term-missing` on the command line.
+addopts = ["-v", "--tb=short", "--cov=bakar", "--cov-report=", "-n", "auto", "--maxprocesses=16", "--dist=worksteal"]
 filterwarnings = ["error:.*unknown (key|top-level section):UserWarning"]
 markers = [
   "unit: fast hermetic tests with no external tools or services",

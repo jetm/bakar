@@ -670,3 +670,69 @@ Median tail: control 0.864 s, lever 0.329 s, a shrink of 0.535 s (pairs: 0.625,
 about 12.3 to 5.3.
 
 decision (slowest-first dealing): kept
+
+### Ten-second round: coverage terminal report
+
+Lever: switch the `term-missing` terminal table off while the total behind
+`--cov-fail-under` is still computed. The controller calls `coverage.report`
+twice per run (once for the total, once for the table), so the table is a
+candidate for the post-run time.
+
+Invalid first attempt. The first series passed `--cov-report=` on the command
+line. That option appends to the `--cov-report=term-missing` already in
+`addopts` instead of replacing it, so the table was printed in both arms (the
+lever logs still held the Miss/Missing header and every per-file line). Its
+numbers are void and kept only as a record: control walls 10.26, 10.28, 10.40 s
+against lever walls 10.35, 10.30, 10.36 s, median 10.28 against 10.35 s.
+
+Corrected series, on pc3 with the tree staged by `pc3-stage.sh tree`. The lever
+arm replaces the whole option string:
+`-o addopts="-v --tb=short --cov=bakar --cov-report= -n auto --maxprocesses=16 --dist=worksteal"`,
+every other option identical to the default. The script checked each arm's log
+before accepting the run: control must contain `Missing`, lever must not and must
+contain `Required test coverage of 80.0% reached`. All six passed that check
+(control logs 1 `Missing` each, lever logs 0; the lever logs print
+`Required test coverage of 80.0% reached. Total coverage: 91.61%`). One untimed
+warm-up (10.39 s, rc 0), then three interleaved pairs with `-p phase_timeline`,
+each gated on CPU pressure some avg10 under 0.5 and no pytest running. All runs
+rc 0, 8350 passed, 13 skipped. Load1 is recorded, not gated (it climbs from 3.2
+to 10.9 across the series with nothing running).
+
+| run | load1 before | wall s | user s | sys s | sessionfinish starts at s | last atexit s |
+|-----|--------------|--------|--------|-------|---------------------------|---------------|
+| cov-ctl-1 | 3.22 | 10.30 | 86.90 | 8.09 | 9.580 | 10.187 |
+| cov-lev-1 | 7.18 | 9.49 | 87.02 | 8.14 | 8.766 | 9.376 |
+| cov-ctl-2 | 8.21 | 10.29 | 87.61 | 8.31 | 9.584 | 10.174 |
+| cov-lev-2 | 9.56 | 9.45 | 86.44 | 8.23 | 8.735 | 9.337 |
+| cov-ctl-3 | 10.47 | 10.42 | 87.41 | 8.40 | 9.698 | 10.313 |
+| cov-lev-3 | 10.92 | 9.54 | 86.71 | 8.26 | 8.818 | 9.423 |
+
+Median wall: control 10.30 s, lever 9.49 s, a fall of 0.81 s (per pair 0.81,
+0.84, 0.88 s; no pair rises), above the 0.5 s bar. The run phase is unchanged
+(5.44 to 5.54 s control, 5.54 to 5.58 s lever, ends 7.6 to 7.7 s in both arms) and
+the sessionfinish hook itself still takes about 0.55 s in both arms; the saving
+is the gap between the run phase ending and sessionfinish starting, which
+shrinks from about 2.0 s to about 1.1 s, i.e. the time spent producing the table.
+user+sys is unchanged.
+
+decision (coverage terminal report): kept
+
+Applied in `pyproject.toml`: `addopts` now carries `--cov-report=` (empty value)
+in place of `--cov-report=term-missing`. Omitting the option would not do: the
+default report type is the plain `term` table. The comment above `addopts` says
+the table is opt-in with `--cov-report=term-missing`. Floor proof on the dev host
+(untimed): `pytest -q --cov-fail-under=99` exits 1 and prints `FAIL Required test
+coverage of 99% not reached. Total coverage: 91.62%`; a normal run prints
+`Required test coverage of 80.0% reached. Total coverage: 91.64%`; the opt-in
+`pytest -q --cov-report=term-missing` exits 0 and prints the Missing table. The
+normal dev-host run also exited 1 on an unrelated failure,
+`tests/integration/test_hashserv_real_daemon.py::test_hashserv_real_daemon_lifecycle`
+(8349 passed); it is a real-daemon test, outside this task.
+
+No docs, README or project rule text tells a reader the default run prints
+missing lines (searched `term-missing`, `missing lines`, `cov-report` outside this
+note and `pyproject.toml`). CI passes its own `--cov-report=xml`
+(`.github/workflows/ci.yml:53`), which still appends to the empty default, so CI
+logs lose the table; use `--cov-report=term-missing` there if it is wanted.
+`.claude/rules/pytest.md` (a symlink into another repository) has no coverage
+report text, so no change is needed there.
