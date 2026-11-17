@@ -697,3 +697,45 @@ def bitbake_server(
         return _bitbake_server(argv_build_dir, ready_dir, children=children)
 
     return _factory
+
+
+class ClickTreeCache:
+    """Reuse the built Click command tree across ``CliRunner.invoke`` calls.
+
+    ``typer.testing.CliRunner.invoke`` rebuilds the tree from the Typer app on
+    every call. The cache hands back a stored tree only for the same app
+    object, and keeps a strong reference to that app so its ``id`` cannot be
+    recycled by a different app while the entry lives.
+    """
+
+    def __init__(self) -> None:
+        self._original: Callable[..., object] | None = None
+        self._trees: dict[int, tuple[object, object]] = {}
+
+    def _get_command(self, app: object) -> object:
+        assert self._original is not None
+        entry = self._trees.get(id(app))
+        if entry is not None and entry[0] is app:
+            return entry[1]
+        command = self._original(app)
+        self._trees[id(app)] = (app, command)
+        return command
+
+    def pytest_configure(self, config: pytest.Config) -> None:
+        import typer.testing
+
+        self._original = typer.testing._get_command
+        typer.testing._get_command = self._get_command  # type: ignore[attr-defined]
+
+    def pytest_unconfigure(self, config: pytest.Config) -> None:
+        import typer.testing
+
+        if self._original is not None:
+            typer.testing._get_command = self._original  # type: ignore[attr-defined]
+            self._original = None
+        self._trees.clear()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    # Registered by name so ``-p no:bakar_click_cache`` disables it.
+    config.pluginmanager.register(ClickTreeCache(), "bakar_click_cache")

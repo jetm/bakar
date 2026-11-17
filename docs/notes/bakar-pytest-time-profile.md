@@ -79,3 +79,36 @@ From `targets-0.5.txt`: 76 tests take 0.5 s or more, summing to 69.75 s across
 (5.95 s). The single slowest test is
 `tests/test_cli_stop.py::test_no_run_host_wide_fallback_peer_held_root_is_diagnosed_not_dropped`
 at 5.00 s.
+
+## Levers
+
+### Command-tree reuse
+
+`tests/conftest.py` registers a `bakar_click_cache` plugin that wraps
+`typer.testing._get_command` and returns a stored Click tree only for the same
+app object (it keeps a reference to the app, so ids are not recycled). No test
+changes an app's commands after invoking it (`rg -F -e registered_commands
+-e add_typer -e 'app.command(' tests/` finds only the read-only
+`_registered_commands` helper in `tests/test_global_container_flag.py`), so the
+cache key is the app alone. Control runs use `-p no:bakar_click_cache`.
+
+Seeds 101, 202 and 303; single-process runs use `-n 0`, parallel runs use the
+default xdist options. Every run: 8,342 passed, 13 skipped.
+
+| Run | load before | rc | wall (s) | user+sys (s) | result |
+|-----|-------------|----|----------|--------------|--------|
+| cc-ctl-101 | 1.52 | 0 | 155.16 | 108.58 | 8342 passed, 13 skipped |
+| cc-lev-101 | 1.01 | 0 | 108.27 | 61.71 | 8342 passed, 13 skipped |
+| cc-ctl-202 | 1.30 | 0 | 155.43 | 109.22 | 8342 passed, 13 skipped |
+| cc-lev-202 | 1.54 | 0 | 109.47 | 63.04 | 8342 passed, 13 skipped |
+| cc-ctl-303 | 0.87 | 0 | 156.02 | 109.17 | 8342 passed, 13 skipped |
+| cc-lev-303 | 1.63 | 0 | 109.14 | 62.42 | 8342 passed, 13 skipped |
+| cc-par-101 | 2.89 | 0 | 15.95 | 133.17 | 8342 passed, 13 skipped |
+| cc-par-202 | 4.88 | 0 | 15.77 | 130.00 | 8342 passed, 13 skipped |
+| cc-par-303 | 6.09 | 0 | 15.97 | 129.64 | 8342 passed, 13 skipped |
+
+Per-seed wall differences (control minus lever): 101: 46.89 s, 202: 45.96 s,
+303: 46.88 s. Median: 46.88 s, above the 10 s threshold; all six cache-on runs
+have rc=0.
+
+decision (command-tree reuse): kept
