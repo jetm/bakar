@@ -369,6 +369,10 @@ def _isolated_home(request, monkeypatch):
         # (home and XDG); give fixtures that run ``git commit`` a neutral one.
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
         monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+        # Rich wraps console output at 80 columns when no terminal is attached, and a
+        # pytest temp path under a long worker or user name pushes expected text
+        # across the wrap point.
+        monkeypatch.setenv("COLUMNS", "500")
         for who in ("AUTHOR", "COMMITTER"):
             monkeypatch.setenv(f"GIT_{who}_NAME", "bakar-test")
             monkeypatch.setenv(f"GIT_{who}_EMAIL", "bakar-test@example.invalid")
