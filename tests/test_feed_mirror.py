@@ -24,6 +24,11 @@ pytest_plugins = ["tests._feed_upstream"]
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _no_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(feed_mirror, "_RETRY_BACKOFF_S", (0.0,) * len(feed_mirror._RETRY_BACKOFF_S))
+
+
 @pytest.fixture
 def cli() -> CliRunner:
     return CliRunner()
