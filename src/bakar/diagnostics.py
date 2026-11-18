@@ -2779,6 +2779,27 @@ def check_dl_mirror_reachable(cfg: BuildConfig) -> CheckResult:
     )
 
 
+def check_dl_mirror_paths_ready(cfg: BuildConfig) -> CheckResult:
+    """Warn when a configured ``dl_mirror_paths`` directory is not ready for the build."""
+    name = "dl-mirror-paths-ready"
+    if not cfg.dl_mirror_paths:
+        return _skip(name, Severity.INFO, "no dl_mirror_paths configured")
+    if not cfg.host_mode:
+        return _skip(name, Severity.INFO, "container build: the mirror directories are not used")
+    from bakar.steps import hub_mount
+
+    statuses = hub_mount.probe_dirs(hub_mount.parse_dirs(cfg.dl_mirror_paths))
+    bad = [s for s in statuses if s.state != "ready"]
+    if not bad:
+        return _ok(name, Severity.INFO, "ready: " + ", ".join(str(s.path) for s in statuses))
+    return _fail(
+        name,
+        Severity.WARN,
+        "not ready: " + "; ".join(f"{s.path} ({s.state})" for s in bad),
+        fix_hint="docs/features/dl-mirror.md",
+    )
+
+
 def check_store_stale_tarballs(cfg: BuildConfig) -> CheckResult:
     """Warn about ``git2_*.tar.gz.tmp`` files left over in the store host's DL_DIR."""
     name = "store-stale-tarballs"
@@ -3961,6 +3982,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     # WARN only: a configured mirror that does not answer.
     check_sstate_mirror_reachable,
     check_dl_mirror_reachable,
+    check_dl_mirror_paths_ready,
     check_store_stale_tarballs,
     # WARN only: a scheduler bitbake does not ship, and central endpoints a
     # single-node build points at but cannot reach. central-endpoints is NOT a
@@ -4070,6 +4092,7 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "sstate-mirror-shared-mount",
             "sstate-mirror-reachable",
             "dl-mirror-reachable",
+            "dl-mirror-paths-ready",
             "store-stale-tarballs",
         ),
     ),
@@ -4175,6 +4198,7 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_sstate_mirror_shared_mount, "sstate-mirror-shared-mount", Severity.BLOCK),
     (check_sstate_mirror_reachable, "sstate-mirror-reachable", Severity.WARN),
     (check_dl_mirror_reachable, "dl-mirror-reachable", Severity.WARN),
+    (check_dl_mirror_paths_ready, "dl-mirror-paths-ready", Severity.WARN),
     (check_store_stale_tarballs, "store-stale-tarballs", Severity.WARN),
     (check_scheduler_value, "scheduler", Severity.WARN),
     (check_central_endpoints, "central-endpoints", Severity.WARN),
