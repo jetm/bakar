@@ -46,7 +46,13 @@ import tempfile
 import threading
 import time
 
-SMOKE_LIB_PATH = pathlib.Path("~/.claude/skills/ds-archive/scripts/smoke_lib.py").expanduser()
+# A copy of smoke_lib.py beside this script wins, so the live-gate run on a host
+# without the Claude skills tree (the builder) can ship the two files together.
+_LIB_CANDIDATES = (
+    pathlib.Path(__file__).resolve().parent / "smoke_lib.py",
+    pathlib.Path("~/.claude/skills/ds-archive/scripts/smoke_lib.py").expanduser(),
+)
+SMOKE_LIB_PATH = next((p for p in _LIB_CANDIDATES if p.is_file()), _LIB_CANDIDATES[-1])
 _spec = importlib.util.spec_from_file_location("smoke_lib", SMOKE_LIB_PATH)
 if _spec is None or _spec.loader is None:
     raise SystemExit(f"cannot load {SMOKE_LIB_PATH}")
