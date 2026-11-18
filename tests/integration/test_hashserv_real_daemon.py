@@ -154,3 +154,118 @@ def test_hashserv_real_daemon_lifecycle(tmp_path: Path) -> None:
 
     # Tear down to leave no orphan daemon.
     assert hashserv.stop(state_key) is True
+
+
+def _owned(state_dir: Path) -> list[central_service.OwnedDaemon]:
+    return central_service.find_owned_daemons("bitbake-hashserv", state_dir / "hashserv.db")
+
+
+def _reap(pid: int) -> None:
+    """Collect the exit status of a daemon that is a child of this pytest process."""
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        pass
+
+
+def _is_gone(state_dir: Path, pid: int) -> bool:
+    """True when no owned daemon serves the database and the pid has no command line.
+
+    A signalled child stays a zombie until reaped, so ``os.kill(pid, 0)`` would
+    still succeed; an empty or absent ``/proc/<pid>/cmdline`` is the reliable signal.
+    """
+    _reap(pid)
+    if _owned(state_dir):
+        return False
+    try:
+        return not (Path("/proc") / str(pid) / "cmdline").read_bytes()
+    except OSError:
+        return True
+
+
+def _wait_gone(state_dir: Path, pid: int, port: int, what: str) -> None:
+    for _ in range(50):
+        if _is_gone(state_dir, pid):
+            return
+        time.sleep(0.1)
+    pytest.fail(_start_failure(state_dir, port, f"{what}: daemon {pid} still present after stop"))
+
+
+def _real_daemon_setup(tmp_path: Path) -> tuple[Path, Path, int]:
+    real_binary = _find_real_hashserv()
+    if real_binary is None:
+        pytest.skip(
+            "bitbake-hashserv not available - set BAKAR_BITBAKE_HASHSERV or install yocto/bitbake "
+            "at ~/repos/personal/yocto/bitbake/bin/bitbake-hashserv"
+        )
+    _install_workspace_binary(tmp_path, real_binary)
+    state_key = _state_key_with_free_port(tmp_path)
+    return state_key, state_key / ".bakar", hashserv._workspace_port(state_key)
+
+
+@pytest.mark.real_home
+@pytest.mark.integration
+def test_hashserv_real_daemon_adopted_after_state_files_lost(tmp_path: Path) -> None:
+    """A running real daemon whose PID and port files are gone is adopted, not duplicated."""
+    state_key, state_dir, derived_port = _real_daemon_setup(tmp_path)
+    pid_file = state_dir / "hashserv.pid"
+    port_file = state_dir / "hashserv.port"
+    pid = 0
+    try:
+        url = hashserv.ensure_running(state_key, binary_root=tmp_path)
+        assert url is not None, _start_failure(state_dir, derived_port, "ensure_running returned None on first start")
+        pid = int(pid_file.read_text().strip())
+
+        pid_file.unlink()
+        port_file.unlink()
+
+        url2 = hashserv.ensure_running(state_key, binary_root=tmp_path)
+        assert url2 is not None, _start_failure(
+            state_dir, derived_port, "ensure_running returned None for the orphaned real daemon"
+        )
+        assert url2 == url, _start_failure(state_dir, derived_port, f"adopted URL {url2} differs from {url}")
+        assert pid_file.is_file(), "adoption did not rewrite the PID file"
+        assert int(pid_file.read_text().strip()) == pid, _start_failure(
+            state_dir, derived_port, "PID file does not name the original daemon"
+        )
+        owned = _owned(state_dir)
+        assert len(owned) == 1, _start_failure(state_dir, derived_port, f"expected one daemon, found {owned}")
+
+        assert hashserv.stop(state_key) is True
+        _wait_gone(state_dir, pid, derived_port, "stop after adoption")
+        assert not pid_file.exists(), "PID file should be removed on stop"
+        assert not port_file.exists(), "port file should be removed on stop"
+    finally:
+        hashserv.stop(state_key)
+        if pid:
+            _wait_gone(state_dir, pid, derived_port, "teardown")
+
+
+@pytest.mark.real_home
+@pytest.mark.integration
+def test_hashserv_real_daemon_stopped_without_state_files(tmp_path: Path) -> None:
+    """``stop`` finds and terminates a real daemon even when both state files are gone."""
+    state_key, state_dir, derived_port = _real_daemon_setup(tmp_path)
+    pid_file = state_dir / "hashserv.pid"
+    port_file = state_dir / "hashserv.port"
+    pid = 0
+    try:
+        url = hashserv.ensure_running(state_key, binary_root=tmp_path)
+        assert url is not None, _start_failure(state_dir, derived_port, "ensure_running returned None on start")
+        port = int(url.rsplit(":", 1)[1])
+        pid = int(pid_file.read_text().strip())
+
+        pid_file.unlink()
+        port_file.unlink()
+
+        assert hashserv.stop(state_key) is True, _start_failure(
+            state_dir, port, "stop returned False without state files"
+        )
+        _wait_gone(state_dir, pid, port, "stop without state files")
+        assert not central_service.is_listening("localhost", port), _start_failure(
+            state_dir, port, "port still answers after stop"
+        )
+    finally:
+        hashserv.stop(state_key)
+        if pid:
+            _wait_gone(state_dir, pid, derived_port, "teardown")
