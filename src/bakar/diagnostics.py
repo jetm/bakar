@@ -2151,6 +2151,7 @@ def check_uninative_cluster_consistency(cfg: BuildConfig) -> CheckResult:
         root.mkdir(parents=True, exist_ok=True)
         # Widened past the umask default for the same reason the record is: a
         # peer running under a different uid has to create its own record here.
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
         os.chmod(root, 0o755)
         # The peer scan globs "*.json", and pathlib's glob does NOT skip
         # dotfiles - so a ".json" suffix here would make an orphaned temp file
