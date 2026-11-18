@@ -9,6 +9,8 @@ test run touches the real ``~/.local/state/bakar`` directory.
 
 from __future__ import annotations
 
+import pathlib
+import socket
 from typing import TYPE_CHECKING
 
 import pytest
@@ -211,3 +213,132 @@ def test_stderr_target_honours_explicit_path_and_closes_on_raise(tmp_path: Path)
     assert held.closed
     assert log.exists()
     assert not (tmp_path / "state" / "bitbake-hashserv-central.stderr").exists()
+
+
+# bind_conflict: real loopback sockets on kernel-allocated ports (bind(0)), so
+# no test guesses a port number.
+
+
+def _listener(host: str = "127.0.0.1", *, reuse: bool = False, family: int = socket.AF_INET) -> socket.socket:
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    if reuse:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, 0))
+    sock.listen()
+    return sock
+
+
+def _addrinfo(*addrs: tuple[int, tuple]) -> list[tuple]:
+    return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sa) for family, sa in addrs]
+
+
+@pytest.mark.unit
+def test_bind_conflict_free_port_is_none() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    assert central_service.bind_conflict("127.0.0.1", port) is None
+
+
+@pytest.mark.unit
+def test_bind_conflict_established_client_connection() -> None:
+    with _listener() as server, socket.create_connection(server.getsockname()) as client:
+        accepted, _ = server.accept()
+        with accepted:
+            port = client.getsockname()[1]
+            reason = central_service.bind_conflict("127.0.0.1", port)
+    assert reason is not None
+    assert str(port) in reason
+    assert "cannot be bound" in reason
+
+
+@pytest.mark.unit
+def test_bind_conflict_client_closed_connection() -> None:
+    with _listener() as server:
+        client = socket.create_connection(server.getsockname())
+        accepted, _ = server.accept()
+        port = client.getsockname()[1]
+        client.close()
+        accepted.close()
+        reason = central_service.bind_conflict("127.0.0.1", port)
+    assert reason is not None
+    assert str(port) in reason
+
+
+@pytest.mark.unit
+def test_bind_conflict_foreign_listener() -> None:
+    with _listener() as server:
+        port = server.getsockname()[1]
+        reason = central_service.bind_conflict("127.0.0.1", port)
+    assert reason == f"127.0.0.1:{port} cannot be bound: address already in use"
+
+
+@pytest.mark.unit
+def test_bind_conflict_daemon_restart_state_is_none() -> None:
+    """A stopped daemon's own closed connections do not refuse its restart."""
+    server = _listener(reuse=True)
+    port = server.getsockname()[1]
+    client = socket.create_connection(server.getsockname())
+    accepted, _ = server.accept()
+    accepted.close()
+    client.close()
+    server.close()
+    assert central_service.bind_conflict("127.0.0.1", port) is None
+
+
+@pytest.mark.unit
+def test_bind_conflict_checks_every_resolved_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    try:
+        held = _listener("::1", family=socket.AF_INET6)
+    except OSError:
+        pytest.skip("::1 cannot be bound on this host")
+    with held:
+        port = held.getsockname()[1]
+        infos = _addrinfo((socket.AF_INET, ("127.0.0.1", port)), (socket.AF_INET6, ("::1", port, 0, 0)))
+        monkeypatch.setattr(central_service.socket, "getaddrinfo", lambda *_a, **_k: infos)
+        reason = central_service.bind_conflict("localhost", port)
+    assert reason is not None
+    assert reason.startswith(f"[::1]:{port} cannot be bound")
+
+
+def _skip_when_nonlocal_bind() -> None:
+    """192.0.2.1 only counts as an unavailable address while ip_nonlocal_bind is 0."""
+    try:
+        value = pathlib.Path("/proc/sys/net/ipv4/ip_nonlocal_bind").read_text().strip()
+    except OSError:
+        return
+    if value == "1":
+        pytest.skip("net.ipv4.ip_nonlocal_bind=1 lets bind(192.0.2.1) succeed")
+
+
+@pytest.mark.unit
+def test_bind_conflict_unavailable_address_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    _skip_when_nonlocal_bind()
+    infos = _addrinfo((socket.AF_INET, ("192.0.2.1", 0)))
+    monkeypatch.setattr(central_service.socket, "getaddrinfo", lambda *_a, **_k: infos)
+    reason = central_service.bind_conflict("192.0.2.1", 50123)
+    assert reason is not None
+    assert reason.startswith("no address for 192.0.2.1 could be bound")
+
+
+@pytest.mark.unit
+def test_bind_conflict_skips_unavailable_beside_free_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    _skip_when_nonlocal_bind()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    infos = _addrinfo((socket.AF_INET, ("192.0.2.1", port)), (socket.AF_INET, ("127.0.0.1", port)))
+    monkeypatch.setattr(central_service.socket, "getaddrinfo", lambda *_a, **_k: infos)
+    assert central_service.bind_conflict("example", port) is None
+
+
+@pytest.mark.unit
+def test_bind_conflict_unresolvable_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise(*_a: object, **_k: object) -> list[tuple]:
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+    monkeypatch.setattr(central_service.socket, "getaddrinfo", _raise)
+    reason = central_service.bind_conflict("nowhere.invalid", 50123)
+    assert reason is not None
+    assert "nowhere.invalid" in reason
+    assert "50123" in reason

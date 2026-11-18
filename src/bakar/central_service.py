@@ -12,6 +12,8 @@ thin wrapper naming the env var.
 
 from __future__ import annotations
 
+import errno
+import os
 import shutil
 import socket
 import subprocess
@@ -70,6 +72,45 @@ def is_listening(host: str, port: int, *, timeout: float = 0.5) -> bool:
         return False
     sock.close()
     return True
+
+
+def bind_conflict(host: str, port: int) -> str | None:
+    """Return why the daemon could not bind ``host:port``, or None when it could.
+
+    Mirrors asyncio's ``create_server``, which the bitbake daemon's server uses:
+    every address ``host`` resolves to is bound with SO_REUSEADDR (and
+    IPV6_V6ONLY on IPv6), and an address whose family cannot be created or whose
+    bind fails with EADDRNOTAVAIL is skipped. SO_REUSEADDR decides the outcome:
+    it still refuses an established or recently closed client connection and a
+    foreign listener, but accepts the closed connections a stopped daemon leaves
+    on its own port, so a restart is not refused.
+    """
+    try:
+        infos = socket.getaddrinfo(host or None, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
+    except socket.gaierror as exc:
+        return f"{host}:{port} cannot be bound: {host!r} does not resolve ({exc})"
+    bound = False
+    for family, socktype, proto, _canonname, sockaddr in infos:
+        try:
+            sock = socket.socket(family, socktype, proto)
+        except OSError:
+            continue
+        with sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6:
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            try:
+                sock.bind(sockaddr)
+            except OSError as exc:
+                if exc.errno == errno.EADDRNOTAVAIL:
+                    continue
+                addr = f"[{sockaddr[0]}]" if family == socket.AF_INET6 else sockaddr[0]
+                reason = os.strerror(exc.errno).lower() if exc.errno else str(exc)
+                return f"{addr}:{port} cannot be bound: {reason}"
+            bound = True
+    if not bound:
+        return f"no address for {host} could be bound (port {port})"
+    return None
 
 
 def endpoint(host: str, port: int) -> str:
