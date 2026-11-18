@@ -1,0 +1,29 @@
+# Hub download-directory mount overlay.
+#
+# Puts every directory listed in BAKAR_DL_MIRROR_PATHS in front of upstream as a
+# local file:// source mirror, so sources already fetched by another machine and
+# visible through a mounted directory are used instead of going upstream. It does
+# not touch sstate or hash equivalence; bakar-tuning-shared-cache covers those.
+#
+# BAKAR_DL_MIRROR_PATHS is a whitespace-separated list of directories, supplied
+# at build time through the environment. An empty or unset value adds nothing.
+
+header:
+  version: 21
+
+env:
+  BAKAR_DL_MIRROR_PATHS:
+
+local_conf_header:
+  # Sort-last key (see bakar-tuning-generic): 46 orders hub-mount after
+  # hub-cache (45). Each later key prepends to what came before, so these
+  # entries end up first in PREMIRRORS, ahead of the hub http mirror.
+  zz-bakar-46-hub-mount: |
+    # git and gitsm are deliberately excluded: BitBake fetches git mirror tarballs with
+    # ignore_checksums set and the git fetcher has no checksum support, and a mirror
+    # directory also receives pushes from other builders, so a planted tarball would be
+    # trusted unverified.
+    # One entry per directory, in the order listed. The list is read from the datastore
+    # with d.getVar, never from os.environ: bitbake-worker rebuilds each task's
+    # os.environ from the exported datastore variables only, so os.environ is empty in do_fetch.
+    PREMIRRORS:prepend = "${@''.join('(https?|ftp|crate|gomod)://.*/.* file://' + p.rstrip('/') + '/ \\n ' for p in (d.getVar('BAKAR_DL_MIRROR_PATHS') or '').split())}"
