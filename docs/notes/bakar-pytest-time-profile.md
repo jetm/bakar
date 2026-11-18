@@ -289,9 +289,11 @@ has none of those tests at or above 0.5 s. Only what is still open is listed,
 largest first:
 
 1. The 2.151 s before the collection barrier and the 1.055 s between the end of
-   the run phase and `sessionfinish` in the final phase timeline. Collection
-   sharding stays a follow-up that the 10 s target does not need (median default
-   wall 9.36 s); the trigger is a median above 10 s on pc3.
+   the run phase and `sessionfinish` in the final phase timeline (the second is
+   the coverage report and its finish step, see the final phase timeline).
+   Collection sharding stays a follow-up that the 10 s target does not need (median
+   default wall 9.36 s); the trigger is a median above 10 s on pc3 or a target
+   under 9 s.
 2. tests/test_e2e_cli.py, seven tests at or above 0.5 s in the final profile,
    stays: it drives the installed binary by design.
 3. tests/test_mounts_run_bounded.py (0.94 s), the tests/test_pin_probe.py drain
@@ -369,10 +371,18 @@ Interrupt-ignored run: passed
 Host: pc3 (rog-strix-x870i-jetm), AMD Ryzen 9 9950X3D 16-Core, 32 threads,
 governor performance, Python 3.14.10, uv 0.13.8. The runs were taken on pc3,
 not on the dev host, with `uv run --no-sync pytest -q` in a staged tree. The
-series ran 2026-11-17 starting 16:37 (UTC-6). load1 was 4 to 6 at the starts
-while CPU pressure (`some avg10`) read 0.00, so the gate waited on pressure
+series ran 2026-11-17 starting 16:37 (UTC-6). load1 before the four default runs
+was 4.02 to 5.83 (table below) while CPU pressure (`some avg10`) read 0.00, so
+the gate waited on pressure
 under 0.5 and no running pytest, not on load1. Every gate line reads
 `quiet psi_avg10=0.00 after 0s`.
+
+Definition of an idle host for the timed pc3 runs in this round (ruling logged
+2026-11-18, assumption A6): CPU pressure `some avg10` below 0.5 with no other
+pytest running, not load1 below 3. Load1 is a one-minute average that still
+carries the previous run, so it climbs during a back-to-back series (1.7 to 11.94
+across this round's tables) while pressure reads 0.00; it is recorded in every
+table and never gated on.
 
 | run | load1 before | rc | wall s | user+sys s | pytest summary |
 |-----|--------------|----|--------|------------|----------------|
@@ -388,7 +398,8 @@ Median of the three timed runs: wall 13.93 s (run 2), user+sys 112.45 s
 ### Phase timeline
 
 Command (run in the staged tree on pc3, one run, rc=0, wall 14.13 s, 8342
-passed, 13 skipped):
+passed, 13 skipped; load1 before the run 6.39, from `pc3-out2/times.txt`, line
+`base-timeline`):
 
 ```text
 cd <tree>; TL_T0=<date +%s.%N> TL_OUT=<tl-baseline.jsonl> PYTHONPATH=<helpers dir> uv run --no-sync pytest -q -p phase_timeline
@@ -413,7 +424,8 @@ atexit 13.8003`. The run phase ends at 9.976 and sessionfinish starts at
 ### Off-CPU census
 
 Command (single process, one run, rc=0, wall 96.38 s, user 43.93 s, sys 5.83
-s, 8342 passed, 13 skipped):
+s, 8342 passed, 13 skipped; load1 before the run 7.51, from `pc3-out2/times.txt`,
+line `base-census`):
 
 ```text
 uv run --no-sync pytest -p offcpu_census -n 0 -p no:randomly --no-cov -q
@@ -457,7 +469,8 @@ its venv, after CPU pressure read `some avg10=0.00` and no pytest was running:
 - `.venv/bin/python -X importtime -m pytest --collect-only -q -s -n 0 --no-cov
   -p no:randomly` (the `-s` is needed: pytest's fd capture swallows the import
   log of every module imported during collection, leaving 327 lines and no
-  `bakar` entry without it). It collected 8355 tests; 1312 import lines. The
+  `bakar` entry without it). It collected 8355 ids (8342 tests run plus 13
+  skipped); 1312 import lines. The
   47 top-level imports sum to 0.280 s cumulative. The 15 largest cumulative
   entries, microseconds (nested entries included): `bakar.cli` 154750,
   `bakar.commands.bitbake` 54635, `pytest` 45938, `hypothesis` 38851,
@@ -640,9 +653,13 @@ Lever: a `pytest_collection_modifyitems` hook in `tests/conftest.py`
 `tests/slowest_tests.txt` (the 64 tests with wall of at least 0.3 s in the
 off-CPU census on pc3, longest first; all 64 ids still exist in the current
 collection) and spreads them one every `len(items) // 4 // 64` positions (32
-here) across the first quarter of the order, longest first. The first quarter is
-the initial batch xdist's worksteal mode deals out in contiguous chunks, so one
-slow test lands in every chunk instead of all of them in one worker's. The hook
+here) across the first quarter of the order, longest first. The aim was one slow
+test per chunk of the first batch; that does not describe worksteal, which deals
+the whole collection up front as W contiguous chunks of `len(pending) //
+nodes_remaining` (xdist 3.8.0, `xdist/scheduler/worksteal.py:211-216`). The spread
+therefore put all 64 listed tests into the first quarter of the order, that is the
+first W/4 chunks; the placement counts and the replacement are in "slowest-first
+dealing, chunk-aware" below. The hook
 returns at once unless `PYTEST_XDIST_WORKER` is set, so a single process keeps
 the shuffled order untouched. The distribution mode is unchanged.
 
@@ -674,13 +691,14 @@ about 12.3 to 5.3.
 
 decision (slowest-first dealing): kept
 
-Correction (task 17.1): the mechanism stated above (the first quarter of the order
-is the batch dealt first, so one slow test lands in every chunk) was wrong for
-worksteal. Worksteal deals the whole order at startup in `workers` contiguous
-chunks, so the spread put every listed test into the first quarter of the order,
-that is into the first `workers / 4` chunks, and at 4 workers all of them into
-worker 0's chunk (placement counts in the next subsection). The tail it shrank was
-measured, the reason given for it was not. The old decision line stays as written.
+Correction (task 17.1, task 18.1): the lever description above was first written
+with a wrong picture of worksteal. Worksteal deals the whole order at startup in
+`workers` contiguous chunks, so the spread put every listed test into the first
+quarter of the order, that is into the first `workers / 4` chunks, and at 4
+workers all of them into worker 0's chunk (placement counts in the next
+subsection). The tail it shrank was measured; the mechanism first given for it was
+not. The line above stays as written, as history; the current decision is
+"decision (slowest-first dealing, chunk-aware): kept" below.
 
 ### Ten-second round: slowest-first dealing, chunk-aware
 
@@ -830,8 +848,11 @@ normal dev-host run also exited 1 on an unrelated failure,
 No docs, README or project rule text tells a reader the default run prints
 missing lines (searched `term-missing`, `missing lines`, `cov-report` outside this
 note and `pyproject.toml`). CI passes its own `--cov-report=xml`
-(`.github/workflows/ci.yml:53`), which still appends to the empty default, so CI
-logs lose the table; use `--cov-report=term-missing` there if it is wanted.
+(`.github/workflows/ci.yml:53`), which still appends to the empty default, so the
+CI step as first written lost the table. The CI step now passes
+`--cov-report=term-missing` (commit 1bf323c1, a recorded scope addition) and
+`-rfEs` (commit 0ee5cda9, which keeps failure lines in the short summary), so CI
+logs carry the missing-lines table again.
 `.claude/rules/pytest.md` (a symlink into another repository) has no coverage
 report text, so no change is needed there.
 
@@ -965,8 +986,8 @@ Three hashes. Change base: `b8c287905c4a6e4aac52c44fbc44bd9739fd0cf1`, read from
 untracked `CLAUDE.md` and `ARCHITECTURE.md` symlinks excluded as for the finished
 tree, so both trees skip the same tests). Finished tree:
 `cc4496f50f5318a0439a469d2324563c8a5aea79`, the worktree HEAD, staged with
-`pc3-stage.sh tree`. The control collects 8342 tests and the finished tree 8350;
-both skip 13.
+`pc3-stage.sh tree`. The control runs 8342 tests and the finished tree 8350
+(passed); both skip 13, so the ids collected are 8355 and 8363.
 
 Host: pc3, `uv run --no-sync pytest -q` in each staged tree, launched from bash.
 One untimed warm-up of each tree, then three pairs, control first, finished tree
@@ -996,6 +1017,12 @@ Median default wall: 9.36 s
 The median default wall of the finished tree is 9.36 s, which is 10 s or less, so
 the ten-second target is met on pc3 (all three finished runs are under 9.5 s; the
 control median is 14.14 s, a fall of 4.78 s).
+
+The 9.36 s median above is for `uv run --no-sync pytest -q`, which skips the
+dependency-sync check. The median for the default command with the sync check
+(`uv run pytest -q`) is the one measured in the dependency-sync subsection: 9.44
+s for the control arm of its three pairs (those runs also load the phase timeline
+plugin). Both medians are under 10 s.
 
 #### Single-process profile of the finished tree
 
@@ -1052,13 +1079,19 @@ Summarizer output, seconds from `TL_T0`, against the baseline timeline above:
 Other summarizer lines: `node_down 7.099 .. 7.778`, `teardown_nodes 8.807 ..
 8.920` (0.113 s), `terminal summary 9.311 .. 9.355` (0.045 s), `last atexit 9.4133`.
 The run phase ends at 7.752 and sessionfinish starts at 8.807, so 1.055 s pass
-between them; the summarizer has no line for that gap.
+between them; the summarizer has no line for that gap, but the post-run
+attribution ("where the post-run time goes") assigns it: one `coverage.report`
+call (0.923 s, the total behind the fail-under check, since the table is off in
+this tree), `DistMaster.finish` (0.101 s) and the last worker's coverage save
+(0.023 s), which sum to 1.047 s of the 1.055 s. Those measurements came from a
+different run of an earlier tree state, so the match is by size, not a
+decomposition of this run.
 
 Lever still needed: none for the target, which the median meets. The largest
 remaining shares are the 2.151 s before the collection barrier (the follow-up
 the collection sharding decision above would weigh, with its stated trigger of a
-median above 10 s) and the 1.055 s unaccounted between the run phase and
-sessionfinish.
+median above 10 s on pc3 or a target under 9 s) and the 1.055 s between the run
+phase and sessionfinish, which is the coverage report and its finish step.
 
 #### Stability and equivalence checks of the finished tree
 
