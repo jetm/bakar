@@ -59,7 +59,9 @@ def test_probe_statfs_wedged_stub_gives_unresponsive_within_deadline(
 ) -> None:
     """A stub sleeping far past its deadline is killed and abandoned - the
     call returns quickly rather than blocking for the full sleep duration."""
-    bin_dir = _write_stub_stat(tmp_path, "sleep 60")
+    # exec: the probe kills the stub's own pid, so a forked `sleep` child would be
+    # orphaned and outlive the test by up to a minute.
+    bin_dir = _write_stub_stat(tmp_path, "exec sleep 60")
     _prepend_path(monkeypatch, bin_dir)
 
     target = tmp_path / "cache"
@@ -501,7 +503,8 @@ def _write_stub_realpath_wedged(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     stub = bin_dir / "realpath"
-    stub.write_text("#!/bin/sh\nsleep 60\n")
+    # exec, for the same reason as the stat stub above: the kill must reach the sleep.
+    stub.write_text("#!/bin/sh\nexec sleep 60\n")
     stub.chmod(0o755)
     return bin_dir
 
@@ -774,7 +777,7 @@ def test_assess_cache_mounts_wedged_probe_and_resolution_return_within_one_deadl
     bin_dir.mkdir(exist_ok=True)
     for name in ("stat", "realpath"):
         stub = bin_dir / name
-        stub.write_text("#!/bin/sh\nsleep 60\n")
+        stub.write_text("#!/bin/sh\nexec sleep 60\n")
         stub.chmod(0o755)
     _prepend_path(monkeypatch, bin_dir)
 
