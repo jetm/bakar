@@ -1,9 +1,11 @@
-"""bakar cache subcommand - push downloads to the central store, report the queue, capture hangs.
+"""bakar cache subcommand - push downloads to the central store, report the queue, capture hangs, prune downloads.
 
-Three verbs: ``push --watch`` (live push of finished downloads), ``status``
-(push-queue summary) and ``capture`` (hang diagnostics for running BitBake).
-Directories and the push target come from the loaded user config, with the
-``DL_DIR`` and ``SSTATE_DIR`` environment variables taking precedence.
+Four verbs: ``push --watch`` (live push of finished downloads), ``status``
+(push-queue summary), ``capture`` (hang diagnostics for running BitBake) and
+``prune-downloads`` (remove downloads the hub or a clone already holds; a dry
+run unless ``--apply``). Directories and the push target come from the loaded
+user config, with the ``DL_DIR`` and ``SSTATE_DIR`` environment variables
+taking precedence.
 """
 
 from __future__ import annotations
@@ -19,12 +21,13 @@ from rich.markup import escape
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import declare_global_mode_exclusion
-from bakar.steps import cache_capture, cache_push
+from bakar.steps import cache_capture, cache_prune, cache_push
 from bakar.steps.cache_queue import PushQueue
 
 declare_global_mode_exclusion(
     "cache",
-    "pushes downloads over ssh, reads the push queue and captures process state; launches no kas",
+    "pushes downloads over ssh, reads the push queue, captures process state and, with --apply, removes files from "
+    "the local downloads directory; launches no kas",
 )
 
 PUSH_KEY = Path("~/.ssh/bakar-cache-push")
@@ -103,6 +106,37 @@ def capture() -> None:
         if d is not None
     ]
     typer.echo(cache_capture.render(cache_capture.capture(dirs)))
+
+
+@cache_app.command("prune-downloads")
+def prune_downloads(
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Remove the listed items. Nothing is deleted without this flag."),
+    ] = False,
+    clone_older_than: Annotated[
+        int | None,
+        typer.Option(
+            "--clone-older-than",
+            min=1,
+            help="Also plan git2 clones whose .done stamp (written at the last fetch) is older than this many days.",
+        ),
+    ] = None,
+) -> None:
+    """Remove downloads the hub already serves or that a complete git2 clone makes redundant."""
+    dl_dir = _dir("DL_DIR", _configured("dl_dir"))
+    if dl_dir is None or not dl_dir.is_dir():
+        console.print("[red]no downloads directory: set DL_DIR or build.dl_dir to an existing directory[/]")
+        raise typer.Exit(code=1)
+    mirror_url = os.environ.get("BAKAR_DL_MIRROR_URL") or _configured("dl_mirror_url") or None
+    plan = cache_prune.plan_prune(
+        dl_dir,
+        mirror_url=mirror_url,
+        clone_older_than_days=clone_older_than,
+        head=cache_prune.probes.head_info,
+    )
+    result = cache_prune.apply_plan(plan, dl_dir) if apply else None
+    typer.echo(cache_prune.render_report(plan, result, apply))
 
 
 app.add_typer(cache_app, name="cache")
