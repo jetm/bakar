@@ -1170,6 +1170,34 @@ scale the startup deadline, or make the test wait for the daemon with its own bo
 Earlier sightings of the same assertion were one pc3 control run at load1 7.08 and
 one dev-host default run.
 
+Correction (2026-11-18): the cause is a port collision, not the 2.0 s deadline. All
+numbers below were measured on 2026-11-18.
+
+- Startup latency of the real bitbake-hashserv through `ensure_running`: idle p50 102 ms
+  (max 112 ms, 60 starts); 32 CPU hogs max 299 ms; 128 hogs max 715 ms; 256 hogs
+  (load1 72) max 1507 ms (40 starts). No start missed the 2.0 s deadline in 230
+  synthetic-load starts.
+- A probe beside two back-to-back default-suite loops on pc3 (load1 130 down to 77):
+  6 of 220 starts failed. All were early exits 122 to 265 ms after spawn with
+  `[Errno 98] address already in use`, and the derived port was in the closed-connection
+  state (TIME-WAIT) each time. The slowest successful start took 386 ms.
+- Mechanism: the derived port range 49152-65534 overlaps the kernel's default ephemeral
+  range 32768-60999 (about 72% of derived ports). A client connection holding the port
+  (established, or closed within the last 60 s) makes the daemon exit with address in
+  use. One default suite run on pc3 leaves about 85 closed-connection sockets in
+  49152-60999 for 60 s.
+- A foreign listener on the derived port made `ensure_running` return a URL for a daemon
+  that had already died (found while measuring).
+- Before/after arms, interleaved per iteration on pc3 beside two back-to-back
+  default-suite loops (the control and lever archives), load1 4.1 to 29.9 (mean 23.5):
+  the integration test in an archive of base commit 37d46cff failed 10 of 150 runs, every
+  failure the `ensure_running returned None on a workspace with bitbake-hashserv present`
+  assertion at line 85. The same test in an archive of 28015457 (this change's HEAD after
+  tasks 1.1 to 6.1) failed 0 of 150 runs. The old test prints no port or stderr, so the 10
+  control failures are attributed to the collision by the matching signature and the probe
+  result above, not by a per-run capture.
+- prserv shares the port derivation and is unchanged by this change.
+
 Production files changed: src/bakar/mounts.py
 (`git diff --name-only b8c28790..HEAD -- src` at `32d35e78` lists only that path.
 For information, the non-src, non-test files changed are `.github/workflows/ci.yml`,
