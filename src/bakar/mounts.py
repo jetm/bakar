@@ -113,8 +113,9 @@ def _run_bounded(specs: dict[Path, list[str]], deadline: float) -> dict[Path, tu
     The loop uses ``poll()``, never ``communicate()`` (which would wait on a
     child stuck in an uninterruptible NFS sleep), until every child exits or
     the deadline passes. Between polls it sleeps with a doubling backoff from
-    1 ms up to 50 ms, never past the deadline, so a child that exits within
-    milliseconds is seen within about a millisecond. A child still running then
+    1 ms up to 50 ms, never past the deadline, so the polls fall at about
+    0, 1, 3, 7, 15, 31 and 63 ms and an exited child is seen at most as late as
+    the time already elapsed, capped at 50 ms. A child still running then
     gets SIGKILL and exactly
     one bounded ``wait(timeout=0.5)``; one that does not exit even then is
     abandoned rather than waited on further. Every pipe is closed on return.
