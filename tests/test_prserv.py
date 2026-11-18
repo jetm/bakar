@@ -18,6 +18,7 @@ import pytest
 import bakar.mounts as mounts_module
 from bakar import central_service, prserv
 from bakar.central_service import OwnedDaemon
+from bakar.hashserv import NetworkStateDirError
 from bakar.prserv import _find_binary, _workspace_port
 
 if TYPE_CHECKING:
@@ -42,6 +43,13 @@ def _no_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 _DAEMON = OwnedDaemon(pid=4242, argv=("python3", "bitbake-prserv", "--start"))
+_REAL_BIND_CONFLICT = central_service.bind_conflict
+
+
+@pytest.fixture(autouse=True)
+def _bindable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Report every address bindable; tests of the refusal override it."""
+    monkeypatch.setattr(central_service, "bind_conflict", lambda _h, _p: None)
 
 
 class _FakeSocket:
@@ -325,6 +333,126 @@ def test_neither_owned_nor_listening_spawns_and_cleans_pidfile(tmp_path: Path, m
     assert prserv.ensure_running(tmp_path, binary_root=tmp_path) == f"localhost:{port}"
     assert len(spawned) == 1
     assert cleans == [port]
+
+
+_CONFLICT = "10.42.0.1:1 cannot be bound: address already in use"
+
+
+def _conflicting(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, int]] | None = None) -> None:
+    def _conflict(host: str, port: int) -> str:
+        if calls is not None:
+            calls.append((host, port))
+        return _CONFLICT
+
+    monkeypatch.setattr(central_service, "bind_conflict", _conflict)
+
+
+def test_bind_conflict_refuses_without_spawn_or_pidfile_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    _own(monkeypatch, [])
+    _listening(monkeypatch, False)
+    _no_spawn(monkeypatch)
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+    probed: list[tuple[str, int]] = []
+    _conflicting(monkeypatch, probed)
+
+    start = time.monotonic()
+    result = prserv.ensure_running(tmp_path, binary_root=tmp_path, bind_host="10.42.0.1")
+    elapsed = time.monotonic() - start
+
+    port = _workspace_port(tmp_path)
+    assert result is None
+    assert elapsed < 1.0
+    assert probed == [("10.42.0.1", port)]
+    assert cleans == []
+    text = (tmp_path / ".bakar" / "prserv.stderr").read_text()
+    assert f"{_CONFLICT}; bitbake-prserv was not started" in text
+
+
+def test_bind_conflict_log_names_the_derived_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real helper's reason carries the port, so the log names it."""
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    _own(monkeypatch, [])
+    _listening(monkeypatch, False)
+    _no_spawn(monkeypatch)
+    port = _workspace_port(tmp_path)
+    monkeypatch.setattr(central_service, "bind_conflict", lambda _h, p: f"127.0.0.1:{p} cannot be bound: in use")
+
+    assert prserv.ensure_running(tmp_path, binary_root=tmp_path, bind_host="127.0.0.1") is None
+
+    assert f":{port} " in (tmp_path / ".bakar" / "prserv.stderr").read_text()
+
+
+def test_real_socket_holding_the_port_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real socket bound (without SO_REUSEADDR) to the derived port, through the real helper."""
+    import socket
+
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    _own(monkeypatch, [])
+    _no_spawn(monkeypatch)
+    monkeypatch.setattr(central_service, "bind_conflict", _REAL_BIND_CONFLICT)
+    port = _workspace_port(tmp_path)
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        try:
+            holder.bind(("127.0.0.1", port))
+        except OSError:
+            pytest.skip("derived port is already in use on this host")
+        assert prserv.ensure_running(tmp_path, binary_root=tmp_path, bind_host="127.0.0.1") is None
+    finally:
+        holder.close()
+
+    text = (tmp_path / ".bakar" / "prserv.stderr").read_text()
+    assert f"127.0.0.1:{port} cannot be bound" in text
+    assert "bitbake-prserv was not started" in text
+
+
+def test_network_state_refusal_precedes_bind_test(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: True)
+    probed: list[tuple[str, int]] = []
+    _conflicting(monkeypatch, probed)
+
+    with pytest.raises(NetworkStateDirError):
+        prserv.ensure_running(tmp_path, binary_root=tmp_path)
+
+    assert probed == []
+    assert not (tmp_path / ".bakar").exists()
+
+
+def test_probe_timeout_keeps_pidfile_when_a_daemon_is_starting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    _listening(monkeypatch, False)
+    # Nothing owned at the gating, a daemon of the state key visible after the probe timed out.
+    answers = iter([[], [_DAEMON]])
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: next(answers))
+    monkeypatch.setattr(prserv, "_STARTUP_PROBE_DEADLINE_SECONDS", 0.2)
+    monkeypatch.setattr(prserv.subprocess, "Popen", lambda *_a, **_k: object())
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+
+    assert prserv.ensure_running(tmp_path, binary_root=tmp_path) is None
+    # the only clean allowed is the one before the spawn
+    assert cleans == [_workspace_port(tmp_path)]
+
+
+def test_probe_timeout_cleans_pidfile_when_no_daemon_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    _listening(monkeypatch, False)
+    _own(monkeypatch, [])
+    monkeypatch.setattr(prserv, "_STARTUP_PROBE_DEADLINE_SECONDS", 0.2)
+    monkeypatch.setattr(prserv.subprocess, "Popen", lambda *_a, **_k: object())
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+
+    assert prserv.ensure_running(tmp_path, binary_root=tmp_path) is None
+    port = _workspace_port(tmp_path)
+    assert cleans == [port, port]
 
 
 def test_binary_available_removed() -> None:

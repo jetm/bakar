@@ -161,6 +161,14 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
         return None
 
     state_dir.mkdir(parents=True, exist_ok=True)
+    conflict = central_service.bind_conflict(bind_host, port)
+    if conflict is not None:
+        daemon_log.record_refusal(
+            state_dir / _STDERR_FILENAME,
+            state_dir,
+            f"{conflict}; bitbake-prserv was not started",
+        )
+        return None
     _clean_stale_pidfiles(port)
 
     # --start double-forks into a daemon and the launcher exits, so we do not
@@ -191,7 +199,10 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
             return f"{bind_host}:{port}"
         time.sleep(0.1)
 
-    _clean_stale_pidfiles(port)
+    # A daemon that is still starting owns its pidfile; only clear it when no
+    # process of this state key exists.
+    if not central_service.find_owned_daemons(_BINARY_NAME, database):
+        _clean_stale_pidfiles(port)
     return None
 
 
