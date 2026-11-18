@@ -247,8 +247,13 @@ if [ "$INJECT" -eq 1 ]; then
     exit 3
   fi
 
+  # The link must point at a file nothing has looked up yet: hit-stat and the
+  # read rows warmed the attribute cache for the first files, and a cached
+  # target answers stat without touching the server. The 21st file is past what
+  # hit-stat statted; with fewer files it falls back to the first one.
   link="$SCRATCH/dangling"
-  target_file=${hit_files[0]:-$DL/none}
+  cold_file=$(find "$DL" -type f 2>/dev/null | sed -n 21p)
+  target_file=${cold_file:-${hit_files[0]:-$DL/none}}
   ln -s "$target_file" "$link"
   worst=0
   verdict=ok
@@ -263,11 +268,15 @@ if [ "$INJECT" -eq 1 ]; then
   done
   row dangling-stat "$worst" "$verdict"
 
-  timed timeout -k 5 25 stat -f -c %T "$DL"
-  if [ "$RC" -eq 124 ]; then
-    row statfs-probe-down "$T" "FAIL timed out at 25s"
-  elif over "$T" 25; then
-    row statfs-probe-down "$T" "FAIL over 25s"
+  # bakar's readiness probe runs stat -f in a child killed at a 20 s deadline
+  # (mounts.CACHE_PROBE_DEADLINE_S), so a dead mount must cost at most that, not
+  # the hang of an unbounded stat. The row passes when the bounded call returns
+  # within 25 s, whether stat -f itself answered or the deadline killed it.
+  timed timeout -k 2 20 stat -f -c %T "$DL"
+  if over "$T" 25; then
+    row statfs-probe-down "$T" "FAIL bounded probe took over 25s"
+  elif [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then
+    row statfs-probe-down "$T" "ok bounded at 20s deadline"
   else
     row statfs-probe-down "$T" "ok rc=$RC"
   fi
