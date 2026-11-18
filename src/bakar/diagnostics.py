@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
@@ -2649,6 +2650,11 @@ _PUSH_BACKLOG_WARN_S = 3600.0
 _PUSH_BACKLOG_INFO_S = 900.0
 _STALE_TARBALL_AGE_S = 3600.0
 _STALE_TARBALL_LIST_MAX = 10
+# devtool-debt: fixed 60 GB limit. Ceiling: a host class whose downloads disk is much
+# smaller or larger than the pc2 and pc3 builders. Upgrade trigger: a second host class
+# needs a different limit, at which point it becomes a [build] key.
+_DL_DIR_WARN_BYTES = 60 * 10**9
+_DL_DIR_WALK_BOUND_S = 5.0
 
 
 def check_cache_push_service(cfg: BuildConfig) -> CheckResult:
@@ -2826,6 +2832,64 @@ def check_store_stale_tarballs(cfg: BuildConfig) -> CheckResult:
         Severity.WARN,
         f"{len(stale)} stale git2_*.tar.gz.tmp file(s) older than 1 h in {cfg.dl_dir}: {names}",
     )
+
+
+def _dl_dir_regular_bytes(root: str, deadline: float) -> int | None:
+    """Sum regular-file sizes under ``root``; None when ``deadline`` passes first.
+
+    Iterative so a deep tree cannot hit the recursion limit. Symbolic links are
+    never followed and never counted, directories contribute no size, and the
+    monotonic deadline is checked per entry. Raises OSError when ``root`` cannot
+    be opened; unreadable subdirectories and vanished files are skipped.
+    """
+    total = 0
+    pending = [root]
+    first = True
+    while pending:
+        current = pending.pop()
+        try:
+            it = os.scandir(current)
+        except OSError:
+            if first:
+                raise
+            continue
+        first = False
+        with it:
+            for entry in it:
+                if time.monotonic() > deadline:
+                    return None
+                try:
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(st.st_mode):
+                    total += st.st_size
+                elif stat.S_ISDIR(st.st_mode):
+                    pending.append(entry.path)
+    return total
+
+
+def check_dl_dir_size(cfg: BuildConfig) -> CheckResult:
+    """Warn when the pusher host's DL_DIR has grown past the size limit."""
+    name = "dl-dir-size"
+    if not cfg.cache_push_target:
+        return _skip(name, Severity.INFO, "no cache_push_target (store host)")
+    if not cfg.dl_dir:
+        return _skip(name, Severity.INFO, "no downloads directory configured")
+    try:
+        size = _dl_dir_regular_bytes(cfg.dl_dir, time.monotonic() + _DL_DIR_WALK_BOUND_S)
+    except OSError:
+        return _skip(name, Severity.INFO, f"cannot read {cfg.dl_dir}")
+    if size is None:
+        return _skip(name, Severity.INFO, "size not measured: walk exceeded 5 s")
+    gb = size / 10**9
+    if size > _DL_DIR_WARN_BYTES:
+        return _fail(
+            name,
+            Severity.WARN,
+            f"{gb:.1f} GB in {cfg.dl_dir} (limit 60 GB); run bakar cache prune-downloads to see what can be reclaimed",
+        )
+    return _ok(name, Severity.INFO, f"{gb:.1f} GB")
 
 
 def check_nfs_delegations(cfg: BuildConfig) -> CheckResult:
@@ -3984,6 +4048,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_dl_mirror_reachable,
     check_dl_mirror_paths_ready,
     check_store_stale_tarballs,
+    check_dl_dir_size,
     # WARN only: a scheduler bitbake does not ship, and central endpoints a
     # single-node build points at but cannot reach. central-endpoints is NOT a
     # _CLUSTER_CHECKS member: it must run when cluster mode is off.
@@ -4094,6 +4159,7 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "dl-mirror-reachable",
             "dl-mirror-paths-ready",
             "store-stale-tarballs",
+            "dl-dir-size",
         ),
     ),
     (
@@ -4200,6 +4266,7 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_dl_mirror_reachable, "dl-mirror-reachable", Severity.WARN),
     (check_dl_mirror_paths_ready, "dl-mirror-paths-ready", Severity.WARN),
     (check_store_stale_tarballs, "store-stale-tarballs", Severity.WARN),
+    (check_dl_dir_size, "dl-dir-size", Severity.WARN),
     (check_scheduler_value, "scheduler", Severity.WARN),
     (check_central_endpoints, "central-endpoints", Severity.WARN),
     # NXP-only (BspModel.doctor_extras)
