@@ -119,6 +119,35 @@ def _hub_mirror_extra_overlays(cfg: BuildConfig) -> list[Path]:
     )
 
 
+# Directories already warned about, so build, show and dump in one process
+# print one warning per dropped directory.
+_HUB_MOUNT_WARNED: set[Path] = set()
+
+
+def _hub_mount_extra_overlays(cfg: BuildConfig) -> list[Path]:
+    """Return the hub-mount overlay path when ``cfg.use_hub_mount`` and a directory is ready.
+
+    Nothing is probed unless ``cfg.use_hub_mount`` holds (keys set, host mode).
+    Each directory that is not ready prints one warning and the build proceeds
+    without it; the overlay is dropped only when every directory is.
+    """
+    if not cfg.use_hub_mount:
+        return []
+    from bakar.steps import hub_mount
+
+    ready = hub_mount.ready_dirs(cfg.dl_mirror_paths, host_mode=cfg.host_mode)
+    for status in hub_mount.dropped_dirs(cfg.dl_mirror_paths, host_mode=cfg.host_mode):
+        if status.path in _HUB_MOUNT_WARNED:
+            continue
+        _HUB_MOUNT_WARNED.add(status.path)
+        shown = escape(str(status.path))
+        console.print(
+            f"[yellow]warning:[/] hub mirror directory {shown} is {status.state}; continuing without it",
+            soft_wrap=True,
+        )
+    return _conditional_overlay(bool(ready), "bakar-tuning-hub-mount.yml")
+
+
 def _sccache_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return the sccache overlay path when ``cfg.use_sccache_dist`` is True."""
     return _conditional_overlay(cfg.use_sccache_dist, "bakar-tuning-sccache.yml")
@@ -225,12 +254,12 @@ def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
     """Return all opt-in tuning overlay paths for cfg.
 
     cache-classify (always on) + host (host-mode rpm isolation) + ccache (when
-    effective) + hashequiv + shared-cache + hub-cache + sccache + mold + uninative. The
+    effective) + hashequiv + shared-cache + hub-cache + hub-mount + sccache + mold + uninative. The
     cache-classify overlay is unconditional so plain-ccache builds still get the
     cache-hit emitter; every other entry is gated on its toggle. List order does
     not set local.conf precedence - kas sorts local_conf_header by key, and the
     bakar overlays use sort-last ``zz-bakar-NN-*`` keys so the numeric segment
-    decides (base < ccache < hashequiv < shared-cache < hub-cache < sccache < mold <
+    decides (base < ccache < hashequiv < shared-cache < hub-cache < hub-mount < sccache < mold <
     ``zz-bakar-70-uninative``). The host overlay adds only a layer (no
     local_conf_header), so its position is immaterial. The uninative overlay is
     gated on the host environment rather than a config toggle - see
@@ -242,6 +271,7 @@ def _tuning_extra_overlays(cfg: BuildConfig) -> list[Path]:
         *_hashequiv_extra_overlays(cfg),
         *_shared_cache_extra_overlays(cfg),
         *_hub_mirror_extra_overlays(cfg),
+        *_hub_mount_extra_overlays(cfg),
         *_sccache_extra_overlays(cfg),
         *_mold_extra_overlays(cfg),
         *_uninative_extra_overlays(cfg),

@@ -37,6 +37,7 @@ def _cfg(url: str | None) -> MagicMock:
     cfg = MagicMock(spec=BuildConfig)
     cfg.dl_mirror_url = url
     cfg.use_hub_mirror = bool(url)
+    cfg.use_hub_mount = False
     return cfg
 
 
