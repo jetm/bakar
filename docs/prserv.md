@@ -35,9 +35,9 @@ up from the cwd. `--workspace`/`-w` overrides the workspace root directly.
 
 | Verb | Description |
 |------|-------------|
-| `start` | Start the daemon if its port is not already listening, then print `started: PRSERV_HOST=<host>:<port>`. Idempotent: when the port already answers, the existing address is reported without spawning anything. Exits 1 when the workspace `bitbake-prserv` binary is missing or the startup probe times out. |
-| `stop` | Run `bitbake-prserv --stop` so the SQLite DB is flushed cleanly, then clear any stale pidfile. Prints `stopped`, or `not running` when the port does not answer or the binary is missing. Exits 0 either way. The PR DB is preserved. |
-| `status` | Print `running, PRSERV_HOST=<host>:<port>` or `not running`. Exits 0 either way. |
+| `start` | Start the daemon if the state key has none, then print `started: PRSERV_HOST=<host>:<port>`. Idempotent, with an ownership check: the address is returned only when the process on the derived port is this state key's own `bitbake-prserv`, identified by the database path in its command line, with the `--host` and `--port` in that command line matching the derived address. A listener with no daemon of the state key behind it is refused as foreign. A daemon of the state key bound to another host or port is refused with its process id and `run 'bakar prserv stop'`, never a second daemon and never its pidfile removed. Nothing is spawned in either case. A derived port the daemon cannot bind is refused before spawning, with the reason in `prserv.stderr`. Exits 1 when the workspace `bitbake-prserv` binary is missing, the derived port is busy or held by another process, a live daemon of the state key does not answer, or the startup probe times out. |
+| `stop` | When bitbake's pidfile for the port exists, is owned by the current user and names the state key's daemon, run `bitbake-prserv --stop` so the SQLite DB is flushed cleanly; otherwise send SIGTERM to the state key's daemon. Every daemon of the state key is signalled, whatever host or port it is bound to, and bitbake's pidfile is read at exactly `/tmp/PRServer_<ip>_<port>.pid`. A daemon still found after bitbake's stop is sent SIGTERM too. SIGKILL is never sent. Prints `stopped`, or `not running` when no daemon of this state key is found. Exits 0 either way. The PR DB is preserved. |
+| `status` | Print `running, PRSERV_HOST=<host>:<port>` or `not running`. A listener that is not the state key's daemon prints `not running`. Exits 0 either way. |
 
 The answers of `start`, `stop` and `status` (`started: ...`, `stopped`, `not running`, `running, ...`) go to standard output. Failure messages, such as a missing binary or a startup probe timeout, go to standard error.
 
@@ -47,7 +47,8 @@ The daemon binds `cluster_bind_host` from `~/.config/bakar/config.toml`, falling
 back to `localhost` when unset. Setting it to a reachable address lets other
 cluster nodes share one PR service. Liveness is a TCP probe against that
 address; `0.0.0.0` and the empty string are bind-only addresses, so those are
-probed on `127.0.0.1` instead.
+probed on `127.0.0.1` instead. A listening port alone is not proof of liveness:
+the process behind it must also be the state key's own daemon serving that host and port.
 
 ## State files
 
@@ -67,12 +68,21 @@ both are keyed to the same shared `SSTATE_DIR`. Same state key means the same
 port forever.
 
 `bitbake-prserv --start` double-forks into a daemon and writes its own pidfile
-under `/tmp/PRServer_<ip>_<port>.pid`, so bakar tracks liveness by TCP-probing
-the port rather than by a tracked PID. A daemon that dies without cleaning up
+under `/tmp/PRServer_<ip>_<port>.pid`, so bakar does not rely on that pidfile
+for liveness. It finds the state key's daemon in the process table by the
+`-f <state_dir>/prserv.sqlite3` argument in its command line, and probes the
+port. A daemon that dies without cleaning up
 leaves that pidfile behind, and `bitbake-prserv --start` then refuses to start
 ("Daemon already running?"). bakar removes any `/tmp/PRServer_*_<port>.pid`
 before spawning and after stopping - the port is unique per state key, so the
-glob cannot match an unrelated daemon.
+glob cannot match an unrelated daemon. It never removes the pidfile of a daemon
+that is alive.
+
+A daemon whose pidfile was removed (for example by a temporary-directory
+cleaner) is still found, returned by `start` and stopped by `stop`, because the
+process table, not the pidfile, identifies it. On a host that hides the user's
+own process command lines, every `start` refuses the key's own daemon as
+foreign, since its ownership cannot be confirmed.
 
 ## Binary resolution
 
@@ -154,17 +164,31 @@ rather than silently falling through to bitbake's autostart.
 when:
 
 - The workspace `bitbake-prserv` binary is missing at all four search paths.
+- The derived port is busy: a bind test refuses a port the daemon cannot bind
+  before bitbake's pidfiles are touched and before anything is spawned.
+- The derived port is held by a foreign listener, a process that is not this
+  state key's `bitbake-prserv`. The message reads `<host>:<port> is held by a
+  process that is not this state key's bitbake-prserv; bitbake-prserv was not
+  started`.
+- A daemon of the state key serves another host or port (for example after
+  `cluster_bind_host` changed): `bitbake-prserv pid <pid> already serves <db> on
+  <host>:<port>, not <host>:<port>; run 'bakar prserv stop'`. Nothing is spawned
+  and its pidfile is kept.
+- The state key's daemon exists but does not answer on the port within the 5 s
+  probe: `bitbake-prserv pid <pid> already serves <db> but does not answer on
+  <host>:<port>; run 'bakar prserv stop'`.
 - The spawned daemon never opened its socket within the 5 s startup TCP probe.
 
-In both cases the launcher's stderr is in `<state_key>/.bakar/prserv.stderr`,
-which the failure message names.
+Every refusal and spawn failure writes its reason to
+`<state_key>/.bakar/prserv.stderr`, which the failure message names. A missing
+binary is the exception: it writes nothing.
 
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
 | 0 | `start` succeeded, or `stop`/`status` ran (regardless of running state) |
-| 1 | `start` failed (binary missing or startup probe timed out) |
+| 1 | `start` failed (binary missing, derived port busy or held by a foreign listener, a live daemon that does not answer, or startup probe timed out) |
 
 ## Examples
 
