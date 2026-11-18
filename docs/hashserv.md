@@ -22,9 +22,9 @@ when given, the daemon is resolved next to that YAML (the same dispatch as
 
 | Verb | Description |
 |------|-------------|
-| `start` | Spawn the daemon if it is not already running. Idempotent: a second `start` does nothing when the PID is alive. Exits 1 when the workspace's `bitbake-hashserv` binary is missing, the derived port is busy, or the startup TCP probe fails. |
-| `stop` | Signal SIGTERM, wait up to 5 s for a graceful flush, then SIGKILL if still alive. Removes the PID and port state files. The SQLite hash database is preserved so the next `start` resumes the cache. |
-| `status` | Print `running, pid=<N>, url=ws://localhost:<port>` or `not running`. Exits 0 either way. |
+| `start` | Spawn the daemon if it is not already running. Idempotent: a second `start` does nothing when the PID is alive. Exits 1 when the workspace's `bitbake-hashserv` binary is missing, the derived port is busy, a live daemon without a PID file cannot be adopted, or the startup TCP probe fails. |
+| `stop` | Signal SIGTERM, wait up to 5 s for a graceful flush, then SIGKILL if still alive. Removes the PID and port state files. Also stops a daemon that has no PID file (found by its command line; only the current user's processes running the tool against this state key's database are considered). The SQLite hash database is preserved so the next `start` resumes the cache. |
+| `status` | Print `running, pid=<N>, url=ws://localhost:<port>` or `not running`. Exits 0 either way. It reads the PID file, so a daemon without one is reported as `not running` (as the doctor does); `start` adopts it and `stop` stops it. |
 
 The answers of `start`, `stop` and `status` (`started: <url>`, `stopped`, `not running`, `running, ...`) go to standard output. Failure messages, such as a missing binary, a busy derived port or a failed startup probe, go to standard error.
 
@@ -190,7 +190,12 @@ silently falling through to `auto`.
 
 - The workspace bitbake-hashserv binary is missing (sources not yet synced).
 - The SQLite database under `<state_key>/.bakar/hashserv.db` cannot be written (read-only filesystem, exhausted quota).
-- The derived port is held by one of three things: a listener, an established client connection, or a client connection closed within the last 60 seconds. The start is refused before the daemon is spawned and the reason is written to `hashserv.stderr`. The derived range 49152-65534 overlaps the kernel's default ephemeral range 32768-60999 for about 72% of derived ports, so an outgoing connection of another process can hold the port. A live daemon of this state key whose PID file is gone also holds the port: `bakar hashserv stop` cannot find it without the PID, so find the process (`ss -ltnp`) and stop it by hand.
+- The derived port is held by one of three things: a listener, an established client connection, or a client connection closed within the last 60 seconds. The start is refused before the daemon is spawned and the reason is written to `hashserv.stderr`. The derived range 49152-65534 overlaps the kernel's default ephemeral range 32768-60999 for about 72% of derived ports, so an outgoing connection of another process can hold the port.
+- A live daemon of this state key whose PID file is gone. `start` looks for it before the binary lookup, so this works even when the workspace binary is absent:
+  - It is adopted when it answers on the port its command line names; its PID and port are recorded again and `start` succeeds.
+  - It is waited for while it is still starting, up to the 2 s probe deadline.
+  - It is refused when it never answers, its database file was deleted, or it listens on another address than the one requested. The process id and the stop hint are written to `hashserv.stderr`: `bitbake-hashserv pid <pid> already serves <db> but cannot be adopted (<reason>); run 'bakar hashserv stop'`. Run `bakar hashserv stop` and start again.
+  - Only processes of the current user that run the tool against the state key's database are considered. On a host that hides the user's own process command lines, the start degrades to the previous refusal: the daemon holds the derived port and the start is refused as a busy port.
 - The 2 s startup TCP probe times out (the daemon spawned but never opened its socket).
 
 In every failure case the daemon stderr is captured to `<state_key>/.bakar/hashserv.stderr` for diagnosis.
@@ -200,7 +205,7 @@ In every failure case the daemon stderr is captured to `<state_key>/.bakar/hashs
 | Code | Meaning |
 |------|---------|
 | 0 | `start` succeeded, `stop` ran, or `status` reported (regardless of running state) |
-| 1 | `start` failed (binary missing, derived port busy or startup probe failed) |
+| 1 | `start` failed (binary missing, derived port busy, a live daemon that cannot be adopted, or startup probe failed) |
 
 ## See also
 
