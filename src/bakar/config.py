@@ -538,6 +538,7 @@ class BuildConfig:
     psi_autocalibrate: bool = field(default=False)
     sstate_mirror_url: str | None = field(default=None)
     dl_mirror_url: str | None = field(default=None)
+    dl_mirror_paths: str | None = field(default=None)
     cache_push_target: str | None = field(default=None)
     # Decoupled build parallelism sourced from config.toml [build]. All None ->
     # the existing NPROC-derived behavior. _build_env() exports NPROC from nproc
@@ -759,6 +760,14 @@ class BuildConfig:
     def use_hub_mirror(self) -> bool:
         """True when a hub download-mirror URL is configured."""
         return bool(self.dl_mirror_url)
+
+    @property
+    def use_hub_mount(self) -> bool:
+        """True when hub mirror directories are configured and the build runs on the host.
+
+        Container builds never see the mirror directories.
+        """
+        return bool(self.dl_mirror_paths) and self.host_mode
 
     @property
     def use_sccache_dist(self) -> bool:
@@ -1482,6 +1491,7 @@ def resolve(request: ResolveRequest) -> BuildConfig:
         psi_autocalibrate=user_config.psi_autocalibrate if user_config else False,
         sstate_mirror_url=user_config.sstate_mirror_url if user_config else None,
         dl_mirror_url=user_config.dl_mirror_url if user_config else None,
+        dl_mirror_paths=user_config.dl_mirror_paths if user_config else None,
         cache_push_target=user_config.cache_push_target if user_config else None,
         sccache_dist=resolved_sccache_dist,
         sccache_scheduler_url=user_config.sccache_scheduler_url if user_config else None,
