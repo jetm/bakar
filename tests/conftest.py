@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -766,32 +767,109 @@ class HarnessGcPause:
 _SLOWEST_TESTS_FILE = Path(__file__).with_name("slowest_tests.txt")
 
 
-@pytest.hookimpl(trylast=True)
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Spread the slowest tests across the first quarter of the order, under xdist only.
+def _chunk_sizes(total: int, workers: int) -> list[int]:
+    """Sizes of the contiguous chunks xdist's worksteal scheduler deals at startup.
 
-    ``trylast`` runs this after pytest-randomly's shuffle. The result depends only on the
-    list file and the shuffled order, so every worker computes the same order for a seed,
-    which xdist requires. Tests are only moved, never dropped or renamed.
+    It sends each node ``len(pending) // nodes_remaining`` of what is still unsent
+    (``xdist/scheduler/worksteal.py``, ``schedule``), so the first chunk is the
+    smallest and the last absorbs the remainder.
     """
-    if "PYTEST_XDIST_WORKER" not in os.environ or not _SLOWEST_TESTS_FILE.is_file():
-        return
-    slowest = [line for line in _SLOWEST_TESTS_FILE.read_text().splitlines() if line and not line.startswith("#")]
+    sizes = []
+    pending = total
+    for done in range(workers):
+        size = pending // (workers - done)
+        sizes.append(size)
+        pending -= size
+    return sizes
+
+
+def slowest_first_order(nodeids: Sequence[str], slowest: Sequence[str], workers: int) -> list[int]:
+    """Return a permutation of ``range(len(nodeids))`` that heads each worker's chunk with slow tests.
+
+    The listed test of rank ``k`` among those present goes to chunk ``k % workers`` at
+    offset ``k // workers`` from its head, so every worker starts with an equal
+    round-robin share of the slowest tests. Every other test keeps its relative order.
+    The result depends only on its arguments, which is what lets each xdist worker
+    compute the same order independently. Listed ids that were not collected are
+    skipped. A chunk too small for its share (tiny runs only) still takes its whole
+    share at its head, so the overflow spills into the next chunk's head and shifts
+    the later boundaries; the result stays a permutation.
+    """
+    workers = max(workers, 1)
     rank = {nodeid: i for i, nodeid in enumerate(slowest)}
-    slow = sorted((it for it in items if it.nodeid in rank), key=lambda it: rank[it.nodeid])
-    if not slow:
-        return
-    rest = [it for it in items if it.nodeid not in rank]
-    stride = max(len(items) // 4 // len(slow), 1)
-    out: list[pytest.Item] = []
+    slow = sorted((i for i, nodeid in enumerate(nodeids) if nodeid in rank), key=lambda i: rank[nodeids[i]])
+    slow_set = set(slow)
+    rest = [i for i in range(len(nodeids)) if i not in slow_set]
+    out: list[int] = []
     taken = 0
-    for pos, it in enumerate(slow):
-        gap = pos * stride - len(out)
-        out.extend(rest[taken : taken + gap])
-        taken += gap
-        out.append(it)
+    for chunk, size in enumerate(_chunk_sizes(len(nodeids), workers)):
+        share = slow[chunk::workers]
+        out.extend(share)
+        fill = max(size - len(share), 0)
+        out.extend(rest[taken : taken + fill])
+        taken += fill
     out.extend(rest[taken:])
-    items[:] = out
+    return out
+
+
+def stale_slowest_ids(nodeids: Sequence[str], slowest: Sequence[str], root: Path) -> list[str]:
+    """Listed ids that no longer exist: the module is gone, or it was collected without the id.
+
+    A listed id whose module was not collected at all is not stale when the file is still
+    on disk, so a run of a few modules stays quiet.
+    """
+    collected = set(nodeids)
+    collected_modules = {nodeid.split("::", maxsplit=1)[0] for nodeid in nodeids}
+    stale = []
+    for nodeid in slowest:
+        if nodeid in collected:
+            continue
+        module = nodeid.split("::", maxsplit=1)[0]
+        if module in collected_modules or not (root / module).is_file():
+            stale.append(nodeid)
+    return stale
+
+
+def selection_is_narrowed(keyword: str, markexpr: str, deselect: Sequence[str] | None, args: Sequence[str]) -> bool:
+    """True when ``-k``, ``-m``, ``--deselect`` or a ``file::test`` argument may have removed collected items.
+
+    Those filters run before the ``trylast`` dealing hook sees the items, so a listed id that is
+    missing from a module that was still collected is a deliberate omission, not a stale entry.
+    """
+    return bool(keyword or markexpr or deselect or any("::" in arg for arg in args))
+
+
+class SlowestFirstDealing:
+    """Head every xdist worker's initial chunk with its share of the slowest tests."""
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_collection_modifyitems(self, config: pytest.Config, items: list[pytest.Item]) -> None:
+        """Reorder under xdist only; ``trylast`` runs after pytest-randomly's shuffle.
+
+        Tests are only moved, never dropped or renamed. A listed id that is no longer
+        collected is reported as a warning, never a failure, and only on a run that no
+        selection option narrowed. Under ``--lf``/``--ff`` the deselection runs after this
+        hook, so the chunk heads are placed for the full order and some land in slots the
+        run drops: placement is lost there, the order stays a valid permutation.
+        """
+        if "PYTEST_XDIST_WORKER" not in os.environ or not _SLOWEST_TESTS_FILE.is_file():
+            return
+        slowest = [line for line in _SLOWEST_TESTS_FILE.read_text().splitlines() if line and not line.startswith("#")]
+        nodeids = [it.nodeid for it in items]
+        narrowed = selection_is_narrowed(
+            config.option.keyword, config.option.markexpr, config.option.deselect, config.args
+        )
+        stale = [] if narrowed else stale_slowest_ids(nodeids, slowest, config.rootpath)
+        if stale:
+            warnings.warn(
+                pytest.PytestWarning(
+                    f"tests/slowest_tests.txt lists {len(stale)} test id(s) that are not collected "
+                    f"(regenerate with tests/regen_slowest_tests.py): {', '.join(stale)}"
+                ),
+                stacklevel=1,
+            )
+        workers = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1"))
+        items[:] = [items[i] for i in slowest_first_order(nodeids, slowest, workers)]
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -799,3 +877,5 @@ def pytest_configure(config: pytest.Config) -> None:
     config.pluginmanager.register(ClickTreeCache(), "bakar_click_cache")
     # Registered by name so ``-p no:bakar_harness_gc`` disables it.
     config.pluginmanager.register(HarnessGcPause(), "bakar_harness_gc")
+    # Registered by name so ``-p no:bakar_slowest_first`` disables it.
+    config.pluginmanager.register(SlowestFirstDealing(), "bakar_slowest_first")
