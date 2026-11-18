@@ -1136,3 +1136,185 @@ def test_bound_url_uses_bind_host_else_localhost() -> None:
     assert bound_url(5000, "10.0.0.2") == "ws://10.0.0.2:5000"
     assert bound_url(5000, None) == "ws://localhost:5000"
     assert bound_url(5000) == "ws://localhost:5000"
+
+
+# --- adoption of a live daemon that has no PID file ---------------------------------
+
+
+def _adoption_setup(  # noqa: PLR0913
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    argv_bind: str | None,
+    answers: bool = True,
+    db_exists: bool = True,
+    pid: int = 4242,
+    bind_host_calls: list[tuple[str, int]] | None = None,
+) -> ModuleType:
+    from bakar import hashserv as hashserv_mod
+
+    state_dir = tmp_path / ".bakar"
+    state_dir.mkdir(parents=True)
+    if db_exists:
+        (state_dir / "hashserv.db").write_text("")
+    argv = ("python3", "/ws/bitbake-hashserv")
+    if argv_bind is not None:
+        argv += ("--bind", argv_bind)
+    argv += ("--database", str(state_dir / "hashserv.db"))
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    monkeypatch.setattr(
+        central_service,
+        "find_owned_daemons",
+        lambda _tool, _db: [central_service.OwnedDaemon(pid=pid, argv=argv)],
+    )
+
+    def _wait(host: str, port: int, _deadline: float) -> bool:
+        if bind_host_calls is not None:
+            bind_host_calls.append((host, port))
+        return answers
+
+    monkeypatch.setattr(central_service, "wait_listening", _wait)
+    _forbid_popen(hashserv_mod, monkeypatch)
+    return hashserv_mod
+
+
+def test_ensure_running_adopts_live_daemon_without_pid_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An answering orphan is adopted: no spawn, port file then PID file with its own values."""
+    calls: list[tuple[str, int]] = []
+    hashserv_mod = _adoption_setup(tmp_path, monkeypatch, argv_bind="ws://localhost:51111", bind_host_calls=calls)
+    order: list[str] = []
+    real_write = Path.write_text
+
+    def _spy(self: Path, data: str, *a: object, **k: object) -> int:
+        order.append(self.name)
+        return real_write(self, data, *a, **k)
+
+    monkeypatch.setattr(Path, "write_text", _spy)
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) == "ws://localhost:51111"
+
+    assert calls == [("localhost", 51111)]
+    assert order == ["hashserv.port", "hashserv.pid"]
+    assert (tmp_path / ".bakar" / "hashserv.port").read_text() == "51111\n"
+    assert (tmp_path / ".bakar" / "hashserv.pid").read_text() == "4242\n"
+
+
+def test_ensure_running_adopted_port_differs_from_derived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The port comes from the process's argument, not from the derived port."""
+    derived = _workspace_port(tmp_path)
+    named = derived + 1 if derived < 65535 else derived - 1
+    hashserv_mod = _adoption_setup(tmp_path, monkeypatch, argv_bind=f"ws://localhost:{named}")
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) == f"ws://localhost:{named}"
+    assert (tmp_path / ".bakar" / "hashserv.port").read_text() == f"{named}\n"
+
+
+def test_ensure_running_adopts_still_starting_daemon_without_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wait_listening True (daemon still binding) adopts; the absent binary is irrelevant."""
+    hashserv_mod = _adoption_setup(tmp_path, monkeypatch, argv_bind="ws://localhost:51112")
+    assert not (tmp_path / "bitbake-hashserv").exists()
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) == "ws://localhost:51112"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"argv_bind": "ws://localhost:51113", "answers": False}, "it does not answer on ws://localhost:51113"),
+        ({"argv_bind": "ws://localhost:51113", "db_exists": False}, "its database file is gone"),
+        ({"argv_bind": None}, "its --bind names no ws:// port"),
+        ({"argv_bind": "localhost:51113"}, "its --bind names no ws:// port"),
+        ({"argv_bind": "ws://localhost:notaport"}, "its --bind names no ws:// port"),
+        ({"argv_bind": "ws://localhost:70000"}, "its --bind names no ws:// port"),
+    ],
+)
+def test_ensure_running_refuses_unadoptable_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, object], reason: str
+) -> None:
+    """A found daemon that cannot be adopted: None, no state files, log names pid, reason, stop verb."""
+    hashserv_mod = _adoption_setup(tmp_path, monkeypatch, **kwargs)
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) is None
+
+    assert not (tmp_path / ".bakar" / "hashserv.pid").exists()
+    assert not (tmp_path / ".bakar" / "hashserv.port").exists()
+    text = (tmp_path / ".bakar" / "hashserv.stderr").read_text()
+    assert "bitbake-hashserv pid 4242 already serves" in text
+    assert reason in text
+    assert "run 'bakar hashserv stop'" in text
+
+
+def test_ensure_running_cluster_bind_host_with_daemon_elsewhere_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cluster bind host probed where the daemon does not listen refuses and spawns nothing."""
+    calls: list[tuple[str, int]] = []
+    hashserv_mod = _adoption_setup(
+        tmp_path, monkeypatch, argv_bind="ws://localhost:51114", answers=False, bind_host_calls=calls
+    )
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path, bind_host="10.42.0.1") is None
+
+    assert calls == [("10.42.0.1", 51114)]
+    assert "it does not answer on ws://10.42.0.1:51114" in (tmp_path / ".bakar" / "hashserv.stderr").read_text()
+
+
+def test_ensure_running_refusal_names_lowest_pid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With several unadoptable processes the first (lowest pid) is named."""
+    hashserv_mod = _adoption_setup(tmp_path, monkeypatch, argv_bind="ws://localhost:51115", answers=False, pid=100)
+    db = tmp_path / ".bakar" / "hashserv.db"
+    two = [
+        central_service.OwnedDaemon(pid=100, argv=("bitbake-hashserv", "--bind", "ws://localhost:51115", str(db))),
+        central_service.OwnedDaemon(pid=200, argv=("bitbake-hashserv", "--bind", "ws://localhost:51116", str(db))),
+    ]
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: two)
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) is None
+    assert "pid 100 already serves" in (tmp_path / ".bakar" / "hashserv.stderr").read_text()
+
+
+def test_ensure_running_nothing_found_keeps_spawn_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No process found and no binary: the unchanged silent None, nothing written."""
+    from bakar import hashserv as hashserv_mod
+
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: [])
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) is None
+    assert not (tmp_path / ".bakar" / "hashserv.stderr").exists()
+
+
+def test_ensure_running_skips_scan_when_already_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """is_running True returns before the process table is scanned."""
+    from bakar import hashserv as hashserv_mod
+
+    (tmp_path / ".bakar").mkdir()
+    (tmp_path / ".bakar" / "hashserv.port").write_text("54321\n")
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: True)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("find_owned_daemons must not be called")
+
+    monkeypatch.setattr(central_service, "find_owned_daemons", _boom)
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) == "ws://localhost:54321"
+
+
+def test_ensure_running_network_state_refusal_precedes_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The network-state refusal raises before any process scan."""
+    from bakar import hashserv as hashserv_mod
+
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: True)
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("find_owned_daemons must not be called")
+
+    monkeypatch.setattr(central_service, "find_owned_daemons", _boom)
+
+    with pytest.raises(hashserv_mod.NetworkStateDirError):
+        hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path)

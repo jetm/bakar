@@ -211,6 +211,24 @@ def is_running(state_key: Path) -> bool:
     return b"bitbake-hashserv" in cmdline_bytes
 
 
+def _adoptable_port(argv: tuple[str, ...], database: Path, bind_host: str) -> int | str:
+    """Return the port a found daemon answers on, or the reason it cannot be adopted."""
+    port: int | None = None
+    if "--bind" in argv[:-1]:
+        value = argv[argv.index("--bind") + 1]
+        if value.startswith("ws://"):
+            _, _, tail = value.removeprefix("ws://").rpartition(":")
+            if tail.isascii() and tail.isdigit() and 1 <= int(tail) <= 65535:
+                port = int(tail)
+    if port is None:
+        return "its --bind names no ws:// port"
+    if not database.exists():
+        return "its database file is gone"
+    if not central_service.wait_listening(bind_host, port, _STARTUP_PROBE_DEADLINE_SECONDS):
+        return f"it does not answer on ws://{bind_host}:{port}"
+    return port
+
+
 def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "localhost") -> str | None:
     """Ensure a hashserv daemon for ``state_key`` is running; return its URL.
 
@@ -227,6 +245,14 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
     success within ``_STARTUP_PROBE_DEADLINE_SECONDS`` (in which case the
     daemon's stderr is captured to ``<state_dir>/hashserv.stderr`` and any
     surviving child process is sent SIGTERM).
+
+    When no PID file vouches for a daemon but a live ``bitbake-hashserv``
+    process of this user serves the state key's database, it is adopted
+    (port file, then PID file) once it answers on the port its own ``--bind``
+    argument names, whether or not the binary has been synced. If every such
+    process fails that test, nothing is spawned, no state file is written, the
+    first process (lowest pid) and the reason are recorded in the stderr log
+    with a pointer to ``bakar hashserv stop``, and ``None`` is returned.
 
     The PID/port files are only written after the TCP probe succeeds, so a
     failed startup never leaves authoritative state behind for the next
@@ -257,6 +283,33 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
             port = _workspace_port(state_key)
             port_file.write_text(f"{port}\n")
         return f"ws://{bind_host}:{port}"
+
+    # A live daemon of this state key whose PID file is gone is adopted when it
+    # answers on the port its own command line names, so no second daemon is
+    # spawned onto its database. When none can be adopted the start refuses.
+    database = state_dir / _DB_FILENAME
+    found = central_service.find_owned_daemons("bitbake-hashserv", database)
+    first_refusal: tuple[int, str] | None = None
+    for daemon in found:
+        port_or_reason = _adoptable_port(daemon.argv, database, bind_host)
+        if isinstance(port_or_reason, int):
+            state_dir.mkdir(parents=True, exist_ok=True)
+            # Port file first, PID file last: the PID file is what is_running trusts.
+            port_file.write_text(f"{port_or_reason}\n")
+            pid_file.write_text(f"{daemon.pid}\n")
+            return f"ws://{bind_host}:{port_or_reason}"
+        if first_refusal is None:
+            first_refusal = (daemon.pid, port_or_reason)
+    if first_refusal is not None:
+        pid, why = first_refusal
+        state_dir.mkdir(parents=True, exist_ok=True)
+        daemon_log.record_refusal(
+            state_dir / _STDERR_FILENAME,
+            state_dir,
+            f"bitbake-hashserv pid {pid} already serves {database} but cannot be adopted ({why}); "
+            "run 'bakar hashserv stop'",
+        )
+        return None
 
     binary = _find_binary(binary_root)
     if binary is None:
