@@ -17,7 +17,9 @@ Three classes are planned:
 
 from __future__ import annotations
 
+import fcntl
 import os
+import shutil
 import stat
 import time
 import urllib.parse
@@ -258,3 +260,121 @@ def plan_prune(
     else:
         _plan_clones(dl_dir, clone_older_than_days, time.time() if now is None else now, plan)
     return plan
+
+
+REASON_IN_USE = "in use"
+REASON_CHANGED = "changed since planned"
+REASON_REMOVE_FAILED = "remove failed"
+REASON_LOCK_UNAVAILABLE = "lock unavailable"
+
+_KINDS: tuple[Kind, ...] = ("hub", "tarball", "clone")
+
+
+@dataclass
+class ApplyResult:
+    """What ``apply_plan`` removed and kept, per class (kept reasons are apply-time only)."""
+
+    removed: dict[str, int] = field(default_factory=lambda: dict.fromkeys(_KINDS, 0))
+    removed_size: dict[str, int] = field(default_factory=lambda: dict.fromkeys(_KINDS, 0))
+    kept: dict[tuple[str, str], int] = field(default_factory=dict)
+
+    def keep(self, kind: str, reason: str) -> None:
+        self.kept[kind, reason] = self.kept.get((kind, reason), 0) + 1
+
+
+def _remove(path: Path, *, tree: bool = False) -> None:
+    """The only place this module deletes anything; a path already gone is fine."""
+    try:
+        if tree:
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def _payload_unchanged(item: Item, dl_dir: Path) -> bool:
+    """Re-check, under the lock, that the payload is still what was planned."""
+    payload = item.paths[-1]
+    parent = dl_dir / _GIT2_DIR if item.kind == "clone" else dl_dir
+    if payload.parent != parent or (item.kind == "clone" and not _is_real_dir(parent)):
+        return False
+    try:
+        st = os.lstat(payload)
+    except OSError:
+        return False
+    wanted = stat.S_ISDIR if item.kind == "clone" else stat.S_ISREG
+    return wanted(st.st_mode) and (st.st_size, st.st_mtime_ns) == item.stat_key
+
+
+def _apply_item(item: Item, dl_dir: Path, result: ApplyResult) -> None:
+    try:
+        fd = os.open(item.lock, os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        result.keep(item.kind, REASON_LOCK_UNAVAILABLE)
+        return
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            result.keep(item.kind, REASON_IN_USE)
+            return
+        if not _payload_unchanged(item, dl_dir):
+            result.keep(item.kind, REASON_CHANGED)
+            return
+        stamp, payload = item.paths
+        try:
+            _remove(stamp)
+            _remove(payload, tree=item.kind == "clone")
+        except OSError:
+            # The stamp goes first, so a failure here leaves a payload with no
+            # stamp, which BitBake treats as not downloaded and fetches again.
+            result.keep(item.kind, REASON_REMOVE_FAILED)
+            return
+        # Unlinked while still locked, as BitBake does on release.
+        _remove(item.lock)
+        result.removed[item.kind] += 1
+        result.removed_size[item.kind] += item.size
+    finally:
+        os.close(fd)
+
+
+def apply_plan(plan: Plan, dl_dir: Path) -> ApplyResult:
+    """Remove the planned items, skipping any that are locked or changed."""
+    result = ApplyResult()
+    for kind in _KINDS:
+        for item in plan.items[kind]:
+            _apply_item(item, dl_dir, result)
+    return result
+
+
+def _fmt_size(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024:
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TiB"
+
+
+def render_report(plan: Plan, result: ApplyResult | None, apply: bool) -> str:  # noqa: FBT001
+    """One block per class, then a closing dry-run or applied line."""
+    lines: list[str] = []
+    for kind in _KINDS:
+        lines.append(f"{kind}: {plan.status[kind]}")
+        if result is None:
+            count = len(plan.items[kind])
+            size = sum(i.size for i in plan.items[kind])
+            verb = "would remove"
+            kept = dict(plan.kept)
+        else:
+            count = result.removed[kind]
+            size = result.removed_size[kind]
+            verb = "removed"
+            kept = dict(plan.kept)
+            for key, n in result.kept.items():
+                kept[key] = kept.get(key, 0) + n
+        lines.append(f"  {verb} {count} item(s), {_fmt_size(size)}")
+        lines.extend(f"  kept {n}: {reason}" for (k, reason), n in sorted(kept.items()) if k == kind)
+    lines.append("applied" if apply else "dry run: nothing was removed (pass --apply to remove)")
+    return "\n".join(lines) + "\n"
