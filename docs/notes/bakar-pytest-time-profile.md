@@ -1095,52 +1095,82 @@ phase and sessionfinish, which is the coverage report and its finish step.
 
 #### Stability and equivalence checks of the finished tree
 
-Run on the dev host (not idle, so no wall time here is a measurement), from bash,
-in `git archive` copies under `/var/tmp/claude-code/bakar/2026-11-17-pytest-10s-stability/`.
-The control is the archive of `b8c28790`. The collected-ids, skip and coverage
-checks used the archive of `542f1596`; the stability loops were redone on the
-archive of `8c1e2cd3` (the current HEAD), after the first loop on `542f1596`
-recorded 1 failure in 30 full runs: run 16 failed in
-`tests/test_cli_monitor.py::test_watch_sleeps_for_the_requested_interval`
-(`slept == [0.01]` saw `[0.1, 0.1, 0.01]`, because the test patches the shared
-`time.sleep`), and commit `8c1e2cd3` changed that test to record only the
-calling thread's sleeps. Both trees were built with `uv sync --frozen --group dev`.
-The archives lack the untracked `CLAUDE.md` and `ARCHITECTURE.md` symlinks, the
-same for both trees.
+These checks were redone on the final tree, commit `32d35e78` (the code of the
+branch; only this note changes after it). Run on the dev host, which is shared and
+not idle, so no wall time here is a measurement, from bash, in `git archive` copies
+under `/var/tmp/claude-code/bakar/2026-11-18-pytest-10s-stability/`: `final/` for
+the foreground runs and `final-bg/` for the background loop, both built with
+`uv sync --frozen --group dev`. The control is the archive of `b8c28790` made
+for the earlier pass (`2026-11-17-pytest-10s-stability/control/`; its
+`tests/test_cli_monitor.py` still has `slept.append` and `tests/_proc_locks.py` is
+absent). The archives lack the untracked `CLAUDE.md` and `ARCHITECTURE.md`
+symlinks, the same for every tree. Every run's log begins with its provenance: the
+archive path, `git rev-parse HEAD` of the source (`32d35e78c9f6...`), the pytest
+rootdir (`final/` or `final-bg/`), `record_sleep` count 2 in
+`tests/test_cli_monitor.py`, `SlowestFirstDealing` count 2 in `tests/conftest.py`
+and `proc_locks_present`. A check over all 30 + 150 + 36 logs found no log without
+them. Each run's full output is its own file.
+
+Correction of the earlier record. The loops reported in the previous version of
+this section claimed the `8c1e2cd3` tree but ran the `542f1596` archive: their
+rootdir was `final/` of the earlier pass, `tests/test_cli_monitor.py` there still
+had `slept.append`, and the `8c1e2cd3` archive was never extracted. They proved
+nothing about the code that was committed, and one background full-suite run in
+that pass failed (rc 1, `1 failed, 8349 passed`) with no test recorded, because
+the loop kept only the last run's output. The counts, ids and coverage figures
+below replace them. For history: the first loop on `542f1596` had 1 failure in
+30 full runs (run 16, `tests/test_cli_monitor.py::test_watch_sleeps_for_the_requested_interval`,
+`slept == [0.01]` saw `[0.1, 0.1, 0.01]` because the test patches the shared
+`time.sleep`; commit `8c1e2cd3` changed it), and the first module pass of that
+round was the clean one (120 of 120 rc 0, with a background loop of 19 full runs
+of which one failed, unnamed).
 
 Collected ids missing: 0
-(`--collect-only -qq -n 0 --no-cov -p no:randomly`: control 8355 ids, finished tree
-8363 ids, 0 control ids absent from the finished tree, 8 ids new in it. Measured on
-`542f1596`; `8c1e2cd3` changes only a test body, and the id set was not re-collected.)
+(`--collect-only -qq -n 0 --no-cov -p no:randomly`: control 8355 ids, final tree
+8390 ids, 0 control ids absent from the final tree, 35 ids new in it: 3 in
+`tests/test_harness_gc.py`, 1 in `tests/test_console_width_env.py`, 6 in
+`tests/test_mounts_run_bounded.py` and 25 in `tests/test_slowest_first_dealing.py`.)
 
 Skip reasons identical: yes
 (`-n 0 --no-cov -p no:randomly -rs -q`, both rc 0: control 8342 passed, 13 skipped;
-finished tree 8350 passed, 13 skipped. The SKIPPED lines with line numbers stripped
-are 10 lines each and `diff` of the two sorted lists is empty. Measured on
-`542f1596`.)
+final tree 8377 passed, 13 skipped. The SKIPPED lines with line numbers stripped
+are 10 lines each and `diff` of the two sorted lists is empty.)
 
-Coverage floor: every default run printed `Required test coverage of 80.0% reached.`
-with a total of 91.62% (the 30 runs on `8c1e2cd3`, run 1) and 91.65% (the last run
-in the worktree).
+Coverage floor: one default run of the control tree printed `Required test
+coverage of 80.0% reached. Total coverage: 91.63%` (8342 passed, 13 skipped); the
+final tree printed 91.63% on full run 1 and 91.62% on run 2.
 
 Full runs failed: 0 of 30
-The command was `uv run --no-sync pytest -q` in the `8c1e2cd3` archive, 30 runs in
-a row, each run's rc logged, no stop on failure. All 30 were rc 0 (8350 passed, 13
-skipped).
+(`uv run --no-sync pytest -q` in the `final/` archive, 30 runs in a row, each run's
+rc logged, no stop on failure: all 30 rc 0, each `8377 passed, 13 skipped`. load1 was
+0.20 before the loop.)
 
-Timing-window modules, 30 runs each (`uv run --no-sync pytest -q --no-cov <module>`
-in the `8c1e2cd3` archive) while a full-suite loop ran from a second archive of the
-same commit: failures 0 of 30 for each of `tests/test_layer_delivery_remote.py`
-(the guarded-move module, found by name: it holds the guarded-move and build-guard
-tests), `tests/test_reuse_lock.py`, `tests/test_pin_probe.py` and
-`tests/test_eventlog_tail.py`. The module loop ran twice. In the first pass the
-background full-suite loop had 19 runs and one of them failed (rc 1, `1 failed,
-8349 passed`); that loop kept only the last run's output, so the failing test is
-not known. The module results of that pass were 120 of 120 rc 0. The second pass
-kept every failing background run's output: 120 of 120 module runs rc 0 and 20 of
-20 background full runs rc 0.
+Timing-window modules, 30 runs each (`uv run --no-sync pytest -n 0 --no-cov -q
+-p no:randomly <module>` in `final/`) while a full-suite loop ran continuously in
+`final-bg/`: failures 0 of 30 for each of `tests/test_layer_delivery_remote.py` (68
+tests), `tests/test_reuse_lock.py` (20), `tests/test_pin_probe.py` (24),
+`tests/test_eventlog_tail.py` (5) and `tests/test_mounts_run_bounded.py` (6); 150
+of 150 rc 0. The first run of each module was clean. load1 was 15.42 before this
+loop and 14.16 to 19.48 at the start of the background runs.
+
+Background full-suite loop: 36 runs, 35 rc 0 (`8377 passed, 13 skipped`) and 1
+failure. Run 12 (`bg-012.txt`, rc 1, `1 failed, 8376 passed, 13 skipped`) failed in
+`tests/integration/test_hashserv_real_daemon.py::test_hashserv_real_daemon_lifecycle`
+at `tests/integration/test_hashserv_real_daemon.py:85` with
+`AssertionError: ensure_running returned None on a workspace with bitbake-hashserv present`.
+load1 was 17.37 when that run started (32 CPUs, the module loop running beside it).
+The test passed in the other 35 background runs and in all 30 foreground runs.
+Probable cause, from reading the code and not reproduced: `ensure_running` in
+`src/bakar/hashserv.py` (lines 283-295) gives the freshly spawned daemon
+`_STARTUP_PROBE_DEADLINE_SECONDS = 2.0` (line 44) to start listening and returns
+`None` when it does not, so a daemon that needs more than 2 s to import and bind on a
+host at load1 17 fails the assertion. That is production code this change does not
+touch (the spec allows `src/bakar/mounts.py` only), so it stays a follow-up: raise or
+scale the startup deadline, or make the test wait for the daemon with its own bound.
+Earlier sightings of the same assertion were one pc3 control run at load1 7.08 and
+one dev-host default run.
 
 Production files changed: src/bakar/mounts.py
-(`git diff --name-only b8c28790..HEAD -- src` at `8c1e2cd3` lists only that path.
+(`git diff --name-only b8c28790..HEAD -- src` at `32d35e78` lists only that path.
 For information, the non-src, non-test files changed are `.github/workflows/ci.yml`,
 `docs/notes/bakar-pytest-time-profile.md` and `pyproject.toml`.)
