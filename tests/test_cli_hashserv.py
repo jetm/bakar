@@ -94,7 +94,7 @@ def test_start_failure(runner: _CliRunner, workspace: Path, monkeypatch: pytest.
     result = runner.invoke(app, ["hashserv", "start"])
 
     assert result.exit_code == 1, result.output
-    assert "bitbake-hashserv not found or startup probe failed" in result.stderr
+    assert "bitbake-hashserv not found, derived port busy or startup probe failed" in result.stderr
 
 
 def test_stop_when_running(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:

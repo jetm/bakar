@@ -52,7 +52,7 @@ def start(
         raise typer.Exit(code=1) from exc
     if url is None:
         console.print(
-            f"failed to start hashserv: bitbake-hashserv not found or startup probe failed; "
+            f"failed to start hashserv: bitbake-hashserv not found, derived port busy or startup probe failed; "
             f"see {cfg.hashserv_state_key}/.bakar/hashserv.stderr"
         )
         raise typer.Exit(code=1)
