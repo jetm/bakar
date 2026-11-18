@@ -32,6 +32,7 @@ _STR_FIELDS = {
     "sstate_mirrors",
     "sstate_mirror_url",
     "dl_mirror_url",
+    "dl_mirror_paths",
     "cache_push_target",
     "scheduler",
     "ccache_dir",
@@ -129,6 +130,7 @@ class UserConfig:
     sstate_mirrors: str | None = None
     sstate_mirror_url: str | None = None
     dl_mirror_url: str | None = None
+    dl_mirror_paths: str | None = None
     cache_push_target: str | None = None
     scheduler: str | None = None
     sccache_dist: bool = False
@@ -335,6 +337,7 @@ _BUILD_KEYS = {
     "sstate_mirrors": "sstate_mirrors",
     "sstate_mirror_url": "sstate_mirror_url",
     "dl_mirror_url": "dl_mirror_url",
+    "dl_mirror_paths": "dl_mirror_paths",
     "cache_push_target": "cache_push_target",
     "scheduler": "scheduler",
     "sccache_dist": "sccache_dist",
@@ -645,6 +648,17 @@ def load_user_config(path: Path | None = None) -> UserConfig:
         _dump_raw(path, data)
 
     values = walk_schema(data, path, USER_CONFIG_TABLES, top_level_extra=_TOP_LEVEL_EXTRA)
+
+    mirror_paths = values.get("dl_mirror_paths")
+    if mirror_paths is not None:
+        entries = str(mirror_paths).split()
+        if not entries:
+            raise ValueError(f"{path}: 'build.dl_mirror_paths' must list at least one absolute directory")
+        for entry in entries:
+            if not entry.startswith("/"):
+                raise ValueError(f"{path}: 'build.dl_mirror_paths' entry {entry!r} is not an absolute path")
+            if ".." in entry.split("/"):
+                raise ValueError(f"{path}: 'build.dl_mirror_paths' entry {entry!r} contains a '..' component")
 
     build_section = data.get("build", {})
     if isinstance(build_section, dict):

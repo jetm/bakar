@@ -61,6 +61,7 @@ def test_set_then_load_user_config_round_trip(tmp_path: Path) -> None:
         "build.capture_graph": "false",
         "build.hashserv": "true",
         "build.dl_mirror_url": "http://hub.example:8080",
+        "build.dl_mirror_paths": "/mnt/a /mnt/b",
         "build.cache_push_target": "hub.example:/srv/cache",
         "build.ccache_shared": "true",
         "build.ccache_dir": "/data/ccache",
