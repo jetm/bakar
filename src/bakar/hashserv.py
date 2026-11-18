@@ -21,6 +21,7 @@ Two locations are kept deliberately separate:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -221,7 +222,9 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
     Returns ``f"ws://localhost:{port}"`` when the daemon is reachable (either
     already running, or freshly spawned and passed the TCP startup probe).
     Returns ``None`` silently when the workspace bitbake-hashserv binary has
-    not been synced yet, or when a fresh spawn never reached the TCP probe
+    not been synced yet, when the derived port cannot be bound (the reason is
+    written to ``<state_dir>/hashserv.stderr`` and nothing is spawned), or
+    when a fresh spawn never reached the TCP probe
     success within ``_STARTUP_PROBE_DEADLINE_SECONDS`` (in which case the
     daemon's stderr is captured to ``<state_dir>/hashserv.stderr`` and any
     surviving child process is sent SIGTERM).
@@ -262,6 +265,22 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
 
     port = _workspace_port(state_key)
     state_dir.mkdir(parents=True, exist_ok=True)
+
+    # A foreign listener (or any unbindable address) on the derived port would
+    # make the spawned daemon exit while the TCP probe still succeeds against
+    # the other process. Refuse before spawning and leave no PID/port file.
+    conflict = central_service.bind_conflict(bind_host, port)
+    if conflict is not None:
+        # The reason is a diagnostic: a failing write (full disk, quota) must not
+        # turn the documented no-URL fallback into an exception in the caller.
+        with (
+            contextlib.suppress(OSError),
+            daemon_log.stderr_target(str(binary), state_dir, log_path=state_dir / _STDERR_FILENAME) as conflict_fh,
+        ):
+            if conflict_fh is not None:
+                conflict_fh.write(f"bakar: {conflict}; bitbake-hashserv was not started\n".encode())
+        return None
+
     # Redirect daemon stderr directly to a log file rather than PIPE so the
     # daemon never blocks when the kernel pipe buffer fills (default 64 KiB)
     # on verbose or long-running builds. stderr_target closes the handle even
@@ -291,6 +310,12 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
                 return None
             time.sleep(0.1)
             continue
+        # A listener that took the port after the bind test can answer the probe while
+        # our daemon is still dying on address-in-use. This narrows that window
+        # (it cannot close it: the daemon needs about 100 ms to exit).
+        if proc.poll() is not None:
+            _abort_startup(proc, state_dir)
+            return None
         pid_file.write_text(f"{proc.pid}\n")
         port_file.write_text(f"{port}\n")
         return f"ws://{bind_host}:{port}"

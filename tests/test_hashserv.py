@@ -10,10 +10,14 @@ pipeline.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import os
 import shutil
+import socket
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -21,7 +25,14 @@ import bakar.mounts as mounts_module
 from bakar import central_service
 from bakar.hashserv import _find_binary, _workspace_port, is_running
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
+    from types import ModuleType
+
 pytestmark = pytest.mark.unit
+
+# Captured before the autouse fixture below replaces it, for the test that needs the real bind test.
+_real_bind_conflict = central_service.bind_conflict
 
 
 @pytest.fixture(autouse=True)
@@ -497,6 +508,214 @@ def test_ensure_running_aborts_when_probe_times_out(
     stderr_file = tmp_path / ".bakar" / "hashserv.stderr"
     assert stderr_file.exists()
     assert sigterm_targets == [12345]
+
+
+def _forbid_popen(hashserv_mod: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Popen must not be called")
+
+    monkeypatch.setattr(hashserv_mod.subprocess, "Popen", _boom)
+
+
+def test_ensure_running_refuses_when_port_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reported bind conflict returns None, spawns nothing, records the reason."""
+    from bakar import hashserv as hashserv_mod
+
+    _create_workspace_binary(tmp_path)
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    port = _workspace_port(tmp_path)
+    monkeypatch.setattr(
+        central_service,
+        "bind_conflict",
+        lambda _h, p: f"localhost:{p} cannot be bound: address already in use",
+    )
+    _forbid_popen(hashserv_mod, monkeypatch)
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) is None
+
+    assert not (tmp_path / ".bakar" / "hashserv.pid").exists()
+    assert not (tmp_path / ".bakar" / "hashserv.port").exists()
+    text = (tmp_path / ".bakar" / "hashserv.stderr").read_text()
+    assert f"{port} cannot be bound" in text
+    assert "bitbake-hashserv was not started" in text
+
+
+@pytest.mark.parametrize("fail_at", ["write", "close"])
+def test_ensure_running_refusal_survives_a_failing_reason_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_at: str,
+) -> None:
+    """A full disk while recording the reason must not raise out of the refusal.
+
+    A buffered write usually succeeds and the ENOSPC arrives when the handle is
+    closed, so the failure is injected at either point.
+    """
+    from bakar import hashserv as hashserv_mod
+
+    class _Handle:
+        def write(self, _data: bytes) -> None:
+            if fail_at == "write":
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+    @contextlib.contextmanager
+    def _target(*_args: object, **_kwargs: object) -> Generator[_Handle]:
+        yield _Handle()
+        if fail_at == "close":
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    _create_workspace_binary(tmp_path)
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    monkeypatch.setattr(central_service, "bind_conflict", lambda _h, p: f"localhost:{p} cannot be bound")
+    monkeypatch.setattr(hashserv_mod.daemon_log, "stderr_target", _target)
+    _forbid_popen(hashserv_mod, monkeypatch)
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) is None
+
+
+def test_ensure_running_binary_lookup_precedes_bind_test(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no binary synced the start returns None before any bind test runs."""
+    from bakar import hashserv as hashserv_mod
+
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("bind_conflict must not be called before the binary lookup")
+
+    monkeypatch.setattr(central_service, "bind_conflict", _boom)
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) is None
+
+
+def test_ensure_running_aborts_when_daemon_dies_after_probe_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe answered while the spawned daemon has already exited records no daemon."""
+    from bakar import hashserv as hashserv_mod
+
+    _create_workspace_binary(tmp_path)
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    # First poll (loop top): alive. Second poll (after the probe answered): exited.
+    fake_proc = _FakeProc(pid=12345, poll_returns=[None, 1])
+    monkeypatch.setattr(hashserv_mod.subprocess, "Popen", lambda *_a, **_k: fake_proc)
+    monkeypatch.setattr(central_service.socket, "create_connection", lambda *_a, **_k: _FakeSocket())
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) is None
+    assert not (tmp_path / ".bakar" / "hashserv.pid").exists()
+    assert not (tmp_path / ".bakar" / "hashserv.port").exists()
+
+
+def test_ensure_running_refuses_a_real_foreign_listener(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real listener on the derived port is refused, not reported as the daemon."""
+    from bakar import hashserv as hashserv_mod
+
+    _create_workspace_binary(tmp_path)
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    monkeypatch.setattr(central_service, "bind_conflict", _real_bind_conflict)
+    _forbid_popen(hashserv_mod, monkeypatch)
+
+    foreign = socket.socket()
+    state_key = None
+    for i in range(64):
+        key = tmp_path / f"ws{i}"
+        try:
+            foreign.bind(("127.0.0.1", _workspace_port(key)))
+        except OSError:
+            continue
+        foreign.listen()
+        state_key = key
+        break
+    with foreign:
+        if state_key is None:
+            pytest.skip("no derived port could be taken for a listener")
+        assert hashserv_mod.ensure_running(state_key, binary_root=tmp_path) is None
+        port = foreign.getsockname()[1]
+
+    assert not (state_key / ".bakar" / "hashserv.pid").exists()
+    assert not (state_key / ".bakar" / "hashserv.port").exists()
+    assert str(port) in (state_key / ".bakar" / "hashserv.stderr").read_text()
+
+
+@pytest.mark.parametrize("bind_host", ["localhost", "10.42.0.1"])
+def test_ensure_running_checks_bind_once_with_derived_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bind_host: str,
+) -> None:
+    """A free port calls bind_conflict exactly once with (bind_host, derived port)."""
+    from bakar import hashserv as hashserv_mod
+
+    _create_workspace_binary(tmp_path)
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    calls: list[tuple[str, int]] = []
+
+    def _record(host: str, port: int) -> None:
+        calls.append((host, port))
+
+    monkeypatch.setattr(central_service, "bind_conflict", _record)
+    monkeypatch.setattr(
+        hashserv_mod.subprocess,
+        "Popen",
+        lambda *_a, **_k: _FakeProc(pid=1, poll_returns=[0], stderr_bytes=b""),
+    )
+
+    hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path, bind_host=bind_host)
+
+    assert calls == [(bind_host, _workspace_port(tmp_path))]
+
+
+def test_ensure_running_skips_bind_test_when_already_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live recorded daemon returns its URL without any bind test."""
+    from bakar import hashserv as hashserv_mod
+
+    monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: True)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    monkeypatch.setattr(hashserv_mod, "_read_port", lambda _root: 50000)
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("bind_conflict must not be called")
+
+    monkeypatch.setattr(central_service, "bind_conflict", _boom)
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) == "ws://localhost:50000"
+
+
+def test_ensure_running_nfs_refusal_precedes_bind_test(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The NFS refusal raises before bind_conflict is consulted."""
+    from bakar import hashserv as hashserv_mod
+    from bakar.hashserv import NetworkStateDirError
+
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: True)
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("bind_conflict must not be called")
+
+    monkeypatch.setattr(central_service, "bind_conflict", _boom)
+
+    with pytest.raises(NetworkStateDirError):
+        hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path)
 
 
 def test_ensure_running_handles_immediate_exit(
