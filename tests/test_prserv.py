@@ -10,7 +10,9 @@ host and return once the TCP probe succeeds.
 from __future__ import annotations
 
 import os
+import socket
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -22,13 +24,20 @@ from bakar.hashserv import NetworkStateDirError
 from bakar.prserv import _find_binary, _workspace_port
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 pytestmark = pytest.mark.unit
 
 
-def _own(monkeypatch: pytest.MonkeyPatch, daemons: list[OwnedDaemon]) -> None:
-    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _tool, _db: daemons)
+def _stamp(daemon: OwnedDaemon, database: Path, host: str = "localhost") -> OwnedDaemon:
+    """Give ``daemon`` the ``--host``/``--port`` argv a real bitbake-prserv carries."""
+    port = _workspace_port(database.parent.parent)
+    return OwnedDaemon(pid=daemon.pid, argv=(*daemon.argv, "--host", host, "--port", str(port)))
+
+
+def _own(monkeypatch: pytest.MonkeyPatch, daemons: list[OwnedDaemon], host: str = "localhost") -> None:
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _tool, db: [_stamp(d, db, host) for d in daemons])
 
 
 def _listening(monkeypatch: pytest.MonkeyPatch, value: bool) -> None:
@@ -120,7 +129,7 @@ def test_find_binary_returns_none_when_absent(tmp_path: Path) -> None:
 def test_ensure_running_returns_addr_when_already_listening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A reachable daemon short-circuits: return the address, never spawn."""
     monkeypatch.setattr(central_service.socket, "create_connection", lambda _addr, timeout: _FakeSocket())
-    _own(monkeypatch, [_DAEMON])
+    _own(monkeypatch, [_DAEMON], host="10.42.0.1")
     # network_state_reason's is_path_on_nfs classification now spawns a real
     # `realpath` child (bug 1's bounded, symlink-following resolution) -
     # stub it so the global subprocess.Popen patch below, meant only to
@@ -197,7 +206,7 @@ def test_is_running_probes_loopback_for_bind_only_host(tmp_path: Path, monkeypat
         return _FakeSocket()
 
     monkeypatch.setattr(central_service.socket, "create_connection", _probe)
-    _own(monkeypatch, [_DAEMON])
+    _own(monkeypatch, [_DAEMON], host="0.0.0.0")
 
     assert prserv.is_running(tmp_path, bind_host="0.0.0.0") is True
     assert probed == [("127.0.0.1", _workspace_port(tmp_path))]
@@ -430,8 +439,8 @@ def test_probe_timeout_keeps_pidfile_when_a_daemon_is_starting(tmp_path: Path, m
     monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
     _listening(monkeypatch, False)
     # Nothing owned at the gating, a daemon of the state key visible after the probe timed out.
-    answers = iter([[], [_DAEMON]])
-    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: next(answers))
+    answers = iter([[], [], [_DAEMON]])
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, db: [_stamp(d, db) for d in next(answers)])
     monkeypatch.setattr(prserv, "_STARTUP_PROBE_DEADLINE_SECONDS", 0.2)
     monkeypatch.setattr(prserv.subprocess, "Popen", lambda *_a, **_k: object())
     cleans = _recorded_pidfile_cleans(monkeypatch)
@@ -457,3 +466,398 @@ def test_probe_timeout_cleans_pidfile_when_no_daemon_exists(tmp_path: Path, monk
 
 def test_binary_available_removed() -> None:
     assert not hasattr(prserv, "binary_available")
+
+
+# --- stop -------------------------------------------------------------------
+
+
+def _daemon_world(monkeypatch: pytest.MonkeyPatch, pids: list[int]) -> list[tuple[int, int]]:
+    """Model live daemons: ``os.kill`` removes a pid, the finder and port reflect it."""
+    alive = set(pids)
+    kills: list[tuple[int, int]] = []
+
+    def _kill(pid: int, sig: int) -> None:
+        kills.append((pid, sig))
+        alive.discard(pid)
+
+    monkeypatch.setattr(prserv.os, "kill", _kill)
+    monkeypatch.setattr(
+        central_service,
+        "find_owned_daemons",
+        lambda _t, db: [_stamp(OwnedDaemon(pid=p, argv=("bitbake-prserv",)), db) for p in sorted(alive)],
+    )
+    monkeypatch.setattr(central_service, "is_listening", lambda _h, _p, **_k: bool(alive))
+    return kills
+
+
+@pytest.fixture
+def _pidfile(tmp_path: Path) -> Iterator[Path]:
+    path = type(tmp_path)("/tmp") / f"PRServer_{socket.gethostbyname('localhost')}_{_workspace_port(tmp_path)}.pid"
+    path.write_text("11\n")
+    yield path
+    path.unlink(missing_ok=True)
+
+
+def test_stop_terminates_real_pidfileless_daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import signal
+    import subprocess
+    import sys
+
+    script = tmp_path / "bitbake-prserv"
+    script.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
+    script.chmod(0o755)
+    database = tmp_path / ".bakar" / "prserv.sqlite3"
+    port = str(_workspace_port(tmp_path))
+    child = subprocess.Popen([str(script), "--host", "localhost", "--port", port, "-f", str(database)])
+    try:
+        deadline = time.monotonic() + 5
+        while not central_service.find_owned_daemons("bitbake-prserv", database):
+            assert time.monotonic() < deadline, "child never visible in the process table"
+            time.sleep(0.05)
+        monkeypatch.setattr(central_service, "is_listening", lambda _h, _p, **_k: False)
+        monkeypatch.setattr(prserv, "_STOP_DEADLINE_SECONDS", 0.2)
+        # Reaping the child lets the finder see it gone (a zombie reads an empty cmdline).
+        reaper_calls: list[int] = []
+        real_find = central_service.find_owned_daemons
+
+        def _find(tool: str, db: Path) -> list[OwnedDaemon]:
+            if child.poll() is None and reaper_calls:
+                child.wait(timeout=5)
+            reaper_calls.append(1)
+            return real_find(tool, db)
+
+        monkeypatch.setattr(central_service, "find_owned_daemons", _find)
+
+        assert prserv.stop(tmp_path, binary_root=tmp_path) is True
+        assert child.wait(timeout=5) == -signal.SIGTERM
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            child.wait(timeout=5)
+
+
+def test_stop_signals_every_found_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    kills = _daemon_world(monkeypatch, [11, 12])
+
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is True
+    assert sorted(kills) == [(11, 15), (12, 15)]
+
+
+def test_stop_uses_bitbake_stop_without_signal_when_pidfile_and_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _pidfile: Path
+) -> None:
+    _create_binary(tmp_path)
+    kills = _daemon_world(monkeypatch, [11])
+    runs: list[list[str]] = []
+
+    def _run(argv: list[str], **_k: object) -> None:
+        runs.append(argv)
+        kills_before_stop.append(len(kills))
+        kills.clear()
+        # bitbake's --stop ends the daemon: drop it from the world.
+        monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: [])
+        monkeypatch.setattr(central_service, "is_listening", lambda _h, _p, **_k: False)
+
+    kills_before_stop: list[int] = []
+    monkeypatch.setattr(prserv.subprocess, "run", _run)
+
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is True
+    assert len(runs) == 1
+    assert "--stop" in runs[0]
+    assert kills_before_stop == [0]
+    assert kills == []
+
+
+def test_stop_terminates_second_daemon_left_after_bitbake_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _pidfile: Path
+) -> None:
+    _create_binary(tmp_path)
+    kills = _daemon_world(monkeypatch, [11, 12])
+    monkeypatch.setattr(prserv, "_STOP_DEADLINE_SECONDS", 0.2)
+    order: list[str] = []
+
+    def _run(*_a: object, **_k: object) -> None:
+        order.append("stop")
+
+    monkeypatch.setattr(prserv.subprocess, "run", _run)
+    real_kill = prserv.os.kill
+    monkeypatch.setattr(prserv.os, "kill", lambda p, s: (order.append("kill"), real_kill(p, s))[1])
+
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is True
+    assert order[0] == "stop"
+    assert sorted(kills) == [(11, 15), (12, 15)]
+
+
+def test_stop_pidfile_but_no_binary_sends_sigterm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _pidfile: Path
+) -> None:
+    kills = _daemon_world(monkeypatch, [11])
+    _no_run = pytest.fail
+    monkeypatch.setattr(prserv.subprocess, "run", lambda *_a, **_k: _no_run("must not run --stop"))
+
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is True
+    assert kills == [(11, 15)]
+
+
+def test_stop_foreign_listener_returns_false_and_removes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _own(monkeypatch, [])
+    _listening(monkeypatch, True)
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is False
+    assert cleans == []
+
+
+def test_stop_nothing_found_and_port_closed_cleans_pidfiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _own(monkeypatch, [])
+    _listening(monkeypatch, False)
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is False
+    assert cleans == [_workspace_port(tmp_path)]
+
+
+def test_stop_survivor_keeps_pidfile_returns_true_and_never_escalates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kills: list[tuple[int, int]] = []
+    monkeypatch.setattr(prserv.os, "kill", lambda p, s: kills.append((p, s)))
+    _own(monkeypatch, [_DAEMON])
+    _listening(monkeypatch, True)
+    monkeypatch.setattr(prserv, "_STOP_DEADLINE_SECONDS", 0.2)
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is True
+    assert cleans == []
+    assert kills == [(4242, 15)]
+
+
+def test_stop_ignores_vanished_and_foreign_processes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _kill(pid: int, _sig: int) -> None:
+        raise ProcessLookupError if pid == 11 else PermissionError
+
+    monkeypatch.setattr(prserv.os, "kill", _kill)
+    _own(monkeypatch, [OwnedDaemon(pid=11, argv=()), OwnedDaemon(pid=12, argv=())])
+    _listening(monkeypatch, False)
+    monkeypatch.setattr(prserv, "_STOP_DEADLINE_SECONDS", 0.2)
+
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is True
+
+
+# --- ownership requires the derived port and host ----------------------------
+
+
+def _other_port_daemon(monkeypatch: pytest.MonkeyPatch, state_key: Path, *, host: str = "localhost") -> None:
+    """A daemon on this state key's database that serves a different port."""
+    other = str(_workspace_port(state_key) + 1)
+    daemon = OwnedDaemon(pid=4242, argv=("python3", "bitbake-prserv", "--start", "--host", host, "--port", other))
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: [daemon])
+
+
+def test_daemon_on_other_port_refused_naming_pid_without_spawn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    _other_port_daemon(monkeypatch, tmp_path)
+    _listening(monkeypatch, True)
+    _no_spawn(monkeypatch)
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+
+    assert prserv.ensure_running(tmp_path, binary_root=tmp_path) is None
+    assert "bitbake-prserv pid 4242 already serves" in (tmp_path / ".bakar" / "prserv.stderr").read_text()
+    assert cleans == []
+    assert prserv.is_running(tmp_path) is False
+
+
+def test_foreign_listener_without_state_key_daemon_gets_foreign_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    _own(monkeypatch, [])
+    _listening(monkeypatch, True)
+    _no_spawn(monkeypatch)
+
+    assert prserv.ensure_running(tmp_path, binary_root=tmp_path) is None
+    assert "is held by a process that is not this state key's bitbake-prserv" in (
+        (tmp_path / ".bakar" / "prserv.stderr").read_text()
+    )
+
+
+def test_daemon_on_other_host_refused_not_respawned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    daemon = OwnedDaemon(
+        pid=4242, argv=("bitbake-prserv", "--host", "10.0.0.9", "--port", str(_workspace_port(tmp_path)))
+    )
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: [daemon])
+    _listening(monkeypatch, True)
+    _no_spawn(monkeypatch)
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+
+    assert prserv.ensure_running(tmp_path, binary_root=tmp_path) is None
+    stderr = (tmp_path / ".bakar" / "prserv.stderr").read_text()
+    assert "pid 4242" in stderr
+    assert "on 10.0.0.9:" in stderr
+    assert "run 'bakar prserv stop'" in stderr
+    assert cleans == []
+    assert prserv.is_running(tmp_path) is False
+
+
+def test_stop_signals_daemon_bound_to_other_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    daemon = OwnedDaemon(
+        pid=4242, argv=("bitbake-prserv", "--host", "10.0.0.9", "--port", str(_workspace_port(tmp_path)))
+    )
+    kills: list[tuple[int, int]] = []
+    monkeypatch.setattr(prserv.os, "kill", lambda p, s: kills.append((p, s)))
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: [daemon])
+    _listening(monkeypatch, False)
+    monkeypatch.setattr(prserv, "_STOP_DEADLINE_SECONDS", 0.2)
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is True
+    assert kills == [(4242, 15)]
+    assert cleans == []
+
+
+def test_wait_stopped_waits_while_other_host_daemon_lives(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    other = OwnedDaemon(pid=4242, argv=("bitbake-prserv", "--host", "10.0.0.9", "--port", "1"))
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: [other])
+    _listening(monkeypatch, False)
+    monkeypatch.setattr(prserv, "_STOP_DEADLINE_SECONDS", 0.2)
+
+    assert prserv._wait_stopped("localhost", 1, tmp_path / "db") is False
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: [])
+    assert prserv._wait_stopped("localhost", 1, tmp_path / "db") is True
+
+
+def test_probe_timeout_keeps_pidfile_with_live_other_host_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    _listening(monkeypatch, False)
+    other = OwnedDaemon(
+        pid=4242, argv=("bitbake-prserv", "--host", "10.0.0.9", "--port", str(_workspace_port(tmp_path)))
+    )
+    answers = iter([[], [], [other]])
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: next(answers))
+    monkeypatch.setattr(prserv, "_STARTUP_PROBE_DEADLINE_SECONDS", 0.2)
+    monkeypatch.setattr(prserv.subprocess, "Popen", lambda *_a, **_k: object())
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+
+    assert prserv.ensure_running(tmp_path, binary_root=tmp_path) is None
+    assert cleans == [_workspace_port(tmp_path)]
+
+
+def test_pidfile_check_requires_the_exact_bitbake_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    port = _workspace_port(tmp_path)
+    ip = socket.gethostbyname("localhost")
+    exact = type(tmp_path)("/tmp") / f"PRServer_{ip}_{port}.pid"
+    elsewhere = type(tmp_path)("/tmp") / f"PRServer_10.99.99.99_{port}.pid"
+    daemons = [OwnedDaemon(pid=11, argv=())]
+    elsewhere.write_text("11\n")
+    try:
+        assert prserv._own_pidfile_matches("localhost", port, daemons) is False
+        exact.write_text("11\n")
+        assert prserv._own_pidfile_matches("localhost", port, daemons) is True
+        monkeypatch.setattr(prserv.socket, "gethostbyname", lambda _h: (_ for _ in ()).throw(OSError("no dns")))
+        assert prserv._own_pidfile_matches("localhost", port, daemons) is False
+    finally:
+        exact.unlink(missing_ok=True)
+        elsewhere.unlink(missing_ok=True)
+
+
+def test_daemon_argv_without_port_is_not_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    daemon = OwnedDaemon(pid=4242, argv=("bitbake-prserv", "--start", "--host", "localhost", "--port"))
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: [daemon])
+    _listening(monkeypatch, True)
+    assert prserv.is_running(tmp_path) is False
+
+
+def test_matching_port_and_host_is_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _own(monkeypatch, [_DAEMON])
+    _listening(monkeypatch, True)
+    assert prserv.is_running(tmp_path) is True
+
+
+def test_stop_signals_daemon_on_other_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _other_port_daemon(monkeypatch, tmp_path)
+    _listening(monkeypatch, False)
+    kills: list[tuple[int, int]] = []
+    monkeypatch.setattr(prserv.os, "kill", lambda p, s: kills.append((p, s)))
+    monkeypatch.setattr(prserv, "_STOP_DEADLINE_SECONDS", 0.2)
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is True
+    assert kills == [(4242, 15)]
+
+
+# --- stop: bitbake --stop only for a trusted pidfile --------------------------
+
+
+def test_stop_ignores_pidfile_naming_other_pid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _pidfile: Path) -> None:
+    _create_binary(tmp_path)
+    _pidfile.write_text("999\n")
+    kills = _daemon_world(monkeypatch, [11])
+    monkeypatch.setattr(prserv.subprocess, "run", lambda *_a, **_k: pytest.fail("must not run --stop"))
+
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is True
+    assert kills == [(11, 15)]
+
+
+def test_stop_ignores_pidfile_owned_by_other_uid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _pidfile: Path
+) -> None:
+    _create_binary(tmp_path)
+    kills = _daemon_world(monkeypatch, [11])
+    real_stat = type(_pidfile).stat
+
+    def _stat(self: Path, **kw: object) -> object:
+        result = real_stat(self, **kw)
+        if self == _pidfile:
+            return SimpleNamespace(st_uid=result.st_uid + 1)
+        return result
+
+    monkeypatch.setattr(type(_pidfile), "stat", _stat)
+    monkeypatch.setattr(prserv.subprocess, "run", lambda *_a, **_k: pytest.fail("must not run --stop"))
+
+    assert prserv.stop(tmp_path, binary_root=tmp_path) is True
+    assert kills == [(11, 15)]
+
+
+# --- spawn branch re-checks for a daemon that raced in ------------------------
+
+
+def test_daemon_started_during_spawn_prep_keeps_pidfile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    _listening(monkeypatch, False)
+    answers = iter([[], [_DAEMON]])
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, db: [_stamp(d, db) for d in next(answers)])
+    monkeypatch.setattr(central_service, "wait_listening", lambda _h, _p, _d: True)
+    _no_spawn(monkeypatch)
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+
+    port = _workspace_port(tmp_path)
+    assert prserv.ensure_running(tmp_path, binary_root=tmp_path) == f"localhost:{port}"
+    assert cleans == []
+
+
+def test_daemon_on_other_host_started_during_spawn_prep_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _create_binary(tmp_path)
+    monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
+    _listening(monkeypatch, False)
+    port = _workspace_port(tmp_path)
+    raced = OwnedDaemon(pid=4242, argv=("bitbake-prserv", "--host", "127.0.0.2", "--port", str(port)))
+    answers = iter([[], [raced]])
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda _t, _d: next(answers))
+    _no_spawn(monkeypatch)
+    cleans = _recorded_pidfile_cleans(monkeypatch)
+
+    assert prserv.ensure_running(tmp_path, binary_root=tmp_path) is None
+    stderr = (tmp_path / ".bakar" / "prserv.stderr").read_text()
+    assert "pid 4242" in stderr
+    assert "run 'bakar prserv stop'" in stderr
+    assert cleans == []
