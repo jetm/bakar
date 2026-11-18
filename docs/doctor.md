@@ -217,8 +217,8 @@ are not forecast`.
 
 ## Cache-sharing checks
 
-Three checks cover the live push of finished downloads from builders to the
-store host (see
+Five checks cover the live push of finished downloads from builders to the
+store host and the mounted downloads directories (see
 [the capability note](capabilities/shared-cache-hub-push.md)).
 
 | Check | Severity | Asserts | Fix hint |
@@ -226,6 +226,8 @@ store host (see
 | `cache-push-service` | WARN | On a host with `cache_push_target` set, the user unit `bakar-cache-push.service` is active and its oldest queued entry is under 60 minutes old | `systemctl --user enable --now bakar-cache-push.service` |
 | `sstate-mirror-shared-mount` | BLOCK | The effective `SSTATE_MIRRORS` names no http(s) mirror while the sstate directory is on NFS | Use a `file://` mirror, or move the sstate directory off NFS |
 | `store-stale-tarballs` | WARN | On a host with `cache_push_target` unset, no `git2_*.tar.gz.tmp` file in the top level of the downloads directory is older than one hour | Remove the named temp files |
+| `dl-mirror-paths-ready` | WARN | On a host-mode build with `dl_mirror_paths` set, every listed directory is mounted and readable | See [the dl-mirror feature](features/dl-mirror.md) |
+| `dl-dir-size` | WARN | On a host with `cache_push_target` set, the regular files in the downloads directory total 60 GB or less | `bakar cache prune-downloads` |
 
 Outcomes:
 
@@ -241,6 +243,12 @@ Outcomes:
 | `sstate-mirror-shared-mount` | No http(s) mirror, or a local sstate directory | PASS / INFO |
 | `store-stale-tarballs` | One or more stale temp tarballs (count and up to 10 names) | FAIL / WARN |
 | `store-stale-tarballs` | None, or `cache_push_target` set (pusher host) | PASS or SKIP / INFO |
+| `dl-mirror-paths-ready` | Every directory in `dl_mirror_paths` is ready | PASS / INFO |
+| `dl-mirror-paths-ready` | One or more directories not ready (each named with its state) | FAIL / WARN |
+| `dl-mirror-paths-ready` | `dl_mirror_paths` unset, or a container build | SKIP / INFO |
+| `dl-dir-size` | Downloads directory over 60 GB | FAIL / WARN |
+| `dl-dir-size` | Downloads directory at or under 60 GB | PASS / INFO |
+| `dl-dir-size` | Not measured (walk exceeded 5 s, or directory unreadable), or `cache_push_target` unset (store host) | SKIP / INFO |
 
 Only the http-over-NFS `sstate-mirror-shared-mount` outcome can stop a build: a
 mirror fetch into a shared sstate directory takes a lock inside it. An inactive

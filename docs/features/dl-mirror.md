@@ -17,6 +17,23 @@ The feature writes one key, and `--set` accepts only it for this feature:
 
 - `build.dl_mirror_url` (downloads mirror URL; required)
 
+## Use the mounted store as a file mirror
+
+The store can also be read as a local directory instead of over http. This applies to host-mode builds only; container builds do not use it.
+
+What the host needs:
+
+1. The store's read-only share mounted on the host.
+2. `dl_mirror_paths` set to the mounted downloads directory first, then the incoming directory, as a whitespace-separated list.
+
+With those set, bakar activates the hub-mount overlay, which puts each directory in front of upstream as a `file://` mirror for http(s), ftp, crate and gomod sources. Git and gitsm sources are not served.
+
+A hit becomes a symbolic link in the local downloads directory, so no copy is made. A directory that is not mounted is skipped and the fetch falls back to the http store, then to upstream. The push watcher ignores these links, so they are never pushed back to the store.
+
+`bakar doctor` runs `dl-mirror-paths-ready` and warns when a listed directory is not ready.
+
+Downloads already on disk that the store holds are not removed automatically. Run `bakar cache prune-downloads` to list what can be reclaimed; it removes nothing unless you add `--apply`.
+
 ## Turn off
 
 Run `bakar init --disable dl-mirror`. It unsets `build.dl_mirror_url` in your user config. It does not touch the store or any file already downloaded.
