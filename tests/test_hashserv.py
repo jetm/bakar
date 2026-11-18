@@ -14,7 +14,10 @@ import contextlib
 import errno
 import os
 import shutil
+import signal
 import socket
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -853,6 +856,7 @@ def test_stop_force_kills_after_grace(
     monkeypatch.setattr(hashserv_mod.os, "kill", _fake_kill)
     # Daemon never dies, so the grace polls all see True and SIGKILL fires.
     monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: True)
+    monkeypatch.setattr(hashserv_mod, "_pid_alive", lambda _pid: True)
     # Without this the test would block for _TERM_GRACE_SECONDS (5s) of real
     # sleep before the SIGKILL fallback triggers.
     monkeypatch.setattr(hashserv_mod.time, "sleep", lambda _s: None)
@@ -1148,6 +1152,7 @@ def _adoption_setup(  # noqa: PLR0913
     argv_bind: str | None,
     answers: bool = True,
     db_exists: bool = True,
+    alive: bool = True,
     pid: int = 4242,
     bind_host_calls: list[tuple[str, int]] | None = None,
 ) -> ModuleType:
@@ -1162,6 +1167,7 @@ def _adoption_setup(  # noqa: PLR0913
         argv += ("--bind", argv_bind)
     argv += ("--database", str(state_dir / "hashserv.db"))
     monkeypatch.setattr(hashserv_mod, "is_running", lambda _root: False)
+    monkeypatch.setattr(hashserv_mod, "_pid_alive", lambda _pid: alive)
     monkeypatch.setattr(mounts_module, "is_path_on_nfs", lambda _p: False)
     monkeypatch.setattr(
         central_service,
@@ -1250,16 +1256,49 @@ def test_ensure_running_refuses_unadoptable_daemon(
 def test_ensure_running_cluster_bind_host_with_daemon_elsewhere_refuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A cluster bind host probed where the daemon does not listen refuses and spawns nothing."""
+    """A daemon bound to the loopback name is not adopted for a cluster bind host; nothing is probed."""
     calls: list[tuple[str, int]] = []
-    hashserv_mod = _adoption_setup(
-        tmp_path, monkeypatch, argv_bind="ws://localhost:51114", answers=False, bind_host_calls=calls
-    )
+    hashserv_mod = _adoption_setup(tmp_path, monkeypatch, argv_bind="ws://localhost:51114", bind_host_calls=calls)
 
     assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path, bind_host="10.42.0.1") is None
 
-    assert calls == [("10.42.0.1", 51114)]
-    assert "it does not answer on ws://10.42.0.1:51114" in (tmp_path / ".bakar" / "hashserv.stderr").read_text()
+    assert calls == []
+    assert not (tmp_path / ".bakar" / "hashserv.pid").exists()
+    assert not (tmp_path / ".bakar" / "hashserv.port").exists()
+    assert "it is bound to ws://localhost:51114, not 10.42.0.1" in (tmp_path / ".bakar" / "hashserv.stderr").read_text()
+
+
+def test_ensure_running_adopts_when_argv_host_matches_cluster_bind_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A daemon bound to the requested cluster host is adopted and probed there."""
+    calls: list[tuple[str, int]] = []
+    hashserv_mod = _adoption_setup(tmp_path, monkeypatch, argv_bind="ws://10.42.0.1:51117", bind_host_calls=calls)
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path, bind_host="10.42.0.1") == "ws://10.42.0.1:51117"
+    assert calls == [("10.42.0.1", 51117)]
+
+
+def test_ensure_running_refuses_daemon_that_exits_while_probed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A daemon dead after the probe answered is not adopted and no state file is written."""
+    hashserv_mod = _adoption_setup(tmp_path, monkeypatch, argv_bind="ws://localhost:51118", alive=False)
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) is None
+
+    assert not (tmp_path / ".bakar" / "hashserv.pid").exists()
+    assert not (tmp_path / ".bakar" / "hashserv.port").exists()
+    assert "it exited while being probed" in (tmp_path / ".bakar" / "hashserv.stderr").read_text()
+
+
+def test_ensure_running_refusal_keeps_the_live_daemons_stderr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The refusal is appended to hashserv.stderr, never replacing what the daemon wrote."""
+    hashserv_mod = _adoption_setup(tmp_path, monkeypatch, argv_bind="ws://localhost:51119", answers=False)
+    stderr = tmp_path / ".bakar" / "hashserv.stderr"
+    stderr.write_bytes(b"daemon output\n")
+
+    assert hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path) is None
+
+    assert stderr.read_text().startswith("daemon output\nbakar: bitbake-hashserv pid 4242")
 
 
 def test_ensure_running_refusal_names_lowest_pid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1318,3 +1357,156 @@ def test_ensure_running_network_state_refusal_precedes_scan(tmp_path: Path, monk
 
     with pytest.raises(hashserv_mod.NetworkStateDirError):
         hashserv_mod.ensure_running(tmp_path, binary_root=tmp_path)
+
+
+# --- stop reaches live daemons that have no usable PID file ------------------
+
+
+@contextlib.contextmanager
+def _orphan_daemons(state_dir: Path, ports: list[int]) -> Generator[list[subprocess.Popen[bytes]]]:
+    """Start real ``bitbake-hashserv`` stand-ins serving ``state_dir``'s database, with no state files."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    db = state_dir / "hashserv.db"
+    db.write_bytes(b"sqlite")
+    script = state_dir.parent / "bitbake-hashserv"
+    script.write_text("import time\ntime.sleep(60)\n")
+    procs = [
+        subprocess.Popen(
+            [sys.executable, str(script), "--database", str(db), "--bind", f"ws://localhost:{port}"],
+            start_new_session=True,
+        )
+        for port in ports
+    ]
+    try:
+        deadline = time.monotonic() + 10
+        while len(central_service.find_owned_daemons("bitbake-hashserv", db)) < len(procs):
+            assert time.monotonic() < deadline, "stand-in daemons never showed their command line"
+            time.sleep(0.05)
+        yield procs
+    finally:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=10)
+
+
+def test_stop_stops_orphan_without_pid_file(tmp_path: Path) -> None:
+    """A live daemon with no PID file is stopped and leaves no state file behind."""
+    from bakar import hashserv as hashserv_mod
+
+    state_dir = tmp_path / ".bakar"
+    with _orphan_daemons(state_dir, [51201]) as (proc,):
+        assert hashserv_mod.stop(tmp_path) is True
+        assert proc.wait(timeout=10) == -signal.SIGTERM
+    assert not (state_dir / "hashserv.pid").exists()
+    assert not (state_dir / "hashserv.port").exists()
+    assert (state_dir / "hashserv.db").exists()
+
+
+def test_stop_stops_orphan_whose_state_dir_was_removed(tmp_path: Path) -> None:
+    """A live daemon whose whole state dir is gone is still stopped, not a FileNotFoundError."""
+    from bakar import hashserv as hashserv_mod
+
+    state_dir = tmp_path / ".bakar"
+    with _orphan_daemons(state_dir, [51206]) as (proc,):
+        shutil.rmtree(state_dir)
+        assert hashserv_mod.stop(tmp_path) is True
+        assert proc.wait(timeout=10) == -signal.SIGTERM
+    assert not (state_dir / "hashserv.pid").exists()
+
+
+def test_stop_stops_every_orphan_on_one_database(tmp_path: Path) -> None:
+    """Two live daemons on one database are both stopped."""
+    from bakar import hashserv as hashserv_mod
+
+    state_dir = tmp_path / ".bakar"
+    with _orphan_daemons(state_dir, [51202, 51203]) as procs:
+        assert hashserv_mod.stop(tmp_path) is True
+        for proc in procs:
+            assert proc.wait(timeout=10) == -signal.SIGTERM
+    assert not (state_dir / "hashserv.pid").exists()
+    assert not (state_dir / "hashserv.port").exists()
+
+
+def test_stop_stale_pid_file_with_live_orphan_stops_orphan(tmp_path: Path) -> None:
+    """A PID file naming a dead process does not hide a live daemon."""
+    from bakar import hashserv as hashserv_mod
+
+    state_dir = tmp_path / ".bakar"
+    with _orphan_daemons(state_dir, [51204]) as (proc,):
+        (state_dir / "hashserv.pid").write_text("999999999\n")
+        (state_dir / "hashserv.port").write_text("51204\n")
+        assert hashserv_mod.stop(tmp_path) is True
+        assert proc.wait(timeout=10) == -signal.SIGTERM
+    assert not (state_dir / "hashserv.pid").exists()
+    assert not (state_dir / "hashserv.port").exists()
+
+
+def test_stop_stops_orphan_when_state_files_cannot_be_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failing PID/port write (full or read-only state dir) never keeps the orphan from being signalled."""
+    from bakar import hashserv as hashserv_mod
+
+    state_dir = tmp_path / ".bakar"
+    real_write = Path.write_text
+
+    def _enospc(self: Path, data: str, *a: object, **k: object) -> int:
+        if self.name in {"hashserv.pid", "hashserv.port"}:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(self, data, *a, **k)
+
+    with _orphan_daemons(state_dir, [51207]) as (proc,):
+        monkeypatch.setattr(Path, "write_text", _enospc)
+        assert hashserv_mod.stop(tmp_path) is True
+        assert proc.wait(timeout=10) == -signal.SIGTERM
+    assert not (state_dir / "hashserv.pid").exists()
+
+
+def test_stop_nothing_alive_and_no_pid_file_returns_false(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No recorded PID and no matching process keeps the no-op result."""
+    from bakar import hashserv as hashserv_mod
+
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda *_a, **_k: [])
+
+    assert hashserv_mod.stop(tmp_path) is False
+
+
+def test_stop_nothing_alive_with_stale_pid_removes_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stale PID/port pair with no live process is removed and reported as stopped."""
+    from bakar import hashserv as hashserv_mod
+
+    state_dir = tmp_path / ".bakar"
+    state_dir.mkdir()
+    (state_dir / "hashserv.pid").write_text("999999999\n")
+    (state_dir / "hashserv.port").write_text("51205\n")
+    monkeypatch.setattr(central_service, "find_owned_daemons", lambda *_a, **_k: [])
+
+    assert hashserv_mod.stop(tmp_path) is True
+    assert not (state_dir / "hashserv.pid").exists()
+    assert not (state_dir / "hashserv.port").exists()
+
+
+def test_stop_recorded_live_daemon_never_scans(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A recorded live daemon is stopped without consulting the process table."""
+    from bakar import hashserv as hashserv_mod
+
+    state_dir = tmp_path / ".bakar"
+    state_dir.mkdir()
+    (state_dir / "hashserv.pid").write_text("12345\n")
+    sent: list[tuple[int, int]] = []
+    alive = {"n": 0}
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("find_owned_daemons must not be called")
+
+    def _fake_is_running(_root: Path) -> bool:
+        alive["n"] += 1
+        return alive["n"] == 1
+
+    monkeypatch.setattr(central_service, "find_owned_daemons", _boom)
+    monkeypatch.setattr(hashserv_mod, "is_running", _fake_is_running)
+    monkeypatch.setattr(hashserv_mod, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(hashserv_mod.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    monkeypatch.setattr(hashserv_mod.time, "sleep", lambda _s: None)
+
+    assert hashserv_mod.stop(tmp_path) is True
+    assert sent == [(12345, signal.SIGTERM)]

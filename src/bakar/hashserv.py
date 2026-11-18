@@ -21,6 +21,7 @@ Two locations are kept deliberately separate:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -183,8 +184,8 @@ def binary_available(binary_root: Path) -> bool:
     return _find_binary(binary_root) is not None
 
 
-def is_running(state_key: Path) -> bool:
-    """Return True iff the recorded PID is alive AND its cmdline names the daemon.
+def _pid_alive(pid: int) -> bool:
+    """Return True iff ``pid`` is alive AND its cmdline names the daemon.
 
     The cmdline check guards against PID recycling: a host reboot or a
     long-lived state key can leave a stale PID file pointing at a now-
@@ -192,9 +193,6 @@ def is_running(state_key: Path) -> bool:
     read bytes and look for the binary name as a substring rather than
     splitting on NUL.
     """
-    pid = _read_pid(state_key)
-    if pid is None:
-        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -208,20 +206,42 @@ def is_running(state_key: Path) -> bool:
         cmdline_bytes = cmdline_path.read_bytes()
     except OSError:
         return False
-    return b"bitbake-hashserv" in cmdline_bytes
+    return _BINARY_NAME.encode() in cmdline_bytes
+
+
+def is_running(state_key: Path) -> bool:
+    """Return True iff the recorded PID is alive AND its cmdline names the daemon."""
+    pid = _read_pid(state_key)
+    return pid is not None and _pid_alive(pid)
+
+
+def _bind_host_port(argv: tuple[str, ...]) -> tuple[str, int] | None:
+    """Return ``(host, port)`` from a daemon's ``--bind ws://HOST:PORT`` argument, or None."""
+    if "--bind" not in argv[:-1]:
+        return None
+    value = argv[argv.index("--bind") + 1]
+    if not value.startswith("ws://"):
+        return None
+    host, _, tail = value.removeprefix("ws://").rpartition(":")
+    if tail.isascii() and tail.isdigit() and 1 <= int(tail) <= 65535:
+        return host, int(tail)
+    return None
+
+
+def _bind_port(argv: tuple[str, ...]) -> int | None:
+    """Return the port in a daemon's ``--bind ws://HOST:PORT`` argument, or None."""
+    parsed = _bind_host_port(argv)
+    return parsed[1] if parsed is not None else None
 
 
 def _adoptable_port(argv: tuple[str, ...], database: Path, bind_host: str) -> int | str:
     """Return the port a found daemon answers on, or the reason it cannot be adopted."""
-    port: int | None = None
-    if "--bind" in argv[:-1]:
-        value = argv[argv.index("--bind") + 1]
-        if value.startswith("ws://"):
-            _, _, tail = value.removeprefix("ws://").rpartition(":")
-            if tail.isascii() and tail.isdigit() and 1 <= int(tail) <= 65535:
-                port = int(tail)
-    if port is None:
+    parsed = _bind_host_port(argv)
+    if parsed is None:
         return "its --bind names no ws:// port"
+    host, port = parsed
+    if host != bind_host:
+        return f"it is bound to ws://{host}:{port}, not {bind_host}"
     if not database.exists():
         return "its database file is gone"
     if not central_service.wait_listening(bind_host, port, _STARTUP_PROBE_DEADLINE_SECONDS):
@@ -288,12 +308,13 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
     # answers on the port its own command line names, so no second daemon is
     # spawned onto its database. When none can be adopted the start refuses.
     database = state_dir / _DB_FILENAME
-    found = central_service.find_owned_daemons("bitbake-hashserv", database)
+    found = central_service.find_owned_daemons(_BINARY_NAME, database)
     first_refusal: tuple[int, str] | None = None
     for daemon in found:
         port_or_reason = _adoptable_port(daemon.argv, database, bind_host)
+        if isinstance(port_or_reason, int) and not _pid_alive(daemon.pid):
+            port_or_reason = "it exited while being probed"
         if isinstance(port_or_reason, int):
-            state_dir.mkdir(parents=True, exist_ok=True)
             # Port file first, PID file last: the PID file is what is_running trusts.
             port_file.write_text(f"{port_or_reason}\n")
             pid_file.write_text(f"{daemon.pid}\n")
@@ -302,12 +323,13 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
             first_refusal = (daemon.pid, port_or_reason)
     if first_refusal is not None:
         pid, why = first_refusal
-        state_dir.mkdir(parents=True, exist_ok=True)
+        # append: the live daemon owns this file, so truncating it would erase its own output.
         daemon_log.record_refusal(
             state_dir / _STDERR_FILENAME,
             state_dir,
             f"bitbake-hashserv pid {pid} already serves {database} but cannot be adopted ({why}); "
             "run 'bakar hashserv stop'",
+            append=True,
         )
         return None
 
@@ -368,14 +390,51 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
         return f"ws://{bind_host}:{port}"
 
 
+def _terminate_recorded(state_key: Path, pid: int) -> None:
+    """Run the SIGTERM, grace, SIGKILL ladder against ``pid`` and remove both state files.
+
+    Liveness is :func:`_pid_alive` on ``pid`` itself, so the ladder never
+    depends on the PID file having been written.
+    """
+    state_dir = _state_dir(state_key)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError, PermissionError:
+        pass
+
+    deadline = time.monotonic() + _TERM_GRACE_SECONDS
+    while _pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+    if _pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError, PermissionError:
+            pass
+        kill_deadline = time.monotonic() + 1.0
+        while _pid_alive(pid) and time.monotonic() < kill_deadline:
+            time.sleep(0.1)
+
+    with contextlib.suppress(OSError):
+        (state_dir / _PID_FILENAME).unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        (state_dir / _PORT_FILENAME).unlink(missing_ok=True)
+
+
 def stop(state_key: Path) -> bool:
     """Stop the daemon for ``state_key`` and clean PID/port state files.
 
-    Returns False (no-op) when no PID file is recorded - the daemon was
-    never started, or its state has already been cleaned up. Returns True
-    in every other case, even when the recorded PID was already dead by
-    the time we tried to signal it: a missing process is a successful
-    stop, not a failure.
+    When the recorded PID file does not vouch for a live daemon (absent,
+    unreadable, dead or recycled), every live ``bitbake-hashserv`` process of
+    this user serving the state key's database is stopped too, lowest pid
+    first: its port (when its ``--bind`` names one) and PID are recorded so the
+    same SIGTERM, grace, SIGKILL sequence runs against it. Returns True after
+    stopping any such process.
+
+    With nothing alive, returns False (no-op) when no PID file is recorded -
+    the daemon was never started, or its state has already been cleaned up -
+    and True after removing a stale PID/port pair, since a missing process is
+    a successful stop, not a failure.
 
     The SQLite database under ``<state_dir>/hashserv.db`` is deliberately
     preserved across stop/start cycles. The whole reason to run a
@@ -383,41 +442,38 @@ def stop(state_key: Path) -> bool:
     wiping the DB here would defeat that. Workspace teardown
     (``bakar clean --all``) is the one path that removes the DB.
     """
-    pid = _read_pid(state_key)
-    if pid is None:
-        return False
-
     state_dir = _state_dir(state_key)
     pid_file = state_dir / _PID_FILENAME
     port_file = state_dir / _PORT_FILENAME
 
-    if not is_running(state_key):
-        # The recorded PID is dead or has been recycled onto an unrelated
-        # process (is_running performs the cmdline-identity check). Either
-        # way our daemon is gone - clean up the stale state and report a
-        # successful stop without signaling a process we do not own.
-        pid_file.unlink(missing_ok=True)
-        port_file.unlink(missing_ok=True)
+    if is_running(state_key):
+        pid = _read_pid(state_key)
+        if pid is not None:
+            _terminate_recorded(state_key, pid)
+            return True
+
+    orphans = central_service.find_owned_daemons(_BINARY_NAME, state_dir / _DB_FILENAME)
+    for daemon in orphans:
+        # Recording port and PID is best-effort: the ladder below keys on the pid
+        # alone, so a full or read-only state dir must not stop it signalling.
+        with contextlib.suppress(OSError):
+            # The match is on the argv path alone, so the state dir may have been
+            # removed under a live daemon; recreate it so the PID file can be written.
+            state_dir.mkdir(parents=True, exist_ok=True)
+            port = _bind_port(daemon.argv)
+            if port is not None:
+                port_file.write_text(f"{port}\n")
+            pid_file.write_text(f"{daemon.pid}\n")
+        _terminate_recorded(state_key, daemon.pid)
+    if orphans:
         return True
 
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError, PermissionError:
-        pass
-
-    deadline = time.monotonic() + _TERM_GRACE_SECONDS
-    while is_running(state_key) and time.monotonic() < deadline:
-        time.sleep(0.1)
-
-    if is_running(state_key):
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError, PermissionError:
-            pass
-        kill_deadline = time.monotonic() + 1.0
-        while is_running(state_key) and time.monotonic() < kill_deadline:
-            time.sleep(0.1)
-
+    if _read_pid(state_key) is None:
+        return False
+    # The recorded PID is dead or has been recycled onto an unrelated
+    # process (is_running performs the cmdline-identity check). Either
+    # way our daemon is gone - clean up the stale state and report a
+    # successful stop without signaling a process we do not own.
     pid_file.unlink(missing_ok=True)
     port_file.unlink(missing_ok=True)
     return True
