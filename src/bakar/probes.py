@@ -16,7 +16,7 @@ import subprocess
 import threading
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from bakar import stop_container
 
@@ -389,20 +389,39 @@ def http_exists(url: str, timeout: float = 2.0) -> bool:
     return status is not None and 200 <= status < 300
 
 
-def head_status(url: str, timeout: float) -> int | None:
-    """Return the HTTP status of a HEAD request to ``url``, or None on any error or timeout.
+class HeadInfo(NamedTuple):
+    """Answer to a HEAD request: the status and the parsed ``Content-Length``.
 
-    None (no answer) is distinct from a clean 404, so a caller can tell a server
-    that says "absent" from one that did not answer.
+    ``content_length`` is None when the header is absent or not all digits.
     """
-    answered: list[int] = []
+
+    status: int
+    content_length: int | None
+
+
+def head_info(url: str, timeout: float) -> HeadInfo | None:
+    """Return the :class:`HeadInfo` of a HEAD request to ``url``, or None on any error or timeout.
+
+    Same deadline and no-redirect behavior as :func:`head_status`.
+    """
+    answered: list[HeadInfo] = []
     worker = threading.Thread(target=_probe_http, args=(url, timeout, answered), daemon=True)
     worker.start()
     worker.join(timeout)
     return answered[0] if answered else None
 
 
-def _probe_http(url: str, timeout: float, answered: list[int]) -> None:
+def head_status(url: str, timeout: float) -> int | None:
+    """Return the HTTP status of a HEAD request to ``url``, or None on any error or timeout.
+
+    None (no answer) is distinct from a clean 404, so a caller can tell a server
+    that says "absent" from one that did not answer.
+    """
+    info = head_info(url, timeout)
+    return info.status if info is not None else None
+
+
+def _probe_http(url: str, timeout: float, answered: list[HeadInfo]) -> None:
     conn: http.client.HTTPConnection | None = None
     try:
         parts = urllib.parse.urlsplit(url)
@@ -412,7 +431,9 @@ def _probe_http(url: str, timeout: float, answered: list[int]) -> None:
         conn = conn_cls(parts.hostname, parts.port, timeout=timeout)
         target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
         conn.request("HEAD", target)
-        answered.append(conn.getresponse().status)
+        response = conn.getresponse()
+        length = (response.getheader("Content-Length") or "").strip()
+        answered.append(HeadInfo(response.status, int(length) if length.isascii() and length.isdigit() else None))
     except http.client.HTTPException, TimeoutError, ConnectionError, OSError, ValueError, TypeError, AttributeError:
         return
     finally:
