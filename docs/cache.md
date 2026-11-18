@@ -1,6 +1,6 @@
 # bakar cache
 
-Push finished downloads to the central store, report the push queue, and capture diagnostics for a hung build.
+Push finished downloads to the central store, report the push queue, capture diagnostics for a hung build, and prune downloads the hub or a clone already holds.
 
 ## Why this exists
 
@@ -14,6 +14,7 @@ Each builder keeps its own `DL_DIR`. Without a shared store, a source one host a
 bakar cache push --watch
 bakar cache status
 bakar cache capture
+bakar cache prune-downloads [--apply] [--clone-older-than DAYS]
 ```
 
 `bakar cache` with no verb prints help. The group never launches kas and is excluded from the global container flag.
@@ -73,6 +74,44 @@ On an empty queue the output is `queue: 0`, `oldest: -`, `paused: no` and `last 
 
 `bakar cache capture` prints a diagnostics report for a running BitBake hang: BitBake process state plus NFS and lock diagnostics for the downloads, sstate and ccache directories (`DL_DIR`, `SSTATE_DIR` and `CCACHE_DIR` environment variables first, then the configured `dl_dir`, `sstate_dir` and `ccache_dir`). Unset directories are skipped. It exits 0.
 
+### prune-downloads
+
+```text
+bakar cache prune-downloads [--apply] [--clone-older-than DAYS]
+```
+
+Plans the removal of downloads that are redundant, and removes them only with `--apply`. Without it the verb is a dry run: it prints what it would remove and deletes nothing. The directory comes from `DL_DIR`, else `dl_dir` in config; without one the verb prints an error and exits 1. Only the top level of the downloads directory and of `git2` is listed, and no symbolic link is followed.
+
+Three classes are planned, each verified before it is listed:
+
+| Class | What is removed | How it is verified |
+|-------|-----------------|--------------------|
+| `hub` | A top-level payload and its `.done` stamp | The hub (`dl_mirror_url`) answers HEAD for both with HTTP 2xx, and the payload's `Content-Length` equals the local size. A 404, another status, a missing length or a size mismatch keeps the file. After three consecutive unanswered requests the hub counts as down and the whole class removes nothing. Reported `unavailable` when `dl_mirror_url` is unset. |
+| `tarball` | A `git2_<n>.tar.gz` mirror tarball and its stamp | The extracted clone `git2/<n>` is a real directory with a `HEAD` file and its own `.done` stamp beside it. |
+| `clone` | A `git2/<n>` clone and its stamp | Only with `--clone-older-than DAYS`: the clone's stamp was last written more than DAYS days ago. Reported `not requested` otherwise. |
+
+The clone age is the stamp's last write, not the last time a build used the clone. Both downloads filesystems are mounted `noatime`, so reads leave no trace, and a repository that every build still pins reads as old as its last fetch. Choose DAYS with that in mind, and expect a long-pinned repository to be re-cloned from upstream on its next build.
+
+With `--apply`, each item is removed under the per-file lock BitBake uses: the verb takes the item's `.lock` without waiting, and an item whose lock is held is kept as `in use`. Under the lock it checks that the payload still has the planned size and modification time, and keeps it as `changed since planned` if not. The stamp is removed before the payload, so an interrupted removal leaves a payload BitBake treats as not downloaded. Other keep reasons are `lock unavailable` and `remove failed`.
+
+Sample report from a dry run with `--clone-older-than 90`:
+
+```text
+hub: examined
+  would remove 2 item(s), 1.4 GiB
+  kept 1: hub lacks it
+  kept 1: size mismatch
+tarball: examined
+  would remove 1 item(s), 310.0 MiB
+  kept 1: no valid clone
+clone: examined
+  would remove 1 item(s), 2.2 GiB
+  kept 3: too recent
+dry run: nothing was removed (pass --apply to remove)
+```
+
+With `--apply` the verbs read `removed` instead of `would remove`, apply-time keep reasons are added to the `kept` lines, and the last line is `applied`.
+
 ## Queue location
 
 The queue is a SQLite database under the XDG state directory, `$XDG_STATE_HOME/bakar/cache-push` (default `~/.local/state/bakar/cache-push`), created with mode 0700. It is deliberately never placed under the downloads, sstate or ccache directories, which may be NFS-backed and unsafe for SQLite locking.
@@ -91,13 +130,15 @@ The push target is a separate receiving directory on the store host (for example
 
 ## Doctor rows
 
-`bakar doctor` carries three rows for this feature. See [doctor.md](doctor.md) for pass and fail conditions.
+`bakar doctor` carries five rows for this feature. See [doctor.md](doctor.md) for pass and fail conditions.
 
 | Row | Severity | Fails when |
 |-----|----------|------------|
 | `cache-push-service` | WARN (INFO past 15 minutes) | The unit is inactive, or the oldest queued entry is over 60 minutes old (over 15 minutes is INFO) |
 | `sstate-mirror-shared-mount` | BLOCK (WARN when undetermined) | An http(s) sstate mirror is set while the sstate directory is on NFS |
+| `dl-mirror-paths-ready` | WARN | A directory listed in `dl_mirror_paths` is not ready for a host-mode build (skipped for container builds and when the key is unset) |
 | `store-stale-tarballs` | WARN | A `git2_*.tar.gz.tmp` file over an hour old sits at the top of the downloads directory |
+| `dl-dir-size` | WARN | On a pusher host (`cache_push_target` set), the regular files in the downloads directory total over 60 GB; the message points at `bakar cache prune-downloads`. Skipped when the walk takes over 5 seconds |
 
 ## Related
 
