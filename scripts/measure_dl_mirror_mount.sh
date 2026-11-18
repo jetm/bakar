@@ -149,11 +149,16 @@ if command -v uv >/dev/null 2>&1; then
   PY=(uv run python)
 fi
 
+# Extra smoke arguments. Empty while the mount is up (the smoke picks its own file);
+# for the blocked-mount run it names a file copied off the mount beforehand, so the
+# smoke itself never walks or reads the dead mount and only BitBake's fetch is timed.
+LIVE_ARGS=()
+
 # smoke_live LIMIT_SECONDS EXPECTED_KIND: run the smoke in live mode, set T and KIND.
 smoke_live() {
   local out="$SCRATCH/smoke.out" s e rc=0
   s=$(date +%s.%N)
-  timeout -k 5 "$1" "${PY[@]}" "$SMOKE" --bitbake-dir "$BITBAKE_DIR" --mirror-dir "$DL" >"$out" 2>&1 || rc=$?
+  timeout -k 5 "$1" "${PY[@]}" "$SMOKE" --bitbake-dir "$BITBAKE_DIR" --mirror-dir "$DL" "${LIVE_ARGS[@]}" >"$out" 2>&1 || rc=$?
   e=$(date +%s.%N)
   T=$(awk -v s="$s" -v e="$e" 'BEGIN { printf "%.3f", e - s }')
   RC=$rc
@@ -231,7 +236,27 @@ fi
 
 # --- injected rows -----------------------------------------------------
 
+progress() { echo "measure: $*" >&2; }
+
+# The dangling link must point at a file nothing has looked up yet: hit-stat and
+# the read rows warmed the attribute cache for the first files, and a cached
+# target answers stat without touching the server. The 21st file is past what
+# hit-stat statted; with fewer files the first one is used. Chosen here, while
+# the mount is still up.
+cold_file=""
 if [ "$INJECT" -eq 1 ]; then
+  cold_file=$(find "$DL" -type f 2>/dev/null | sed -n 21p || true)
+  # A small mirror file copied off the mount now, for the blocked-mount fetch.
+  small=$(find "$DL" -type f -size -5M -print -quit 2>/dev/null || true)
+  if [ -n "$small" ]; then
+    mkdir -p "$SCRATCH/live-copy"
+    cp "$small" "$SCRATCH/live-copy/"
+    LIVE_ARGS=(--live-bytes "$SCRATCH/live-copy/$(basename "$small")")
+  fi
+fi
+
+if [ "$INJECT" -eq 1 ]; then
+  progress "installing the firewall rule (sudo may ask you to authenticate or touch a key)"
   if command -v iptables >/dev/null 2>&1; then
     # Inserts a firewall DROP rule on this host for TCP 2049 to the hub; the EXIT trap removes it.
     sudo iptables -I OUTPUT -d "$HUB" -p tcp --dport 2049 -j DROP
@@ -247,12 +272,9 @@ if [ "$INJECT" -eq 1 ]; then
     exit 3
   fi
 
-  # The link must point at a file nothing has looked up yet: hit-stat and the
-  # read rows warmed the attribute cache for the first files, and a cached
-  # target answers stat without touching the server. The 21st file is past what
-  # hit-stat statted; with fewer files it falls back to the first one.
+  # cold_file was chosen before the rule went in: walking the tree on a blocked
+  # mount would hang this script for minutes before any row printed.
   link="$SCRATCH/dangling"
-  cold_file=$(find "$DL" -type f 2>/dev/null | sed -n 21p)
   target_file=${cold_file:-${hit_files[0]:-$DL/none}}
   ln -s "$target_file" "$link"
   worst=0
@@ -268,6 +290,7 @@ if [ "$INJECT" -eq 1 ]; then
   done
   row dangling-stat "$worst" "$verdict"
 
+  progress "dangling-stat done; running statfs-probe-down"
   # bakar's readiness probe runs stat -f in a child killed at a 20 s deadline
   # (mounts.CACHE_PROBE_DEADLINE_S), so a dead mount must cost at most that, not
   # the hang of an unbounded stat. The row passes when the bounded call returns
@@ -281,6 +304,7 @@ if [ "$INJECT" -eq 1 ]; then
     row statfs-probe-down "$T" "ok rc=$RC"
   fi
 
+  progress "running live-fetch-down (up to 150 s)"
   KIND=""
   smoke_live 150 file
   if [ "$RC" -eq 124 ]; then
@@ -293,6 +317,7 @@ if [ "$INJECT" -eq 1 ]; then
     row live-fetch-down "$T" "FAIL final-kind=${KIND:-none} rc=$RC"
   fi
 
+  progress "removing the firewall rule"
   remove_rule
 
   start=$(date +%s.%N)

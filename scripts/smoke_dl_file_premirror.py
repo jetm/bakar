@@ -224,25 +224,33 @@ def hermetic(run, bb, root: pathlib.Path) -> None:
         set_mode(mirror_b, 0o755)
 
 
-def live(run, bb, root: pathlib.Path, mirror_dir: pathlib.Path) -> None:
-    pick = None
-    for dirpath, _dirs, files in os.walk(mirror_dir):
-        for name in sorted(files):
-            path = pathlib.Path(dirpath) / name
-            try:
-                st = path.stat()
-            except OSError:
-                continue
-            if stat.S_ISREG(st.st_mode) and st.st_size < LIVE_MAX_BYTES:
-                pick = path
+def live(run, bb, root: pathlib.Path, mirror_dir: pathlib.Path, live_bytes: pathlib.Path | None = None) -> None:
+    if live_bytes is not None:
+        # The caller already copied the file off the mount (keeping its name), so
+        # nothing here walks or reads the mirror: with the mount blocked the only
+        # contact left is BitBake's own fetch, which is what the stopwatch measures.
+        pick = mirror_dir / live_bytes.name
+        data = live_bytes.read_bytes()
+        run.check("live: file prepared off the mount", ok=True, detail=str(live_bytes))
+    else:
+        pick = None
+        for dirpath, _dirs, files in os.walk(mirror_dir):
+            for name in sorted(files):
+                path = pathlib.Path(dirpath) / name
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                if stat.S_ISREG(st.st_mode) and st.st_size < LIVE_MAX_BYTES:
+                    pick = path
+                    break
+            if pick:
                 break
-        if pick:
-            break
-    run.check("live: found a regular file under 5 MB", pick is not None, f"none under {mirror_dir}")
-    if pick is None:
-        run.check("live: final bytes match the checksum", ok=False, detail="no file picked")
-        return
-    data = pick.read_bytes()
+        run.check("live: found a regular file under 5 MB", pick is not None, f"none under {mirror_dir}")
+        if pick is None:
+            run.check("live: final bytes match the checksum", ok=False, detail="no file picked")
+            return
+        data = pick.read_bytes()
     sha = hashlib.sha256(data).hexdigest()
     served = root / "http"
     served.mkdir()
@@ -268,6 +276,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bitbake-dir", required=True, type=pathlib.Path, help="BitBake checkout (uses DIR/lib)")
     parser.add_argument("--mirror-dir", type=pathlib.Path, help="live mode: time one fetch from this mirror")
+    parser.add_argument(
+        "--live-bytes",
+        type=pathlib.Path,
+        help="live mode: a local copy (same file name) of one mirror file, taken while the mount was up",
+    )
     args = parser.parse_args()
 
     sys.path.insert(0, str(args.bitbake_dir.expanduser().resolve() / "lib"))
@@ -285,7 +298,15 @@ def main() -> int:
         smoke_lib.isolated_env("dl-premirror-smoke-") as (root, _env),
     ):
         if args.mirror_dir:
-            live(run, bb, root, args.mirror_dir.expanduser().resolve())
+            live(
+                run,
+                bb,
+                root,
+                # abspath, not resolve(): resolve() stats every component, which
+                # would touch a blocked mount before the stopwatch starts.
+                pathlib.Path(os.path.abspath(args.mirror_dir.expanduser())),
+                args.live_bytes.expanduser().resolve() if args.live_bytes else None,
+            )
         else:
             hermetic(run, bb, root)
     return smoke_lib.finish(run)
