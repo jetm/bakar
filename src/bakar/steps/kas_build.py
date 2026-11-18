@@ -89,7 +89,7 @@ from bakar.release_workspace import (
     ReleaseRoutingError,
     parse_repo_policy,
 )
-from bakar.steps import kas_pins, repo_reuse
+from bakar.steps import hub_mount, kas_pins, repo_reuse
 from bakar.steps.build_ui import BuildUIState
 from bakar.steps.kas_graph_capture import (
     GRAPH_ARTIFACTS,  # noqa: F401 - re-exported for external/test imports
@@ -1911,6 +1911,13 @@ def _build_env(
         passthrough.pop("BAKAR_DL_MIRROR_URL", None)
         if cfg.dl_mirror_url:
             passthrough["BAKAR_DL_MIRROR_URL"] = cfg.dl_mirror_url
+    # Host-mode only: ready downloads directories read in place. The name is not
+    # in the prefix tuple above, so a caller's value never survives; container
+    # builds get none because _ccache_args forwards nothing for it.
+    if cfg.host_mode:
+        ready = hub_mount.ready_dirs(cfg.dl_mirror_paths, host_mode=True)
+        if ready:
+            passthrough["BAKAR_DL_MIRROR_PATHS"] = " ".join(str(p) for p in ready)
     # sccache-dist scheduler: exported only when distributed-compile is enabled,
     # so a disabled build is byte-for-byte unchanged. The sccache overlay reads
     # this var (like BAKAR_SSTATE_MIRROR_URL above). In container mode localhost
