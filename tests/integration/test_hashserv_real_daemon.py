@@ -4,6 +4,8 @@ Skips when no bitbake-hashserv is available. Run explicitly with:
 
     BAKAR_BITBAKE_HASHSERV=/path/to/bitbake-hashserv \
         uv run pytest tests/integration/test_hashserv_real_daemon.py -v --no-cov
+The state key is chosen so the run does not depend on whether the host currently holds
+the port a key derives.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from bakar import hashserv
+from bakar import central_service, hashserv
 
 
 def _find_real_hashserv() -> Path | None:
@@ -67,6 +69,22 @@ def _install_workspace_binary(workspace: Path, real_binary: Path) -> None:
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _state_key_with_free_port(tmp_path: Path) -> Path:
+    for i in range(64):
+        key = tmp_path / f"ws{i}"
+        if central_service.bind_conflict("localhost", hashserv._workspace_port(key)) is None:
+            return key
+    pytest.fail("no state key with a bindable derived port in 64 tries")
+
+
+def _start_failure(state_dir: Path, port: int, what: str) -> str:
+    msg = f"{what}; derived port {port}"
+    stderr = state_dir / "hashserv.stderr"
+    if stderr.is_file():
+        msg += f"; hashserv.stderr tail: {stderr.read_text(errors='replace')[-800:]}"
+    return msg
+
+
 @pytest.mark.real_home
 @pytest.mark.integration
 def test_hashserv_real_daemon_lifecycle(tmp_path: Path) -> None:
@@ -79,14 +97,18 @@ def test_hashserv_real_daemon_lifecycle(tmp_path: Path) -> None:
         )
 
     _install_workspace_binary(tmp_path, real_binary)
+    state_key = _state_key_with_free_port(tmp_path)
+    derived_port = hashserv._workspace_port(state_key)
+    state_dir = state_key / ".bakar"
 
     # ---- First lifecycle: start, verify, stop ----
-    url = hashserv.ensure_running(tmp_path, binary_root=tmp_path)
-    assert url is not None, "ensure_running returned None on a workspace with bitbake-hashserv present"
+    url = hashserv.ensure_running(state_key, binary_root=tmp_path)
+    assert url is not None, _start_failure(
+        state_dir, derived_port, "ensure_running returned None on a workspace with bitbake-hashserv present"
+    )
     assert url.startswith("ws://localhost:"), f"unexpected URL shape: {url}"
 
     port = int(url.rsplit(":", 1)[1])
-    state_dir = tmp_path / ".bakar"
     pid_file = state_dir / "hashserv.pid"
     port_file = state_dir / "hashserv.port"
     db_file = state_dir / "hashserv.db"
@@ -98,7 +120,7 @@ def test_hashserv_real_daemon_lifecycle(tmp_path: Path) -> None:
     pid = int(pid_file.read_text().strip())
     assert pid > 0
 
-    assert hashserv.is_running(tmp_path) is True
+    assert hashserv.is_running(state_key) is True
 
     # Real TCP handshake against the listener - proves the daemon opened its socket.
     with socket.create_connection(("127.0.0.1", port), timeout=2.0) as sock:
@@ -106,7 +128,7 @@ def test_hashserv_real_daemon_lifecycle(tmp_path: Path) -> None:
         assert sock.fileno() > 0
 
     # ---- Stop and verify cleanup ----
-    assert hashserv.stop(tmp_path) is True
+    assert hashserv.stop(state_key) is True
     assert not pid_file.exists(), "PID file should be removed on stop"
     assert not port_file.exists(), "port file should be removed on stop"
     # SQLite DB is preserved by design - see spec "SQLite hash database persists ..."
@@ -114,21 +136,21 @@ def test_hashserv_real_daemon_lifecycle(tmp_path: Path) -> None:
 
     # Daemon takes a tick to actually exit after SIGTERM; poll briefly.
     for _ in range(20):
-        if not hashserv.is_running(tmp_path):
+        if not hashserv.is_running(state_key):
             break
         time.sleep(0.1)
-    assert hashserv.is_running(tmp_path) is False
+    assert hashserv.is_running(state_key) is False
 
     # Capture the inode of the DB before the restart so we can prove it survives.
     db_inode_before = db_file.stat().st_ino
 
     # ---- Second lifecycle: confirm DB persistence across restart ----
-    url2 = hashserv.ensure_running(tmp_path, binary_root=tmp_path)
-    assert url2 is not None, "ensure_running returned None on second start"
+    url2 = hashserv.ensure_running(state_key, binary_root=tmp_path)
+    assert url2 is not None, _start_failure(state_dir, derived_port, "ensure_running returned None on second start")
     assert url2 == url, "deterministic port: same workspace should derive same port"
 
     assert db_file.exists(), "SQLite DB must persist across start cycle"
     assert db_file.stat().st_ino == db_inode_before, "SQLite DB inode must be stable across restart"
 
     # Tear down to leave no orphan daemon.
-    assert hashserv.stop(tmp_path) is True
+    assert hashserv.stop(state_key) is True
