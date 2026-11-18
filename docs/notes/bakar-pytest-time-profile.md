@@ -964,3 +964,55 @@ remaining shares are the 2.151 s before the collection barrier (the follow-up
 the collection sharding decision above would weigh, with its stated trigger of a
 median above 10 s) and the 1.055 s unaccounted between the run phase and
 sessionfinish.
+
+#### Stability and equivalence checks of the finished tree
+
+Run on the dev host (not idle, so no wall time here is a measurement), from bash,
+in `git archive` copies under `/var/tmp/claude-code/bakar/2026-11-17-pytest-10s-stability/`.
+The control is the archive of `b8c28790`. The collected-ids, skip and coverage
+checks used the archive of `542f1596`; the stability loops were redone on the
+archive of `8c1e2cd3` (the current HEAD), after the first loop on `542f1596`
+recorded 1 failure in 30 full runs: run 16 failed in
+`tests/test_cli_monitor.py::test_watch_sleeps_for_the_requested_interval`
+(`slept == [0.01]` saw `[0.1, 0.1, 0.01]`, because the test patches the shared
+`time.sleep`), and commit `8c1e2cd3` changed that test to record only the
+calling thread's sleeps. Both trees were built with `uv sync --frozen --group dev`.
+The archives lack the untracked `CLAUDE.md` and `ARCHITECTURE.md` symlinks, the
+same for both trees.
+
+Collected ids missing: 0
+(`--collect-only -qq -n 0 --no-cov -p no:randomly`: control 8355 ids, finished tree
+8363 ids, 0 control ids absent from the finished tree, 8 ids new in it. Measured on
+`542f1596`; `8c1e2cd3` changes only a test body, and the id set was not re-collected.)
+
+Skip reasons identical: yes
+(`-n 0 --no-cov -p no:randomly -rs -q`, both rc 0: control 8342 passed, 13 skipped;
+finished tree 8350 passed, 13 skipped. The SKIPPED lines with line numbers stripped
+are 10 lines each and `diff` of the two sorted lists is empty. Measured on
+`542f1596`.)
+
+Coverage floor: every default run printed `Required test coverage of 80.0% reached.`
+with a total of 91.62% (the 30 runs on `8c1e2cd3`, run 1) and 91.65% (the last run
+in the worktree).
+
+Full runs failed: 0 of 30
+The command was `uv run --no-sync pytest -q` in the `8c1e2cd3` archive, 30 runs in
+a row, each run's rc logged, no stop on failure. All 30 were rc 0 (8350 passed, 13
+skipped).
+
+Timing-window modules, 30 runs each (`uv run --no-sync pytest -q --no-cov <module>`
+in the `8c1e2cd3` archive) while a full-suite loop ran from a second archive of the
+same commit: failures 0 of 30 for each of `tests/test_layer_delivery_remote.py`
+(the guarded-move module, found by name: it holds the guarded-move and build-guard
+tests), `tests/test_reuse_lock.py`, `tests/test_pin_probe.py` and
+`tests/test_eventlog_tail.py`. The module loop ran twice. In the first pass the
+background full-suite loop had 19 runs and one of them failed (rc 1, `1 failed,
+8349 passed`); that loop kept only the last run's output, so the failing test is
+not known. The module results of that pass were 120 of 120 rc 0. The second pass
+kept every failing background run's output: 120 of 120 module runs rc 0 and 20 of
+20 background full runs rc 0.
+
+Production files changed: src/bakar/mounts.py
+(`git diff --name-only b8c28790..HEAD -- src` at `8c1e2cd3` lists only that path.
+For information, the non-src, non-test files changed are `.github/workflows/ci.yml`,
+`docs/notes/bakar-pytest-time-profile.md` and `pyproject.toml`.)
