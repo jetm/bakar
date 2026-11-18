@@ -162,11 +162,24 @@ smoke_live() {
 
 # --- safe rows ---------------------------------------------------------
 
-opts=$(findmnt -no OPTIONS "$MOUNT" 2>/dev/null || true)
+# The mountpoint is a systemd automount: until something touches it, findmnt
+# shows only the autofs stub. A bounded stat triggers the NFS mount, and only
+# the nfs entry is read, so the stub's own options cannot satisfy the check.
+timeout -k 5 30 stat -f "$MOUNT" >/dev/null 2>&1 || true
+opts=$(findmnt -rn -t nfs,nfs4 -o OPTIONS --mountpoint "$MOUNT" 2>/dev/null || true)
 case ",$opts," in
-  *,ro,*,softerr,* | *,softerr,*,ro,*) row mount-info 0 "$opts" ;;
-  *) row mount-info 0 "FAIL options='$opts' (need ro and softerr)" ;;
+  *,ro,*) ro_ok=1 ;;
+  *) ro_ok=0 ;;
 esac
+case ",$opts," in
+  *,softerr,*) softerr_ok=1 ;;
+  *) softerr_ok=0 ;;
+esac
+if [ "$ro_ok" -eq 1 ] && [ "$softerr_ok" -eq 1 ]; then
+  row mount-info 0 "$opts"
+else
+  row mount-info 0 "FAIL options='$opts' (need an nfs mount with ro and softerr)"
+fi
 
 mapfile -t hit_files < <(find "$DL" -type f 2>/dev/null | sed -n 1,20p)
 if [ "${#hit_files[@]}" -eq 0 ]; then
