@@ -50,7 +50,8 @@ def start(
         raise typer.Exit(code=1) from exc
     if addr is None:
         console.print(
-            "failed to start prserv: bitbake-prserv not found or startup probe failed; "
+            "failed to start prserv: bitbake-prserv not found, derived port busy or held by another process, "
+            "a live daemon that does not answer, or startup probe failed; "
             f"see {cfg.prserv_state_key}/.bakar/prserv.stderr"
         )
         raise typer.Exit(code=1)

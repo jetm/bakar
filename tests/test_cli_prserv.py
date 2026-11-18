@@ -138,3 +138,19 @@ def test_prserv_start_payload_on_stdout(runner: _CliRunner, workspace: Path, mon
     assert result.exit_code == 0, result.output
     assert result.stdout == "started: PRSERV_HOST=localhost:4242\n"
     assert result.stderr == ""
+
+
+def test_prserv_start_failure_names_port_cause_and_stderr_path(
+    runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``None`` from ``ensure_running`` exits 1 and names the busy-port cause and the stderr log."""
+    monkeypatch.setattr(prserv_cmd.prserv, "ensure_running", lambda *_a, **_k: None)
+
+    result = runner.invoke(app, ["prserv", "start"])
+
+    assert result.exit_code == 1, result.output
+    assert "failed to start prserv: bitbake-prserv not found, derived port busy or held by another process" in (
+        result.output
+    )
+    assert "a live daemon that does not answer, or startup probe failed" in " ".join(result.output.split())
+    assert "prserv.stderr" in result.output
