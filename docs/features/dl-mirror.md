@@ -34,6 +34,10 @@ A hit becomes a symbolic link in the local downloads directory, so no copy is ma
 
 Downloads already on disk that the store holds are not removed automatically. Run `bakar cache prune-downloads` to list what can be reclaimed; it removes nothing unless you add `--apply`.
 
+### Known limit: a hub that drops during a build
+
+The readiness probe only protects builds that start while the mount is down. If the hub stops answering NFS while a build is running, an access to a link or a mirror file blocks until the NFS timeout, and each source fetch can wait that long. Measured on pc2 with the hub's NFS port blocked: a cold `stat` and a one-file fetch both stalled past 40 s and 150 s, at `timeo=600` and at `timeo=50`, and a `stat` on the existing sstate mount stalled the same way. A hub outage already stalls a build through the sstate share, so the mirror joins that dependency and does not add a new one. To stop using the directories, remove `dl_mirror_paths` from your user config.
+
 ## Turn off
 
 Run `bakar init --disable dl-mirror`. It unsets `build.dl_mirror_url` in your user config. It does not touch the store or any file already downloaded.
