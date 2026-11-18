@@ -198,6 +198,17 @@ def test_tarball_with_clone_planned(tmp_path: Path) -> None:
     assert item.lock == tmp_path / "git2" / "example.com.proj.lock"
 
 
+def test_tarball_is_spared_when_its_clone_is_also_planned(tmp_path: Path) -> None:
+    # Removing both would leave no local copy of the repository.
+    _pair(tmp_path, "git2_p.tar.gz")
+    _make_clone(tmp_path, "p")
+    os.utime(tmp_path / "git2" / "p.done", (NOW - 40 * DAY, NOW - 40 * DAY))
+    plan = _plan(tmp_path, clone_older_than_days=30)
+    assert [i.name for i in plan.items["clone"]] == ["p"]
+    assert not plan.items["tarball"]
+    assert plan.kept["tarball", "clone also planned"] == 1
+
+
 def test_tarball_without_clone_kept(tmp_path: Path) -> None:
     _pair(tmp_path, "git2_p.tar.gz")
     plan = _plan(tmp_path)

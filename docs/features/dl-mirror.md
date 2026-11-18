@@ -28,7 +28,7 @@ What the host needs:
 
 With those set, bakar activates the hub-mount overlay, which puts each directory in front of upstream as a `file://` mirror for http(s), ftp, crate and gomod sources. Git and gitsm sources are not served.
 
-A hit becomes a symbolic link in the local downloads directory, so no copy is made. A directory that is not mounted is skipped and the fetch falls back to the http store, then to upstream. The push watcher ignores these links, so they are never pushed back to the store.
+A hit becomes a symbolic link in the local downloads directory, so no copy is made. A directory that is missing or does not answer a bounded `stat -f` is skipped and the fetch falls back to the http store, then to upstream. The probe checks that the path answers, not that a share is mounted on it, so an unmounted plain directory that exists passes and simply holds no files. The push watcher ignores these links, so they are never pushed back to the store.
 
 `bakar doctor` runs `dl-mirror-paths-ready` and warns when a listed directory is not ready.
 

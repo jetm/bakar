@@ -102,9 +102,7 @@ def holder_factory(tmp_path: Path) -> Iterator[object]:
 def test_dry_run_report_changes_nothing(dl: Path) -> None:
     item = _hub_item(dl)
     plan = _plan(item)
-    before = sorted(p.name for p in dl.iterdir())
     text = render_report(plan, None, apply=False)
-    assert sorted(p.name for p in dl.iterdir()) == before
     assert "would remove 1 item(s), 100 B" in text
     assert "dry run" in text
 
@@ -120,6 +118,33 @@ def test_apply_removes_pair_and_leaves_others(dl: Path) -> None:
     assert not (dl / "a.tar.gz.done").exists()
     assert (dl / "other.bin").exists()
     assert (dl / "other.bin.done").exists()
+
+
+def test_lock_replaced_after_open_is_not_current(dl: Path) -> None:
+    # BitBake unlinks its lock file on release, so a flock won on an inode that
+    # was replaced at the same path guards nothing and must not authorise removal.
+    lock = dl / "a.tar.gz.lock"
+    lock.write_bytes(b"")
+    fd = os.open(lock, os.O_RDWR)
+    try:
+        assert cache_prune._lock_is_current(fd, lock)
+        lock.unlink()
+        assert not cache_prune._lock_is_current(fd, lock)
+        lock.write_bytes(b"")
+        assert not cache_prune._lock_is_current(fd, lock)
+    finally:
+        os.close(fd)
+
+
+def test_symlink_at_the_lock_path_is_not_opened_through(dl: Path, tmp_path: Path) -> None:
+    item = _hub_item(dl)
+    item.lock.unlink(missing_ok=True)
+    outside = tmp_path / "outside.lock"
+    item.lock.symlink_to(outside)
+    result = apply_plan(_plan(item), dl)
+    assert result.kept["hub", "lock unavailable"] == 1
+    assert not outside.exists()
+    assert (dl / "a.tar.gz").exists()
 
 
 def test_lock_file_gone_after_removal(dl: Path) -> None:

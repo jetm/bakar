@@ -263,7 +263,9 @@ if [ "$INJECT" -eq 1 ]; then
     sstate_file=$(find "$SSTATE" -type f -print -quit 2>/dev/null || true)
   fi
   # A small mirror file copied off the mount now, for the blocked-mount fetch.
-  small=$(find "$DL" -type f -size -5M -print -quit 2>/dev/null || true)
+  # -maxdepth 1: the smoke looks the file up by name directly under the mirror
+  # directory, so a file found inside git2/<n>/ would be a miss and time the wrong thing.
+  small=$(find "$DL" -maxdepth 1 -type f -size -5M -print -quit 2>/dev/null || true)
   if [ -n "$small" ]; then
     mkdir -p "$SCRATCH/live-copy"
     cp "$small" "$SCRATCH/live-copy/"
@@ -275,12 +277,14 @@ if [ "$INJECT" -eq 1 ]; then
   progress "installing the firewall rule (sudo may ask you to authenticate or touch a key)"
   if command -v iptables >/dev/null 2>&1; then
     # Inserts a firewall DROP rule on this host for TCP 2049 to the hub; the EXIT trap removes it.
-    sudo iptables -I OUTPUT -d "$HUB" -p tcp --dport 2049 -j DROP
+    # RULE_KIND is set first: a signal that lands while sudo is running must still
+    # reach the trap's removal (a removal of a rule that was never added only warns).
     RULE_KIND=iptables
+    sudo iptables -I OUTPUT -d "$HUB" -p tcp --dport 2049 -j DROP
   elif command -v nft >/dev/null 2>&1; then
     # Creates an nft table with a DROP rule for TCP 2049 to the hub; the EXIT trap deletes the table.
-    sudo nft add table inet bakar_dlmeasure
     RULE_KIND=nft
+    sudo nft add table inet bakar_dlmeasure
     sudo nft add chain inet bakar_dlmeasure out '{ type filter hook output priority 0 ; }'
     sudo nft add rule inet bakar_dlmeasure out ip daddr "$HUB" tcp dport 2049 drop
   else

@@ -31,7 +31,7 @@ def test_omitted_key_is_none(user_config_file: Path) -> None:
     [
         ("/mnt/a relative/dir", "relative/dir"),
         ("/mnt/a /mnt/../etc", "/mnt/../etc"),
-        ("   ", ""),
+        ("   ", "at least one absolute directory"),
     ],
 )
 def test_invalid_value_raises(user_config_file: Path, value: str, offender: str) -> None:

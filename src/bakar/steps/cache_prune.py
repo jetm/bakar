@@ -139,7 +139,6 @@ def _plan_hub(
             # The hub has gone quiet: keep this and every later candidate, and
             # withdraw what was already verified so the class removes nothing.
             plan.keep("hub", "unverified", len(candidates) - index + len(verified))
-            verified.clear()
             return
         url = f"{base_url}/{urllib.parse.quote(name)}"
         info = head(url, _HEAD_TIMEOUT_S)
@@ -259,6 +258,14 @@ def plan_prune(
         plan.status["clone"] = STATUS_NOT_REQUESTED
     else:
         _plan_clones(dl_dir, clone_older_than_days, time.time() if now is None else now, plan)
+        # A mirror tarball is only removable while a valid clone stays beside it,
+        # so a tarball whose clone is also planned for removal would take both
+        # local copies of that repository.
+        clone_locks = {item.lock for item in plan.items["clone"]}
+        spared = [item for item in plan.items["tarball"] if item.lock in clone_locks]
+        if spared:
+            plan.items["tarball"] = [item for item in plan.items["tarball"] if item.lock not in clone_locks]
+            plan.keep("tarball", "clone also planned", len(spared))
     return plan
 
 
@@ -307,9 +314,25 @@ def _payload_unchanged(item: Item, dl_dir: Path) -> bool:
     return wanted(st.st_mode) and (st.st_size, st.st_mtime_ns) == item.stat_key
 
 
+def _lock_is_current(fd: int, path: Path) -> bool:
+    """True when the locked descriptor is still the file at ``path``.
+
+    BitBake unlinks its lock file on release (``bb.utils.lockfile`` compares inode
+    numbers for the same reason), so a lock won on an inode that has since been
+    replaced guards nothing: another process may hold the new file at the path.
+    """
+    try:
+        held = os.fstat(fd)
+        on_disk = os.lstat(path)
+    except OSError:
+        return False
+    return (held.st_dev, held.st_ino) == (on_disk.st_dev, on_disk.st_ino)
+
+
 def _apply_item(item: Item, dl_dir: Path, result: ApplyResult) -> None:
     try:
-        fd = os.open(item.lock, os.O_RDWR | os.O_CREAT, 0o644)
+        # O_NOFOLLOW: a symbolic link at the lock path is never opened through.
+        fd = os.open(item.lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
     except OSError:
         result.keep(item.kind, REASON_LOCK_UNAVAILABLE)
         return
@@ -319,7 +342,7 @@ def _apply_item(item: Item, dl_dir: Path, result: ApplyResult) -> None:
         except BlockingIOError:
             result.keep(item.kind, REASON_IN_USE)
             return
-        if not _payload_unchanged(item, dl_dir):
+        if not _lock_is_current(fd, item.lock) or not _payload_unchanged(item, dl_dir):
             result.keep(item.kind, REASON_CHANGED)
             return
         stamp, payload = item.paths

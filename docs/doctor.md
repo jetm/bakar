@@ -226,7 +226,7 @@ store host and the mounted downloads directories (see
 | `cache-push-service` | WARN | On a host with `cache_push_target` set, the user unit `bakar-cache-push.service` is active and its oldest queued entry is under 60 minutes old | `systemctl --user enable --now bakar-cache-push.service` |
 | `sstate-mirror-shared-mount` | BLOCK | The effective `SSTATE_MIRRORS` names no http(s) mirror while the sstate directory is on NFS | Use a `file://` mirror, or move the sstate directory off NFS |
 | `store-stale-tarballs` | WARN | On a host with `cache_push_target` unset, no `git2_*.tar.gz.tmp` file in the top level of the downloads directory is older than one hour | Remove the named temp files |
-| `dl-mirror-paths-ready` | WARN | On a host-mode build with `dl_mirror_paths` set, every listed directory is mounted and readable | See [the dl-mirror feature](features/dl-mirror.md) |
+| `dl-mirror-paths-ready` | WARN | On a host-mode build with `dl_mirror_paths` set, every listed directory exists and answers a bounded `stat -f` (it does not prove a share is mounted on it) | See [the dl-mirror feature](features/dl-mirror.md) |
 | `dl-dir-size` | WARN | On a host with `cache_push_target` set, the regular files in the downloads directory total 60 GB or less | `bakar cache prune-downloads` |
 
 Outcomes:

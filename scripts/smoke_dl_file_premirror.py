@@ -264,7 +264,8 @@ def live(run, bb, root: pathlib.Path, mirror_dir: pathlib.Path, live_bytes: path
         elapsed = time.monotonic() - start
     entry = dl / pick.name
     print(f"fetch-seconds={elapsed:.3f}")
-    print(f"final-kind={'link' if entry.is_symlink() else 'file'}")
+    kind = "link" if entry.is_symlink() else "file" if entry.exists() else "none"
+    print(f"final-kind={kind}")
     run.check(
         "live: final bytes match the checksum",
         exc is None and entry.exists() and sha256_of(entry) == sha,

@@ -19,7 +19,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 # Per-process memo: each directory is probed at most once, so repeated callers
-# (doctor, overlay build, prune) never pay the probe deadline twice for a share.
+# (doctor row, overlay selection, build environment export) never pay the probe
+# deadline twice for a share.
 _PROBE_MEMO: dict[Path, DirStatus] = {}
 
 
