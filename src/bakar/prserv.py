@@ -82,8 +82,16 @@ def _clean_stale_pidfiles(port: int) -> None:
 
 
 def is_running(state_key: Path, *, bind_host: str = "localhost") -> bool:
-    """Return True iff the daemon for ``state_key`` is listening on its port."""
-    return central_service.is_listening(bind_host, _workspace_port(state_key))
+    """Return True iff this state key's own daemon is listening on its port.
+
+    Both conditions must hold: the derived port answers AND a live
+    ``bitbake-prserv`` serving this state key's database exists. A listener on
+    the derived port that no such process owns is a foreign holder, not this
+    state key's daemon, so it reports False.
+    """
+    if not central_service.is_listening(bind_host, _workspace_port(state_key)):
+        return False
+    return bool(central_service.find_owned_daemons(_BINARY_NAME, _state_dir(state_key) / _DB_FILENAME))
 
 
 def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "localhost") -> str | None:
@@ -94,13 +102,22 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
     binary is sourced from ``binary_root``. The daemon binds ``bind_host`` so a
     cluster-reachable IP makes the PR service usable from other nodes.
 
-    Returns ``f"{bind_host}:{port}"`` when the daemon is reachable (already
-    running, or freshly spawned and passed the TCP startup probe) - the exact
-    string to assign to ``PRSERV_HOST``. Returns ``None`` silently when the
-    workspace bitbake-prserv binary has not been synced yet, or when a fresh
-    spawn never reached the probe within ``_STARTUP_PROBE_DEADLINE_SECONDS`` (in
-    which case the daemon's launcher output is captured to
-    ``<state_dir>/prserv.stderr`` and any stale pidfile is cleared).
+    An address is returned only for this state key's own daemon, found in the
+    process table by its database path. The derived port alone proves nothing:
+
+    - listening and owned: return ``f"{bind_host}:{port}"``.
+    - listening but not owned: spawn nothing, record the refusal in
+      ``<state_dir>/prserv.stderr`` and return ``None``.
+    - owned but not listening: wait up to ``_STARTUP_PROBE_DEADLINE_SECONDS``
+      for it to answer; on failure record the reason and return ``None``.
+      bitbake's pidfile is never removed here, since the daemon is alive.
+    - neither: spawn ``bitbake-prserv --start`` and probe as below.
+
+    Returns ``None`` silently when the workspace bitbake-prserv binary has not
+    been synced yet, or when a fresh spawn never reached the probe within
+    ``_STARTUP_PROBE_DEADLINE_SECONDS`` (in which case the daemon's launcher
+    output is captured to ``<state_dir>/prserv.stderr`` and any stale pidfile
+    is cleared).
 
     Raises :class:`bakar.hashserv.NetworkStateDirError` before creating any
     state dir, PID file, or process when ``state_key``'s state directory is on
@@ -112,14 +129,37 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
         raise NetworkStateDirError(reason)
 
     port = _workspace_port(state_key)
-    if central_service.is_listening(bind_host, port):
-        return f"{bind_host}:{port}"
+    state_dir = _state_dir(state_key)
+    database = state_dir / _DB_FILENAME
+    address = f"{bind_host}:{port}"
+    owned = central_service.find_owned_daemons(_BINARY_NAME, database)
+    listening = central_service.is_listening(bind_host, port)
+
+    if listening and owned:
+        return address
+    if listening:
+        daemon_log.record_refusal(
+            state_dir / _STDERR_FILENAME,
+            state_dir,
+            f"{address} is held by a process that is not this state key's bitbake-prserv; "
+            "bitbake-prserv was not started",
+        )
+        return None
+    if owned:
+        if central_service.wait_listening(bind_host, port, _STARTUP_PROBE_DEADLINE_SECONDS):
+            return address
+        daemon_log.record_refusal(
+            state_dir / _STDERR_FILENAME,
+            state_dir,
+            f"bitbake-prserv pid {owned[0].pid} already serves {database} but does not answer on "
+            f"{address}; run 'bakar prserv stop'",
+        )
+        return None
 
     binary = _find_binary(binary_root)
     if binary is None:
         return None
 
-    state_dir = _state_dir(state_key)
     state_dir.mkdir(parents=True, exist_ok=True)
     _clean_stale_pidfiles(port)
 
