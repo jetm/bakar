@@ -24,6 +24,16 @@ from bakar.hashserv import _find_binary, _workspace_port, is_running
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _no_port_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep daemon-start tests independent of live port state.
+
+    Tests that run the start past the binary lookup use a real derived port or
+    the cluster bind host (10.42.0.1), which cannot be bound on the test machine.
+    """
+    monkeypatch.setattr(central_service, "bind_conflict", lambda *_args, **_kwargs: None)
+
+
 def _write_stub_realpath_wedged(tmp_path: Path) -> Path:
     """Executable ``realpath`` stub that never exits - mirrors
     ``tests/test_mounts_probe.py``'s helper of the same name."""
