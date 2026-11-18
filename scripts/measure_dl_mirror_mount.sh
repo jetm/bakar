@@ -17,12 +17,15 @@ Usage: measure_dl_mirror_mount.sh --mount DIR [options]
   --hub HOST         hub address the firewall rule matches (required with --inject)
   --bitbake-dir DIR  BitBake checkout (default: $HOME/repos/personal/yocto/bitbake)
   --smoke PATH       smoke script (default: smoke_dl_file_premirror.py beside this script)
+  --sstate DIR       with --inject, also stat one cold file under this sstate mount
+                     while the hub is blocked (informational comparison, no threshold)
   --inject           also run the unreachable-mount rows; installs a temporary
                      firewall DROP rule for TCP 2049 to HOST through sudo
   --help             show this help
 
 Safe rows: mount-info, hit-stat, statfs-probe-up, read-throughput, live-fetch-up.
-With --inject: dangling-stat, statfs-probe-down, live-fetch-down, recovery-stat.
+With --inject: dangling-stat, statfs-probe-down, live-fetch-down, recovery-stat,
+and sstate-cold-stat when --sstate is given.
 Thresholds: stat on a dangling link 20 s, fetch with the mount down 120 s,
 statfs probe 25 s.
 EOF
@@ -34,6 +37,7 @@ BITBAKE_DIR="$HOME/repos/personal/yocto/bitbake"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SMOKE="$SCRIPT_DIR/smoke_dl_file_premirror.py"
 INJECT=0
+SSTATE=""
 
 die_usage() {
   echo "measure_dl_mirror_mount.sh: $1" >&2
@@ -62,6 +66,11 @@ while [ $# -gt 0 ]; do
       SMOKE="$2"
       shift 2
       ;;
+    --sstate)
+      [ $# -ge 2 ] || die_usage "--sstate needs a value"
+      SSTATE="$2"
+      shift 2
+      ;;
     --inject)
       INJECT=1
       shift
@@ -86,6 +95,7 @@ RUN=0
 FAILS=0
 EXPECTED=5
 [ "$INJECT" -eq 1 ] && EXPECTED=9
+[ "$INJECT" -eq 1 ] && [ -n "$SSTATE" ] && EXPECTED=10
 RULE_KIND=""
 SCRATCH="$(mktemp -d)"
 
@@ -246,6 +256,12 @@ progress() { echo "measure: $*" >&2; }
 cold_file=""
 if [ "$INJECT" -eq 1 ]; then
   cold_file=$(find "$DL" -type f 2>/dev/null | sed -n 21p || true)
+  # One file under the sstate mount for the informational comparison row; found
+  # now because walking a blocked mount would hang. -quit stops at the first file.
+  sstate_file=""
+  if [ -n "$SSTATE" ]; then
+    sstate_file=$(find "$SSTATE" -type f -print -quit 2>/dev/null || true)
+  fi
   # A small mirror file copied off the mount now, for the blocked-mount fetch.
   small=$(find "$DL" -type f -size -5M -print -quit 2>/dev/null || true)
   if [ -n "$small" ]; then
@@ -289,6 +305,23 @@ if [ "$INJECT" -eq 1 ]; then
     fi
   done
   row dangling-stat "$worst" "$verdict"
+
+  # Informational: the same cold stat on the existing sstate mount, blocked by the
+  # same rule, to see whether the download mirror adds a new kind of stall or only
+  # joins the one the builders already have. No threshold and never a FAIL.
+  if [ -n "$SSTATE" ]; then
+    progress "running sstate-cold-stat (up to 40 s)"
+    if [ -z "$sstate_file" ]; then
+      row sstate-cold-stat 0 "skipped: no file found under $SSTATE before the block"
+    else
+      timed timeout -k 5 40 stat "$sstate_file"
+      if [ "$RC" -eq 124 ]; then
+        row sstate-cold-stat "$T" "stalled: timed out at 40s (informational)"
+      else
+        row sstate-cold-stat "$T" "answered rc=$RC (informational)"
+      fi
+    fi
+  fi
 
   progress "dangling-stat done; running statfs-probe-down"
   # bakar's readiness probe runs stat -f in a child killed at a 20 s deadline
