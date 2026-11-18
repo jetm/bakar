@@ -131,12 +131,26 @@ trap on_exit EXIT
 
 T=0
 RC=0
+CHILD=0
+
+# GNU timeout runs its command in its own process group, so a terminal Ctrl-C never
+# reaches it and bash would wait out the full timeout before running any trap. Commands
+# therefore run in the background and are waited on: `wait` returns as soon as a trapped
+# signal arrives, the child is told to stop, and the EXIT trap removes the firewall rule.
+on_signal() {
+  if [ "$CHILD" -gt 0 ]; then kill -TERM "$CHILD" 2>/dev/null || true; fi
+  exit 130
+}
+trap on_signal INT TERM
 
 # timed CMD...: run with output discarded; sets T (seconds) and RC (exit status).
 timed() {
   local s e
   s=$(date +%s.%N)
-  "$@" >/dev/null 2>&1 && RC=0 || RC=$?
+  "$@" >/dev/null 2>&1 &
+  CHILD=$!
+  wait "$CHILD" && RC=0 || RC=$?
+  CHILD=0
   e=$(date +%s.%N)
   T=$(awk -v s="$s" -v e="$e" 'BEGIN { printf "%.3f", e - s }')
 }
@@ -168,7 +182,10 @@ LIVE_ARGS=()
 smoke_live() {
   local out="$SCRATCH/smoke.out" s e rc=0
   s=$(date +%s.%N)
-  timeout -k 5 "$1" "${PY[@]}" "$SMOKE" --bitbake-dir "$BITBAKE_DIR" --mirror-dir "$DL" "${LIVE_ARGS[@]}" >"$out" 2>&1 || rc=$?
+  timeout -k 5 "$1" "${PY[@]}" "$SMOKE" --bitbake-dir "$BITBAKE_DIR" --mirror-dir "$DL" "${LIVE_ARGS[@]}" >"$out" 2>&1 &
+  CHILD=$!
+  wait "$CHILD" || rc=$?
+  CHILD=0
   e=$(date +%s.%N)
   T=$(awk -v s="$s" -v e="$e" 'BEGIN { printf "%.3f", e - s }')
   RC=$rc
@@ -246,7 +263,14 @@ fi
 
 # --- injected rows -----------------------------------------------------
 
-progress() { echo "measure: $*" >&2; }
+# Once the rule is installed, every phase announcement also refreshes sudo's cached
+# credential without prompting: the injected rows can run past sudo's default five
+# minutes in total, and the trap's removal needs a valid credential to work without a
+# terminal. The longest single phase (155 s) stays inside that window.
+progress() {
+  echo "measure: $*" >&2
+  if [ -n "$RULE_KIND" ]; then sudo -n -v 2>/dev/null || true; fi
+}
 
 # The dangling link must point at a file nothing has looked up yet: hit-stat and
 # the read rows warmed the attribute cache for the first files, and a cached

@@ -209,6 +209,25 @@ def test_tarball_is_spared_when_its_clone_is_also_planned(tmp_path: Path) -> Non
     assert plan.kept["tarball", "clone also planned"] == 1
 
 
+def test_clone_size_counts_a_hard_linked_file_once(tmp_path: Path) -> None:
+    clone = _make_clone(tmp_path, "old")
+    (clone / "objects").write_bytes(b"x" * 100)
+    os.link(clone / "objects", clone / "objects-alias")
+    os.utime(tmp_path / "git2" / "old.done", (NOW - 40 * DAY, NOW - 40 * DAY))
+    plan = _plan(tmp_path, clone_older_than_days=30)
+    (item,) = plan.items["clone"]
+    assert item.size == len("ref: refs/heads/main\n") + 100
+
+
+def test_clone_item_records_its_stamp_mtime(tmp_path: Path) -> None:
+    _make_clone(tmp_path, "old")
+    stamp = tmp_path / "git2" / "old.done"
+    os.utime(stamp, (NOW - 40 * DAY, NOW - 40 * DAY))
+    plan = _plan(tmp_path, clone_older_than_days=30)
+    (item,) = plan.items["clone"]
+    assert item.stamp_mtime_ns == os.lstat(stamp).st_mtime_ns
+
+
 def test_tarball_without_clone_kept(tmp_path: Path) -> None:
     _pair(tmp_path, "git2_p.tar.gz")
     plan = _plan(tmp_path)

@@ -60,6 +60,10 @@ class Item:
     size: int
     lock: Path
     stat_key: tuple[int, int]
+    # A clone's own directory mtime can stay put across a fetch that adds nothing,
+    # while its stamp is rewritten; the stamp is what the age rule read, so it is
+    # re-read under the lock too.
+    stamp_mtime_ns: int | None = None
 
 
 @dataclass(frozen=True)
@@ -104,11 +108,15 @@ def _top_level_names(directory: Path) -> list[str]:
 def _clone_size(clone: Path) -> int:
     """Sum of regular-file ``lstat`` sizes under ``clone``, never following a link."""
     total = 0
+    seen: set[tuple[int, int]] = set()
     for root, _dirs, files in os.walk(clone, followlinks=False):
         for fname in files:
             st = _lstat_regular(os.path.join(root, fname))
-            if st is not None:
-                total += st.st_size
+            if st is None or (st.st_dev, st.st_ino) in seen:
+                continue
+            # A hard-linked file frees its blocks once, however many names it has here.
+            seen.add((st.st_dev, st.st_ino))
+            total += st.st_size
     return total
 
 
@@ -235,6 +243,7 @@ def _plan_clones(dl_dir: Path, older_than_days: int, now: float, plan: Plan) -> 
                 size=_clone_size(clone),
                 lock=git2 / (name + ".lock"),
                 stat_key=(st.st_size, st.st_mtime_ns),
+                stamp_mtime_ns=stamp.st_mtime_ns,
             )
         )
 
@@ -311,7 +320,14 @@ def _payload_unchanged(item: Item, dl_dir: Path) -> bool:
     except OSError:
         return False
     wanted = stat.S_ISDIR if item.kind == "clone" else stat.S_ISREG
-    return wanted(st.st_mode) and (st.st_size, st.st_mtime_ns) == item.stat_key
+    if not (wanted(st.st_mode) and (st.st_size, st.st_mtime_ns) == item.stat_key):
+        return False
+    if item.stamp_mtime_ns is not None:
+        try:
+            return os.lstat(item.paths[0]).st_mtime_ns == item.stamp_mtime_ns
+        except OSError:
+            return False
+    return True
 
 
 def _lock_is_current(fd: int, path: Path) -> bool:
@@ -348,6 +364,14 @@ def _apply_item(item: Item, dl_dir: Path, result: ApplyResult) -> None:
         stamp, payload = item.paths
         try:
             _remove(stamp)
+            if item.kind == "clone":
+                # Move the clone out of BitBake's sight before the recursive delete: one
+                # that fails halfway would otherwise leave a half-removed clone that the
+                # git fetcher would reuse and run `git fetch` in. The *.pruned.tmp name is
+                # skipped by this planner and is not a path BitBake looks a clone up by.
+                aside = payload.with_name(payload.name + ".pruned.tmp")
+                os.rename(payload, aside)
+                payload = aside
             _remove(payload, tree=item.kind == "clone")
         except OSError:
             # The stamp goes first, so a failure here leaves a payload with no

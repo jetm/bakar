@@ -147,6 +147,38 @@ def test_symlink_at_the_lock_path_is_not_opened_through(dl: Path, tmp_path: Path
     assert (dl / "a.tar.gz").exists()
 
 
+def test_failed_clone_delete_leaves_no_clone_at_its_own_name(dl: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A recursive delete that fails halfway must not leave a half-removed clone where
+    # BitBake's git fetcher would reuse it: the clone is moved aside first.
+    item = _clone_item(dl)
+    real = cache_prune._remove
+
+    def flaky(path: Path, *, tree: bool = False) -> None:
+        if tree:
+            raise OSError("disk error")
+        real(path, tree=tree)
+
+    monkeypatch.setattr(cache_prune, "_remove", flaky)
+    result = apply_plan(_plan(item), dl)
+    assert result.kept["clone", "remove failed"] == 1
+    assert not (dl / "git2" / "old").exists()
+    assert not (dl / "git2" / "old.done").exists()
+    assert (dl / "git2" / "old.pruned.tmp").is_dir()
+
+
+def test_clone_whose_stamp_was_rewritten_after_planning_is_kept(dl: Path) -> None:
+    # A fetch that adds nothing rewrites the stamp but may leave the directory mtime
+    # alone; the age rule read the stamp, so the stamp is re-read under the lock.
+    item = _clone_item(dl)
+    stamp = dl / "git2" / "old.done"
+    planned = os.lstat(stamp).st_mtime_ns
+    item = Item(item.kind, item.name, item.paths, item.size, item.lock, item.stat_key, stamp_mtime_ns=planned)
+    os.utime(stamp, ns=(planned + 10**9, planned + 10**9))
+    result = apply_plan(_plan(item), dl)
+    assert result.kept["clone", "changed since planned"] == 1
+    assert (dl / "git2" / "old").is_dir()
+
+
 def test_lock_file_gone_after_removal(dl: Path) -> None:
     item = _hub_item(dl)
     apply_plan(_plan(item), dl)

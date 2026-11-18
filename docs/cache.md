@@ -92,6 +92,8 @@ Three classes are planned, each verified before it is listed:
 
 The clone age is the stamp's last write, not the last time a build used the clone. Both downloads filesystems are mounted `noatime`, so reads leave no trace, and a repository that every build still pins reads as old as its last fetch. Choose DAYS with that in mind, and expect a long-pinned repository to be re-cloned from upstream on its next build.
 
+A clone is renamed to `git2/<name>.pruned.tmp` before it is deleted, so a delete that fails halfway never leaves a half-removed clone where BitBake would reuse it. The report counts that clone as kept (`remove failed`); the leftover directory is ignored by every later run and can be deleted by hand. The stamp is checked again under the lock, so a clone that was fetched after the plan was made is kept. Sizes count a hard-linked file once.
+
 With `--apply`, each item is removed under the per-file lock BitBake uses: the verb takes the item's `.lock` without waiting, and an item whose lock is held is kept as `in use`. Under the lock it checks that the payload still has the planned size and modification time, and keeps it as `changed since planned` if not. The stamp is removed before the payload, so an interrupted removal leaves a payload BitBake treats as not downloaded. Other keep reasons are `lock unavailable` and `remove failed`.
 
 Sample report from a dry run with `--clone-older-than 90`:
