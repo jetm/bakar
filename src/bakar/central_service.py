@@ -18,6 +18,7 @@ import shutil
 import socket
 import subprocess
 import time
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
@@ -72,6 +73,75 @@ def is_listening(host: str, port: int, *, timeout: float = 0.5) -> bool:
         return False
     sock.close()
     return True
+
+
+def wait_listening(host: str, port: int, deadline_seconds: float) -> bool:
+    """Poll ``is_listening`` every 0.1 s until it succeeds or the deadline passes.
+
+    Probes at least once, so a zero deadline still reports a listener that is
+    already up.
+    """
+    end = time.monotonic() + deadline_seconds
+    while True:
+        if is_listening(host, port):
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.1)
+
+
+@dataclass(frozen=True)
+class OwnedDaemon:
+    """A running daemon process found in the process table."""
+
+    pid: int
+    argv: tuple[str, ...]
+
+
+_PROC_ROOT = Path("/proc")
+
+
+# devtool-debt: scans every same-uid process command line on each call. Ceiling: a few thousand
+# processes, or a /proc entry that blocks (NFS or FUSE).
+# Upgrade trigger: a measured daemon start or stop slower than 100 ms from this scan, or a hung
+# scan reported in the field.
+def find_owned_daemons(tool: str, database: Path) -> list[OwnedDaemon]:
+    """Return this user's running ``tool`` processes serving ``database``, by pid.
+
+    A process matches when the file name of its first or second argument is
+    ``tool`` (a direct execution, or an interpreter running the script), one
+    of its arguments equals the lexically normalized ``database`` as a whole,
+    and the process directory is owned by the current uid. A process that
+    vanishes or whose command line is unreadable is skipped.
+
+    ``database`` is normalized the way :func:`workspace_port` normalizes the
+    state key, so a caller holding a relative or ``..``-spelled key (the
+    clean-cache ``SSTATE_DIR``) still finds the daemon spawned under the
+    absolute key the config resolves.
+    """
+    db_arg = os.fspath(mounts._lexical_normalize(database))
+    uid = os.getuid()
+    found: list[OwnedDaemon] = []
+    try:
+        entries = list(os.scandir(_PROC_ROOT))
+    except OSError:
+        return found
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            raw = (Path(entry.path) / "cmdline").read_bytes()
+        except OSError:
+            continue
+        argv = tuple(a.decode(errors="surrogateescape") for a in raw.split(b"\0") if a)
+        if db_arg not in argv:
+            continue
+        if not any(Path(a).name == tool for a in argv[:2]):
+            continue
+        found.append(OwnedDaemon(pid=int(entry.name), argv=argv))
+    return sorted(found, key=lambda d: d.pid)
 
 
 def bind_conflict(host: str, port: int) -> str | None:

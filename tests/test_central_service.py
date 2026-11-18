@@ -9,8 +9,13 @@ test run touches the real ``~/.local/state/bakar`` directory.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import socket
+import subprocess
+import sys
+import threading
+import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,6 +23,7 @@ import pytest
 from bakar import central_service
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 
@@ -342,3 +348,196 @@ def test_bind_conflict_unresolvable_host(monkeypatch: pytest.MonkeyPatch) -> Non
     assert reason is not None
     assert "nowhere.invalid" in reason
     assert "50123" in reason
+
+
+_SLEEPER = "import sys, time\ntime.sleep(60)\n"
+
+
+def _spawn(script: Path, *args: str) -> subprocess.Popen[bytes]:
+    return subprocess.Popen([sys.executable, str(script), *args], start_new_session=True)
+
+
+@pytest.fixture
+def children() -> Iterator[list[subprocess.Popen[bytes]]]:
+    procs: list[subprocess.Popen[bytes]] = []
+    yield procs
+    for proc in procs:
+        proc.kill()
+        proc.wait()
+
+
+def _wait_cmdline(proc: subprocess.Popen[bytes]) -> None:
+    """Block until the child has exec'd, so its command line is readable."""
+    path = pathlib.Path(f"/proc/{proc.pid}/cmdline")
+    for _ in range(100):
+        if path.read_bytes().count(b"\0") >= 2:
+            return
+        time.sleep(0.05)
+
+
+def _script(tmp_path: Path, name: str) -> Path:
+    script = tmp_path / name
+    script.write_text(_SLEEPER)
+    return script
+
+
+@pytest.mark.unit
+def test_find_owned_daemons_matches_tool_and_database(tmp_path: Path, children: list[subprocess.Popen[bytes]]) -> None:
+    db = tmp_path / "hashserv.db"
+    script = _script(tmp_path, "bitbake-hashserv")
+    proc = _spawn(script, "--database", str(db))
+    children.append(proc)
+    _wait_cmdline(proc)
+
+    found = central_service.find_owned_daemons("bitbake-hashserv", db)
+
+    assert [d.pid for d in found] == [proc.pid]
+    assert found[0].argv == (sys.executable, str(script), "--database", str(db))
+
+
+@pytest.mark.unit
+def test_find_owned_daemons_matches_unnormalized_database_spelling(
+    tmp_path: Path, children: list[subprocess.Popen[bytes]]
+) -> None:
+    """A ``..``-spelled path to the same database finds the daemon spawned under the absolute one."""
+    db = tmp_path / "ws" / ".bakar" / "prserv.sqlite3"
+    proc = _spawn(_script(tmp_path, "bitbake-prserv"), "-f", str(db))
+    children.append(proc)
+    _wait_cmdline(proc)
+
+    found = central_service.find_owned_daemons("bitbake-prserv", tmp_path / "x" / ".." / "ws" / ".bakar" / db.name)
+
+    assert [d.pid for d in found] == [proc.pid]
+
+
+@pytest.mark.unit
+def test_find_owned_daemons_ignores_other_database(tmp_path: Path, children: list[subprocess.Popen[bytes]]) -> None:
+    script = _script(tmp_path, "bitbake-hashserv")
+    proc = _spawn(script, "--database", str(tmp_path / "other.db"))
+    children.append(proc)
+    _wait_cmdline(proc)
+
+    assert central_service.find_owned_daemons("bitbake-hashserv", tmp_path / "hashserv.db") == []
+
+
+@pytest.mark.unit
+def test_find_owned_daemons_ignores_database_substring(tmp_path: Path, children: list[subprocess.Popen[bytes]]) -> None:
+    db = tmp_path / "hashserv.db"
+    script = _script(tmp_path, "bitbake-hashserv")
+    proc = _spawn(script, "--database", f"{db}.bak")
+    children.append(proc)
+    _wait_cmdline(proc)
+
+    assert central_service.find_owned_daemons("bitbake-hashserv", db) == []
+
+
+@pytest.mark.unit
+def test_find_owned_daemons_ignores_script_with_other_name(
+    tmp_path: Path, children: list[subprocess.Popen[bytes]]
+) -> None:
+    db = tmp_path / "hashserv.db"
+    proc = _spawn(_script(tmp_path, "something-else"), "--database", str(db))
+    children.append(proc)
+    _wait_cmdline(proc)
+
+    assert central_service.find_owned_daemons("bitbake-hashserv", db) == []
+
+
+@pytest.mark.unit
+def test_find_owned_daemons_ignores_tool_name_as_later_argument(
+    tmp_path: Path, children: list[subprocess.Popen[bytes]]
+) -> None:
+    db = tmp_path / "hashserv.db"
+    proc = _spawn(_script(tmp_path, "something-else"), "--database", str(db), "bitbake-hashserv")
+    children.append(proc)
+    _wait_cmdline(proc)
+
+    assert central_service.find_owned_daemons("bitbake-hashserv", db) == []
+
+
+@pytest.mark.unit
+def test_find_owned_daemons_ignores_other_uid(
+    tmp_path: Path, children: list[subprocess.Popen[bytes]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "hashserv.db"
+    proc = _spawn(_script(tmp_path, "bitbake-hashserv"), "--database", str(db))
+    children.append(proc)
+    _wait_cmdline(proc)
+    other_uid = os.getuid() + 1
+    monkeypatch.setattr(central_service.os, "getuid", lambda: other_uid)
+
+    assert central_service.find_owned_daemons("bitbake-hashserv", db) == []
+
+
+@pytest.mark.unit
+def test_find_owned_daemons_ignores_terminated_child(tmp_path: Path) -> None:
+    db = tmp_path / "hashserv.db"
+    proc = _spawn(_script(tmp_path, "bitbake-hashserv"), "--database", str(db))
+    _wait_cmdline(proc)
+    proc.kill()
+    proc.wait()
+
+    assert central_service.find_owned_daemons("bitbake-hashserv", db) == []
+
+
+@pytest.mark.unit
+def test_find_owned_daemons_skips_unreadable_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = tmp_path / "proc"
+    (fake / "100" / "cmdline").mkdir(parents=True)  # reading a directory raises OSError
+    good = fake / "200"
+    good.mkdir()
+    db = tmp_path / "hashserv.db"
+    (good / "cmdline").write_bytes(b"\0".join([b"bitbake-hashserv", b"--database", os.fsencode(db)]) + b"\0")
+    monkeypatch.setattr(central_service, "_PROC_ROOT", fake)
+
+    found = central_service.find_owned_daemons("bitbake-hashserv", db)
+
+    assert [d.pid for d in found] == [200]
+
+
+@pytest.mark.unit
+def test_find_owned_daemons_sorted_by_pid(tmp_path: Path, children: list[subprocess.Popen[bytes]]) -> None:
+    db = tmp_path / "hashserv.db"
+    script = _script(tmp_path, "bitbake-hashserv")
+    for _ in range(3):
+        proc = _spawn(script, "--database", str(db))
+        children.append(proc)
+        _wait_cmdline(proc)
+
+    pids = [d.pid for d in central_service.find_owned_daemons("bitbake-hashserv", db)]
+
+    assert pids == sorted(p.pid for p in children)
+    assert len(pids) == 3
+
+
+@pytest.mark.unit
+def test_wait_listening_true_for_real_listener() -> None:
+    with socket.socket() as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen()
+        assert central_service.wait_listening("127.0.0.1", srv.getsockname()[1], 2.0) is True
+
+
+@pytest.mark.unit
+def test_wait_listening_false_for_closed_port_after_deadline() -> None:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    start = time.monotonic()
+
+    assert central_service.wait_listening("127.0.0.1", port, 0.3) is False
+    assert time.monotonic() - start >= 0.3
+
+
+@pytest.mark.unit
+def test_wait_listening_true_for_late_listener() -> None:
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    port = srv.getsockname()[1]
+    timer = threading.Timer(0.3, srv.listen)
+    timer.start()
+    try:
+        assert central_service.wait_listening("127.0.0.1", port, 3.0) is True
+    finally:
+        timer.join()
+        srv.close()
