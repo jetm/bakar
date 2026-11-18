@@ -674,6 +674,101 @@ about 12.3 to 5.3.
 
 decision (slowest-first dealing): kept
 
+Correction (task 17.1): the mechanism stated above (the first quarter of the order
+is the batch dealt first, so one slow test lands in every chunk) was wrong for
+worksteal. Worksteal deals the whole order at startup in `workers` contiguous
+chunks, so the spread put every listed test into the first quarter of the order,
+that is into the first `workers / 4` chunks, and at 4 workers all of them into
+worker 0's chunk (placement counts in the next subsection). The tail it shrank was
+measured, the reason given for it was not. The old decision line stays as written.
+
+### Ten-second round: slowest-first dealing, chunk-aware
+
+Lever (task 16.1): `tests/conftest.py` computes worksteal's initial chunk sizes
+(`len(pending) // nodes_remaining`, first chunks smallest) and deals the listed
+slowest tests round-robin, rank `k` to chunk `k % workers`, so every worker's
+chunk starts with an equal share, longest first. The id list is
+`tests/slowest_tests.txt`.
+
+Arms, all on pc3, `uv run --no-sync pytest -q -p phase_timeline` (the default
+addopts; `-n 4` appended for the 4-worker series):
+
+- control: `git archive` of `2dc1ed66` with `tests/conftest.py` and
+  `tests/slowest_tests.txt` taken from `d3fdae7e` (the spread hook), and with
+  `tests/test_slowest_first_dealing.py` and `tests/regen_slowest_tests.py` deleted
+  (the new test imports the new hook and cannot be collected without it). The
+  lever and off arms therefore also run those 25 fast tests: control 8352 passed,
+  lever and off 8377 passed, 13 skipped each.
+- lever: `git archive` of `2dc1ed66`.
+- off (informational): the lever tree with `-p no:bakar_slowest_first`, no
+  dealing at all.
+
+Each run was gated on CPU pressure some avg10 under 0.5 (0.00 to 0.18 before every
+run) and no pytest process; one untimed warm-up per arm and worker count (the first
+one, 14.3 s, was cold); order per pair control, lever, off; every run rc 0 with the
+expected counts (a first attempt expected 8350 and 8375 from the earlier note,
+stopped at the first warm-up on the count check, and is not used). The phase
+timeline plugin was loaded in every run, so absolute walls carry its overhead
+equally in all arms and are not directly comparable with the 9.36 s median of the
+dependency-sync subsection. Load1 before each run climbs from 7.75 to 11.94 over the
+16-worker series because it is a one-minute average that includes the previous
+runs; the pressure gate was quiet each time.
+
+| run | load1 before | wall (s) | user+sys (s) | tail (s) | idle worker-s |
+|-----|--------------|----------|--------------|----------|---------------|
+| w16-ctl-1 | 7.75 | 9.42 | 94.54 | 0.310 | 4.924 |
+| w16-lev-1 | 8.56 | 9.91 | 93.83 | 0.887 | 12.887 |
+| w16-off-1 | 9.47 | 9.59 | 92.77 | 0.620 | 8.617 |
+| w16-ctl-2 | 10.31 | 9.80 | 94.44 | 0.596 | 10.712 |
+| w16-lev-2 | 10.71 | 9.50 | 93.63 | 0.423 | 6.194 |
+| w16-off-2 | 11.36 | 10.08 | 93.55 | 1.154 | 16.397 |
+| w16-ctl-3 | 11.67 | 9.42 | 94.68 | 0.237 | 4.256 |
+| w16-lev-3 | 11.94 | 9.45 | 93.67 | 0.448 | 5.826 |
+| w16-off-3 | 11.69 | 9.73 | 93.49 | 0.740 | 10.629 |
+| w4-ctl-1 | 5.58 | 21.60 | 61.13 | 0.032 | 0.115 |
+| w4-lev-1 | 5.00 | 21.64 | 61.20 | 0.053 | 0.226 |
+| w4-off-1 | 4.01 | 21.97 | 61.08 | 0.383 | 1.619 |
+| w4-ctl-2 | 3.72 | 21.56 | 60.78 | 0.138 | 0.436 |
+| w4-lev-2 | 3.73 | 22.60 | 61.46 | 1.220 | 3.693 |
+| w4-off-2 | 3.17 | 22.04 | 61.27 | 0.581 | 1.919 |
+| w4-ctl-3 | 3.40 | 21.77 | 60.92 | 0.322 | 1.057 |
+| w4-lev-3 | 3.23 | 21.72 | 61.27 | 0.132 | 0.590 |
+| w4-off-3 | 3.45 | 21.95 | 61.04 | 0.523 | 1.830 |
+
+Medians (wall / tail / idle worker-seconds):
+
+| workers | control | lever | off |
+|---------|---------|-------|-----|
+| 16 | 9.42 / 0.310 / 4.924 | 9.50 / 0.448 / 6.194 | 9.73 / 0.740 / 10.629 |
+| 4 | 21.60 / 0.138 / 0.436 | 21.72 / 0.132 / 0.590 | 21.97 / 0.523 / 1.830 |
+
+Keep rule: at 16 workers lever minus control is 0.08 s (limit 0.1 s, passes by
+0.02 s; per pair +0.49, -0.30, +0.03 s); at 4 workers it is 0.12 s (limit 0.2 s;
+per pair +0.04, +1.04, -0.05 s, the middle pair being a 1.22 s tail outlier). The
+off arm is slower than the lever at both worker counts (9.73 against 9.50 s at 16,
+21.97 against 21.72 s at 4), so the lever is not a net loss on a 4-worker CI
+runner. The lever does not beat the control on wall in this measurement: the
+spread hook and the chunk-aware hook are within noise of each other, and both
+beat no dealing by 0.2 to 0.4 s. The 16-worker margin is thin: three pairs, and
+two of the three lever walls (9.91, 9.50) sit above the control's median.
+
+Placement, `--collect-only -qq --randomly-seed=1` under `PYTEST_XDIST_WORKER=gw0`
+with `PYTEST_XDIST_WORKER_COUNT` 16 and 4, listed tests per worker's first chunk
+(the hook is the control's, the lever's, or absent):
+
+| workers | control (spread) | lever (chunk-aware) | off |
+|---------|------------------|---------------------|-----|
+| 16 | `[17, 16, 16, 15, 0 x 12]` | `[4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 4, 4, 4, 4, 4, 2]` | `[0, 1, 3, 1, 1, 4, 4, 0, 0, 7, 0, 0, 6, 31, 2, 3]` |
+| 4 | `[64, 0, 0, 0]` | `[16, 17, 16, 14]` | `[5, 9, 7, 42]` |
+
+The control stacks all 64 listed tests into the first four chunks at 16 workers
+and into worker 0's chunk at 4 workers; the lever gives every chunk its share at
+the chunk head (first listed test at index 0 in every chunk). The lever rows total
+63 because one listed id, `tests/test_mounts_run_bounded.py::test_checks_fail_when_the_deadline_exit_is_removed`,
+is not collected on this tree (the hook warns about it); the list was not edited.
+
+decision (slowest-first dealing, chunk-aware): kept
+
 ### Ten-second round: coverage terminal report
 
 Lever: switch the `term-missing` terminal table off while the total behind
