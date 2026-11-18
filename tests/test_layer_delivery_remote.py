@@ -37,6 +37,7 @@ from bakar.steps.layer_delivery_remote import (
     ensure_worktree_script,
     marker_json,
 )
+from tests._proc_locks import flock_rows
 
 _MARKER_KEYS = ("source_host", "source_path", "name", "commit", "snapshot", "delivered_at")
 
@@ -548,21 +549,6 @@ def _flock_probe(lock: str, mode: str) -> int:
     return subprocess.run(["flock", "-n", mode, lock, "true"], timeout=10, check=False).returncode
 
 
-def _flock_entries(lock: str) -> list[tuple[bool, str, int]]:
-    """``(waiting, mode, pid)`` for every flock on ``lock``'s inode, read from ``/proc/locks``."""
-    st = os.stat(lock)
-    key = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
-    entries = []
-    for line in Path("/proc/locks").read_text().splitlines():
-        fields = line.split()
-        waiting = len(fields) > 1 and fields[1] == "->"
-        if waiting:
-            del fields[1]
-        if len(fields) >= 6 and fields[1] == "FLOCK" and fields[5] == key:
-            entries.append((waiting, fields[3], int(fields[4])))
-    return entries
-
-
 def _descends_from(pid: int, ancestor: int) -> bool:
     """Whether ``pid`` is ``ancestor`` or one of its descendants, walking ``/proc/<pid>/stat``."""
     while pid > 1:
@@ -642,18 +628,18 @@ def test_build_started_during_a_move_refuses_the_moved_tree(workspace: Path, tmp
     root = tmp_path / "wts"
     proc, first, second, release = _start_slow_move(workspace, root, tmp_path)
     lock = build_lock_path(str(root), "wt1")
+    guarded = subprocess.Popen(
+        ["bash", "-c", build_guard(worktree_root=str(root), name="wt1", commit=first) + " true"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     try:
-        guarded = subprocess.Popen(
-            ["bash", "-c", build_guard(worktree_root=str(root), name="wt1", commit=first) + " true"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
 
         def guard_queued() -> bool:
             return any(
                 waiting and mode == "READ" and _descends_from(pid, guarded.pid)
-                for waiting, mode, pid in _flock_entries(lock)
+                for waiting, mode, pid in flock_rows(lock)
             )
 
         # The guard's ``flock -s 9`` must be queued behind the move's exclusive hold:
@@ -661,10 +647,25 @@ def test_build_started_during_a_move_refuses_the_moved_tree(workspace: Path, tmp
         _wait_for(lambda: guarded.poll() is not None or guard_queued(), "the build guard to wait on the build lock")
         assert guarded.poll() is None, "the guard finished before the move released the build lock"
         assert proc.poll() is None, "the move left its checkout before the guard queued"
-    finally:
         release.touch()
         _, err = proc.communicate(timeout=30)
-    _, guard_err = guarded.communicate(timeout=30)
+        _, guard_err = guarded.communicate(timeout=30)
+    finally:
+        # Reached on any failure above: free the move, then kill and reap both children
+        # so no bash is left holding its pipes or the build lock.
+        release.touch()
+        for child in (guarded, proc):
+            if child.poll() is None:
+                child.kill()
+            try:
+                child.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                # A grandchild still holds the pipes: close them so the failure above is reported,
+                # not a 30 s pytest timeout that would mask it.
+                for stream in (child.stdout, child.stderr):
+                    if stream is not None:
+                        stream.close()
+                child.wait()
     assert proc.returncode == 0, err
     assert guarded.returncode == EXIT_MOVED, guard_err
     assert _head(root / "wt1" / "meta-avocado") == second

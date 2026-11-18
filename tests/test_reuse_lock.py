@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import functools
+import inspect
 import os
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ from bakar.observability import RunLogger
 from bakar.steps import kas_build, kas_pty, repo_reuse
 from bakar.steps.build_ui import BuildUIState
 from bakar.steps.repo_reuse import RepoState, workspace_lock
+from tests._proc_locks import flock_rows
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -308,15 +310,7 @@ def test_in_use_lock_holders_share(tmp_path: Path) -> None:
 
 def _other_shared_holders(lock: Path) -> list[int]:
     """Pids other than this one holding ``lock`` shared, from ``/proc/locks`` (waiters excluded)."""
-    st = lock.stat()
-    key = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
-    with open("/proc/locks") as fh:
-        rows = [line.split() for line in fh]
-    return [
-        int(f[4])
-        for f in rows
-        if len(f) >= 6 and f[1] == "FLOCK" and f[3] == "READ" and f[5] == key and int(f[4]) != os.getpid()
-    ]
+    return [pid for waiting, mode, pid in flock_rows(lock) if not waiting and mode == "READ" and pid != os.getpid()]
 
 
 def test_keep_in_use_until_exit_outlives_the_front_end(tmp_path: Path) -> None:
@@ -351,7 +345,7 @@ def test_keep_in_use_until_exit_is_a_noop_without_a_hold(tmp_path: Path) -> None
 # onto its PID through ns_last_pid, and the lock must still come free.
 _PID_REUSE = (
     "import fcntl, os, subprocess, sys, time\n"
-    "from pathlib import Path\n"
+    "from pathlib import Path\n" + inspect.getsource(flock_rows) + "\n"
     "from bakar.steps import repo_reuse\n"
     "ws = Path(sys.argv[1])\n"
     "lock = ws / '.bakar' / repo_reuse.IN_USE_LOCK_NAME\n"
@@ -359,11 +353,7 @@ _PID_REUSE = (
     "build = subprocess.Popen(['sleep', '30'])\n"
     "repo_reuse.keep_in_use_until_exit(ws, build)\n"
     "def holder():\n"
-    "    st = lock.stat()\n"
-    "    key = f'{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}'\n"
-    "    rows = [line.split() for line in open('/proc/locks')]\n"
-    "    return any(len(f) >= 6 and f[1] == 'FLOCK' and f[3] == 'READ' and f[5] == key\n"
-    "               and int(f[4]) != os.getpid() for f in rows)\n"
+    "    return any(not w and m == 'READ' and p != os.getpid() for w, m, p in flock_rows(lock))\n"
     "deadline = time.monotonic() + 10\n"
     "while not holder() and time.monotonic() < deadline:\n"
     "    time.sleep(0.01)\n"
