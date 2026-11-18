@@ -10,7 +10,7 @@ module holds that shared logic; each caller keeps its own module-level
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
@@ -52,3 +52,25 @@ def stderr_target(binary: str, state_dir: Path, log_path: Path | None = None) ->
     finally:
         if stderr_fh is not None:
             stderr_fh.close()
+
+
+def record_refusal(log_path: Path, state_dir: Path, text: str, *, append: bool = False) -> None:
+    """Best-effort replace ``log_path`` with the single line ``bakar: <text>``.
+
+    ``append=True`` adds the line after the existing content instead, for a log
+    a live daemon is still writing to.
+
+    The reason is a diagnostic: a failing write or close (full disk, quota,
+    unwritable state dir) must not turn a documented no-URL fallback into an
+    exception in the caller, so every ``OSError`` is swallowed.
+    """
+    line = f"bakar: {text}\n".encode()
+    if append:
+        with suppress(OSError):
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("ab") as fh:
+                fh.write(line)
+        return
+    with suppress(OSError), stderr_target("", state_dir, log_path=log_path) as fh:
+        if fh is not None:
+            fh.write(line)

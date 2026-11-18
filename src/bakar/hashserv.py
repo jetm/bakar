@@ -21,7 +21,6 @@ Two locations are kept deliberately separate:
 
 from __future__ import annotations
 
-import contextlib
 import os
 import signal
 import subprocess
@@ -271,14 +270,9 @@ def ensure_running(state_key: Path, *, binary_root: Path, bind_host: str = "loca
     # the other process. Refuse before spawning and leave no PID/port file.
     conflict = central_service.bind_conflict(bind_host, port)
     if conflict is not None:
-        # The reason is a diagnostic: a failing write (full disk, quota) must not
-        # turn the documented no-URL fallback into an exception in the caller.
-        with (
-            contextlib.suppress(OSError),
-            daemon_log.stderr_target(str(binary), state_dir, log_path=state_dir / _STDERR_FILENAME) as conflict_fh,
-        ):
-            if conflict_fh is not None:
-                conflict_fh.write(f"bakar: {conflict}; bitbake-hashserv was not started\n".encode())
+        daemon_log.record_refusal(
+            state_dir / _STDERR_FILENAME, state_dir, f"{conflict}; bitbake-hashserv was not started"
+        )
         return None
 
     # Redirect daemon stderr directly to a log file rather than PIPE so the
