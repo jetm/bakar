@@ -1,8 +1,8 @@
-"""``_clean_build_dir`` must also wipe a host-mode ``local_tmpdir_base`` override.
+"""``_clean_build_dir`` removes the build directory and the TMPDIR inside it.
 
-The override relocates the build TMPDIR to node-local disk, outside the build
-directory; a clean that only removes ``bsp_root/build_dir_name`` would strand
-the redirected (potentially ~200G) tmp.
+The build TMPDIR always sits under ``bsp_root/build_dir_name``, so the clean
+moves that one tree aside, deletes it, and on a leftover or an interrupt puts
+it back and exits non-zero.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _cfg(workspace: Path, *, local_tmpdir_base: str | None, host_mode: bool) -> BuildConfig:
+def _cfg(workspace: Path, *, host_mode: bool) -> BuildConfig:
     return BuildConfig(
         workspace=workspace,
         bsp_family="nxp",
@@ -36,51 +36,33 @@ def _cfg(workspace: Path, *, local_tmpdir_base: str | None, host_mode: bool) -> 
         repo_branch="scarthgap",
         kas_container_image="",
         host_mode=host_mode,
-        local_tmpdir_base=local_tmpdir_base,
     )
 
 
 @pytest.mark.unit
-def test_clean_build_dir_removes_override_tmpdir(tmp_path: Path) -> None:
-    """An active override -> the out-of-tree resolved TMPDIR is removed too."""
+def test_clean_build_dir_removes_the_build_dir_and_its_in_tree_tmp(tmp_path: Path) -> None:
+    """The resolved TMPDIR sits under build_dir and goes with it; nothing beside it is touched."""
     workspace = tmp_path / "ws"
-    local_base = tmp_path / "local-tmp"
-    cfg = _cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
+    sibling = workspace / "nxp" / "keep-me"
+    sibling.mkdir(parents=True)
+    cfg = _cfg(workspace, host_mode=True)
 
     build_dir = cfg.bsp_root / cfg.build_dir_name
-    (build_dir / "conf").mkdir(parents=True)
     tmpdir = cfg.resolved_tmpdir
     (tmpdir / "work").mkdir(parents=True)
-    assert not tmpdir.is_relative_to(build_dir)
+    assert tmpdir.is_relative_to(build_dir)
 
     _clean_build_dir(cfg)
 
     assert not build_dir.exists()
     assert not tmpdir.exists()
-
-
-@pytest.mark.unit
-def test_clean_build_dir_knob_unset_only_removes_build_dir(tmp_path: Path) -> None:
-    """No override -> resolved TMPDIR sits under build_dir; nothing external is touched."""
-    workspace = tmp_path / "ws"
-    sibling = workspace / "nxp" / "keep-me"
-    sibling.mkdir(parents=True)
-    cfg = _cfg(workspace, local_tmpdir_base=None, host_mode=True)
-
-    build_dir = cfg.bsp_root / cfg.build_dir_name
-    (build_dir / "tmp").mkdir(parents=True)
-    assert cfg.resolved_tmpdir.is_relative_to(build_dir)
-
-    _clean_build_dir(cfg)
-
-    assert not build_dir.exists()
     assert sibling.exists()
 
 
 @pytest.mark.unit
 def test_clean_build_dir_residue_exits_1_without_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A partial removal names the surviving path, never says "removed", and exits 1."""
-    cfg = _cfg(tmp_path / "ws", local_tmpdir_base=None, host_mode=True)
+    cfg = _cfg(tmp_path / "ws", host_mode=True)
     build_dir = cfg.bsp_root / cfg.build_dir_name
     (build_dir / "tmp").mkdir(parents=True)
     stuck = build_dir / "tmp" / "stuck"
@@ -145,7 +127,7 @@ def test_remove_tree_or_exit_still_exits_one_on_a_leftover(tmp_path: Path, monke
 @pytest.mark.unit
 def test_clean_build_dir_absent_directory_does_not_fail(tmp_path: Path) -> None:
     """Nothing to remove is a no-op, not an error."""
-    cfg = _cfg(tmp_path / "ws", local_tmpdir_base=None, host_mode=True)
+    cfg = _cfg(tmp_path / "ws", host_mode=True)
     _clean_build_dir(cfg)
 
 
@@ -165,7 +147,7 @@ def test_residue_report_neutralizes_filenames(
     """Build-tree filenames reach Rich markup and the terminal only after neutralize()."""
     from bakar.commands import console
 
-    cfg = _cfg(tmp_path / "ws", local_tmpdir_base=None, host_mode=True)
+    cfg = _cfg(tmp_path / "ws", host_mode=True)
     build_dir = cfg.bsp_root / cfg.build_dir_name
     (build_dir / "tmp").mkdir(parents=True)
     stuck = build_dir / "tmp" / name
@@ -186,7 +168,7 @@ def test_residue_report_neutralizes_filenames(
 
 
 def _live_cfg(tmp_path: Path) -> tuple[BuildConfig, Path]:
-    cfg = _cfg(tmp_path / "ws", local_tmpdir_base=None, host_mode=True)
+    cfg = _cfg(tmp_path / "ws", host_mode=True)
     build_dir = cfg.bsp_root / cfg.build_dir_name
     (build_dir / "tmp").mkdir(parents=True)
     return cfg, build_dir
@@ -509,12 +491,13 @@ def test_second_removal_gets_its_own_trash_when_the_first_leaves_residue(
     assert not seen[1].exists()
 
 
-def _override_cfg(tmp_path: Path) -> tuple[BuildConfig, Path, Path]:
-    cfg = _cfg(tmp_path / "ws", local_tmpdir_base=str(tmp_path / "local-tmp"), host_mode=True)
+def _tree_cfg(tmp_path: Path) -> tuple[BuildConfig, Path, Path]:
+    cfg = _cfg(tmp_path / "ws", host_mode=True)
     build_dir = cfg.bsp_root / cfg.build_dir_name
     (build_dir / "conf").mkdir(parents=True)
     tmpdir = cfg.resolved_tmpdir
     (tmpdir / "work").mkdir(parents=True)
+    assert tmpdir.parent == build_dir
     return cfg, build_dir, tmpdir
 
 
@@ -527,7 +510,7 @@ def _no_gate(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_residue_renames_the_tree_back_and_the_rerun_exits_one_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg, build_dir, tmpdir = _override_cfg(tmp_path)
+    cfg, build_dir, tmpdir = _tree_cfg(tmp_path)
     _no_gate(monkeypatch)
     monkeypatch.setattr(
         "bakar.fsremove.parallel_rmtree", lambda root, description="": (root / "stuck", OSError("busy"))
@@ -537,43 +520,54 @@ def test_residue_renames_the_tree_back_and_the_rerun_exits_one_again(
         with pytest.raises(typer.Exit) as excinfo:
             _clean_build_dir(cfg)
         assert excinfo.value.exit_code == 1
-        # Both trees are back under their original names; nothing is stranded.
+        # The tree is back under its original name, tmp included; nothing is stranded.
         assert (build_dir / "conf").is_dir()
         assert (tmpdir / "work").is_dir()
         assert not list(build_dir.parent.glob(".bakar-trash-*"))
-        assert not list(tmpdir.parent.glob(".bakar-trash-*"))
+        assert not list(build_dir.glob(".bakar-trash-*"))
 
 
 @pytest.mark.unit
-def test_both_trees_are_moved_aside_before_either_is_deleted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_every_target_is_moved_aside_before_any_is_deleted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The multi-target helper renames all its targets before its first delete."""
+    from bakar.commands._helpers import _remove_trees_or_exit
     from bakar.fsremove import parallel_rmtree
 
-    cfg, build_dir, tmpdir = _override_cfg(tmp_path)
-    _no_gate(monkeypatch)
+    first = tmp_path / "a" / "first"
+    second = tmp_path / "b" / "second"
+    (first / "x").mkdir(parents=True)
+    (second / "y").mkdir(parents=True)
     seen: list[tuple[bool, bool]] = []
 
     def remover(root: Path, description: str = "") -> object:
-        seen.append((build_dir.exists(), tmpdir.exists()))
+        seen.append((first.exists(), second.exists()))
         return parallel_rmtree(root, description)
 
     monkeypatch.setattr("bakar.fsremove.parallel_rmtree", remover)
 
-    _clean_build_dir(cfg)
+    _remove_trees_or_exit([(first, "first"), (second, "second")])
 
     assert seen == [(False, False), (False, False)]
+    assert not first.exists()
+    assert not second.exists()
+    assert not list(first.parent.glob(".bakar-trash-*"))
+    assert not list(second.parent.glob(".bakar-trash-*"))
 
 
 @pytest.mark.unit
 def test_marker_published_during_the_tmpdir_delete_survives(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A build starting while the build directory's trash (tmp inside it) is deleted keeps its fresh tree."""
     from bakar.fsremove import parallel_rmtree
 
-    cfg, build_dir, tmpdir = _override_cfg(tmp_path)
+    cfg, build_dir, tmpdir = _tree_cfg(tmp_path)
     _no_gate(monkeypatch)
+    raced: list[Path] = []
 
     def racing(root: Path, description: str = "") -> object:
-        if root.name.endswith(tmpdir.name):
-            # A build starts after the gate, while the TMPDIR delete runs.
-            build_dir.mkdir(exist_ok=True)
+        if not raced and root.name.endswith(build_dir.name) and root != build_dir:
+            raced.append(root)
+            # A build starts after the gate, while the build directory's trash is deleted.
+            build_dir.mkdir()
             (build_dir / ".bakar-lock-host").write_text("peer-node")
             tmpdir.mkdir()
             (tmpdir / "fresh").write_text("x")
@@ -583,13 +577,16 @@ def test_marker_published_during_the_tmpdir_delete_survives(tmp_path: Path, monk
 
     _clean_build_dir(cfg)
 
+    assert raced
     assert (build_dir / ".bakar-lock-host").read_text() == "peer-node"
     assert (tmpdir / "fresh").exists()
+    assert not (build_dir / "conf").exists()
+    assert not raced[0].exists()
 
 
 @pytest.mark.unit
 def test_interrupt_mid_delete_restores_the_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg, build_dir, tmpdir = _override_cfg(tmp_path)
+    cfg, build_dir, tmpdir = _tree_cfg(tmp_path)
     _no_gate(monkeypatch)
 
     def interrupted(root: Path, description: str = "") -> object:
@@ -611,7 +608,7 @@ def test_residue_with_the_name_retaken_leaves_the_trash_and_prints_its_path(
 ) -> None:
     from bakar.commands import console
 
-    cfg, build_dir, _tmpdir = _override_cfg(tmp_path)
+    cfg, build_dir, _tmpdir = _tree_cfg(tmp_path)
     _no_gate(monkeypatch)
 
     def residue(root: Path, description: str = "") -> object:
@@ -632,7 +629,7 @@ def test_residue_with_the_name_retaken_leaves_the_trash_and_prints_its_path(
 def test_dead_pid_trash_is_swept_and_live_pid_trash_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import subprocess as sp
 
-    cfg, build_dir, _tmpdir = _override_cfg(tmp_path)
+    cfg, build_dir, _tmpdir = _tree_cfg(tmp_path)
     _no_gate(monkeypatch)
     proc = sp.Popen(["true"])
     proc.wait()

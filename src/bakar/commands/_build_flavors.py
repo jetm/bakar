@@ -138,9 +138,8 @@ def _run_bbsetup_build(
         # This branch removes the TMPDIR itself and never reaches
         # _clean_build_dir, so it takes the same live-build gate here.
         _refuse_if_build_live(cfg)
-        # resolved_tmpdir follows a host-mode local_tmpdir_base override off to
-        # node-local disk; a hardcoded bsp_root/build/tmp would delete the empty
-        # workspace path and strand the redirected (~200G) tmp.
+        # resolved_tmpdir is the single source of truth for the build TMPDIR,
+        # so this clean deletes the tree the build writes.
         tmp_dir = cfg.resolved_tmpdir
         _sweep_dead_trash(tmp_dir.parent)
         if tmp_dir.exists():

@@ -523,19 +523,14 @@ def _clean_build_dir(cfg: BuildConfig, *, gated: bool = False) -> None:
     if not gated:
         _refuse_if_build_live(cfg)
     build_dir = cfg.bsp_root / cfg.build_dir_name
-    # A host-mode local_tmpdir_base override relocates the build TMPDIR to
-    # node-local disk, outside build_dir; wiping build_dir alone would strand
-    # it. is_relative_to is False exactly when the override is active (the
-    # unset default resolves under build_dir and goes with it).
     tmpdir = cfg.resolved_tmpdir
+    # tmpdir.parent is build_dir, where the bitbake-setup clean strands the trash of a killed tmp-only removal.
     _sweep_dead_trash(build_dir.parent, tmpdir.parent)
     items: list[tuple[Path, str]] = []
     if build_dir.exists():
         items.append((build_dir, f"Removing {build_dir.name}/"))
-    if not tmpdir.is_relative_to(build_dir) and tmpdir.exists():
-        items.append((tmpdir, f"Removing {tmpdir.name}/ (local TMPDIR)"))
-    # Both trees move aside before either is deleted, so a build published
-    # during either delete finds neither of the old trees.
+    # The build directory moves aside before it is deleted, so a build
+    # published during the delete finds none of the old tree.
     if items:
         _remove_trees_or_exit(items)
 
