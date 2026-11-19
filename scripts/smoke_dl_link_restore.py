@@ -230,7 +230,10 @@ def hermetic(run, bb, root: pathlib.Path) -> None:
         run.check("S3 DL_DIR entry is still the link", (dl3 / PAYLOAD_NAME).is_symlink(), "entry is not a link")
     finally:
         for mirror in mirrors:
-            os.chmod(mirror, 0o755)
+            # A directory the script made read-only (0o555) gets its owner write bit back so the scratch
+            # tree can be removed; 0o700 grants nothing to anyone else, and a directory needs the x bit.
+            # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+            os.chmod(mirror, 0o700)
 
 
 def main() -> int:
