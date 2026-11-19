@@ -1417,27 +1417,21 @@ def test_check_workspace_filesystem_local_workspace_nfs_topdir_blocks(
     assert "The shared sstate, downloads and ccache directories may stay on NFS." in result.fix_hint
 
 
-def test_check_workspace_filesystem_local_workspace_nfs_topdir_blocks_with_local_tmpdir(
+def test_check_workspace_filesystem_nfs4_workspace_blocks_with_local_tmpdir_mount(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A local TMPDIR override does not rescue an nfs4 TOPDIR: bitbake.lock and the build config live there."""
+    """A workspace on nfs4 is refused through (a) even when a local ext4 mount covers its TMPDIR."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    local_base = tmp_path / "local-tmp"
-    local_base.mkdir()
-    cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
-    topdir = (cfg.bsp_root / cfg.build_dir_name).resolve(strict=False)
-    mounts = (
-        f"none / overlay rw 0 0\n"
-        f"none {workspace.resolve()} ext4 rw 0 0\n"
-        f"server:/x {topdir} nfs4 rw 0 0\n"
-        f"none {local_base.resolve()} ext4 rw 0 0\n"
-    )
+    cfg = _fs_cfg(workspace)
+    tmpdir = cfg.resolved_tmpdir.resolve(strict=False)
+    mounts = f"none / overlay rw 0 0\nserver:/x {workspace.resolve()} nfs4 rw 0 0\nnone {tmpdir} ext4 rw 0 0\n"
     _patch_proc_mounts(monkeypatch, mounts)
     result = check_workspace_filesystem(cfg)
     assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK
-    assert "build directory" in result.message
+    assert f"workspace {workspace.resolve()} is on nfs4 at {workspace.resolve()}" in result.message
+    assert "TMPDIR" not in result.message
 
 
 def test_check_workspace_filesystem_autofs_only_workspace_is_not_pass(
@@ -1469,72 +1463,40 @@ def test_check_workspace_filesystem_mount_resolve_timeout_is_not_pass(
     assert "could not be determined" in result.message
 
 
-def test_check_workspace_filesystem_fix_hint_build_survives_print_diagnosis(
+def test_check_workspace_filesystem_nfs_tmpdir_local_workspace_hint_names_node_local_storage(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``[build]`` in a fix hint must survive ``_print_diagnosis``'s markup-enabled rendering."""
-    from rich.console import Console
-
-    from bakar.commands._helpers import _print_diagnosis
-
+    """(a2) A TMPDIR on NFS under a local workspace and build directory blocks with a setting-free hint."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    nfs_tmp = tmp_path / "nfs-tmp"
-    nfs_tmp.mkdir()
-    mounts = (
-        f"none / overlay rw 0 0\n"
-        f"none {workspace.resolve()} ext4 rw 0 0\n"
-        f"server:/export {nfs_tmp.resolve()} nfs4 rw 0 0\n"
-    )
+    cfg = _fs_cfg(workspace)
+    tmpdir = cfg.resolved_tmpdir.resolve(strict=False)
+    mounts = f"none / overlay rw 0 0\nnone {workspace.resolve()} ext4 rw 0 0\nserver:/export {tmpdir} nfs4 rw 0 0\n"
     _patch_proc_mounts(monkeypatch, mounts)
-    result = check_workspace_filesystem(_fs_cfg(workspace, local_tmpdir_base=str(nfs_tmp), host_mode=True))
-    assert result.status is Status.FAIL
-    buffer = io.StringIO()
-    monkeypatch.setattr("bakar.commands.console", Console(file=buffer, width=400, force_terminal=False))
-    _print_diagnosis([result])
-    fix_lines = [line for line in buffer.getvalue().splitlines() if line.startswith("fix")]
-    assert fix_lines
-    assert "[build] local_tmpdir_base" in fix_lines[0]
-
-
-def test_check_workspace_filesystem_nfs_tmpdir_local_workspace_keeps_original_hint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """(a) with a local workspace and TMPDIR on NFS: the original local_tmpdir_base hint is unchanged."""
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    nfs_tmp = tmp_path / "nfs-tmp"
-    nfs_tmp.mkdir()
-    mounts = (
-        f"none / overlay rw 0 0\n"
-        f"none {workspace.resolve()} ext4 rw 0 0\n"
-        f"server:/export {nfs_tmp.resolve()} nfs4 rw 0 0\n"
-    )
-    _patch_proc_mounts(monkeypatch, mounts)
-    cfg = _fs_cfg(workspace, local_tmpdir_base=str(nfs_tmp), host_mode=True)
     result = check_workspace_filesystem(cfg)
     assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK
+    assert f"resolved TMPDIR {tmpdir} is on nfs4" in result.message
     assert result.fix_hint is not None
-    assert "local_tmpdir_base" in result.fix_hint
-    assert "not enough" not in result.fix_hint
+    assert "node-local" in result.fix_hint
+    assert "local_tmpdir_base" not in result.fix_hint
+    assert "[build]" not in result.fix_hint
 
 
 def test_check_workspace_filesystem_workspace_on_nfs_is_blocked(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A workspace on nfs is refused even with a local TMPDIR override."""
+    """A workspace on nfs is refused whatever the TMPDIR is."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    local_base = tmp_path / "local-tmp"
-    local_base.mkdir()
+    cfg = _fs_cfg(workspace)
+    tmpdir = cfg.resolved_tmpdir.resolve(strict=False)
     mounts = (
         f"none / overlay rw 0 0\n"
         f"server:/export {workspace.resolve()} nfs rw,lookupcache=positive 0 0\n"
-        f"none {local_base.resolve()} ext4 rw 0 0\n"
+        f"none {tmpdir} ext4 rw 0 0\n"
     )
     _patch_proc_mounts(monkeypatch, mounts)
-    cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
     result = check_workspace_filesystem(cfg)
     assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK
@@ -1551,15 +1513,14 @@ def test_check_workspace_filesystem_workspace_on_nfs_is_blocked_with_bounded_loo
     """An nfs4 workspace mounted with lookupcache=positive is blocked too."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    local_base = tmp_path / "local-tmp"
-    local_base.mkdir()
+    cfg = _fs_cfg(workspace)
+    tmpdir = cfg.resolved_tmpdir.resolve(strict=False)
     mounts = (
         f"none / overlay rw 0 0\n"
         f"server:/export {workspace.resolve()} nfs4 rw,hard,lookupcache=positive 0 0\n"
-        f"none {local_base.resolve()} ext4 rw 0 0\n"
+        f"none {tmpdir} ext4 rw 0 0\n"
     )
     _patch_proc_mounts(monkeypatch, mounts)
-    cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
     result = check_workspace_filesystem(cfg)
     assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK
@@ -1586,56 +1547,33 @@ def test_check_workspace_filesystem_local_workspace_with_nfs_caches_passes(
     assert "ext4" in result.message
 
 
-def test_check_workspace_filesystem_vfat_local_tmpdir_still_fails(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """(c) Workspace on vfat with a local TMPDIR override -> still FAIL @ WARN (two-axis)."""
+def test_check_workspace_filesystem_vfat_workspace_warns(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """(c) Workspace on vfat -> FAIL @ WARN, whatever the TMPDIR is."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    local_base = tmp_path / "local-tmp"
-    local_base.mkdir()
-    mounts = (
-        f"none / overlay rw 0 0\n/dev/sdb1 {workspace.resolve()} vfat rw 0 0\nnone {local_base.resolve()} ext4 rw 0 0\n"
-    )
+    mounts = f"none / overlay rw 0 0\n/dev/sdb1 {workspace.resolve()} vfat rw 0 0\n"
     _patch_proc_mounts(monkeypatch, mounts)
-    cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
-    result = check_workspace_filesystem(cfg)
+    result = check_workspace_filesystem(_fs_cfg(workspace))
     assert result.status is Status.FAIL
     assert result.severity is Severity.WARN
     assert "vfat" in result.message
 
 
-def test_check_workspace_filesystem_vfat_override_base_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """(a2) An active override whose base is on vfat -> BLOCK: the tmp cannot hold pseudo state."""
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    local_base = tmp_path / "usb"
-    local_base.mkdir()
-    mounts = (
-        f"none / overlay rw 0 0\nnone {workspace.resolve()} ext4 rw 0 0\n/dev/sdb1 {local_base.resolve()} vfat rw 0 0\n"
-    )
-    _patch_proc_mounts(monkeypatch, mounts)
-    cfg = _fs_cfg(workspace, local_tmpdir_base=str(local_base), host_mode=True)
-    result = check_workspace_filesystem(cfg)
-    assert result.status is Status.FAIL
-    assert result.severity is Severity.BLOCK
-    assert "vfat" in result.message
-    assert "xattrs" in result.message
-
-
 def test_check_workspace_filesystem_symlinked_tmpdir_base_to_nfs_blocks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A local-looking local_tmpdir_base symlinked onto NFS is judged by its target -> BLOCK.
+    """A local-looking ``tmp`` under the build directory symlinked onto NFS is judged by its target -> BLOCK.
 
     Without resolving symlinks the lexical (local) path would classify as the
-    root mount and wrongly PASS while bitbake follows the link to NFS and aborts.
+    workspace mount and wrongly PASS while bitbake follows the link to NFS and aborts.
     """
     workspace = tmp_path / "ws"
     workspace.mkdir()
     nfs_target = tmp_path / "nfs-target"
     nfs_target.mkdir()
-    link = tmp_path / "local-link"
+    cfg = _fs_cfg(workspace)
+    link = cfg.resolved_tmpdir
+    link.parent.mkdir(parents=True, exist_ok=True)
     link.symlink_to(nfs_target)
     mounts = (
         f"none / overlay rw 0 0\n"
@@ -1643,7 +1581,6 @@ def test_check_workspace_filesystem_symlinked_tmpdir_base_to_nfs_blocks(
         f"server:/export {nfs_target.resolve()} nfs rw 0 0\n"
     )
     _patch_proc_mounts(monkeypatch, mounts)
-    cfg = _fs_cfg(workspace, local_tmpdir_base=str(link), host_mode=True)
     result = check_workspace_filesystem(cfg)
     assert result.status is Status.FAIL
     assert result.severity is Severity.BLOCK

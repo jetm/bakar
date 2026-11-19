@@ -50,7 +50,7 @@ starting point. It:
 - empties the shared `SSTATE_DIR` in place (the export root is preserved so NFS
   clients do not see an ESTALE),
 - wipes each per-node build dir (`--build-dir`, the `BUILD_DIR` env var, or every
-  `build-*` under the workspace), renaming each build directory and its relocated TMPDIR to `.bakar-trash-*` first and restoring the names if the delete leaves residue,
+  `build-*` under the workspace), renaming each build directory to `.bakar-trash-*` first and restoring the name if the delete leaves residue,
 - wipes the sccache client disk cache under `~/.cache`,
 - wipes the local ccache dir **whole** (the same directory `--ccache-dir` /
   `ccache_shared` / `<workspace>/ccache` resolves to) - not an age-based evict,

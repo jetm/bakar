@@ -882,7 +882,7 @@ def _materialize(root: Path, family: str, names: list[str]) -> list[Path]:
     ws.mkdir(exist_ok=True)
     cfg = make_build_config(workspace=ws, bsp_family=family)
     src = Path(bakar.__file__).parent / "overlays"
-    return [cfg.bsp_root / materialize_overlay(cfg, src / n, is_main_overlay=i == 0) for i, n in enumerate(names)]
+    return [cfg.bsp_root / materialize_overlay(cfg, src / n) for n in names]
 
 
 _PREMIRRORS_RE = re.compile(r'^\s*PREMIRRORS(?P<op>:prepend|:append)?\s*(?P<eq>\?\?=|\?=|:=|=)\s*"(?P<val>.*)"\s*$')

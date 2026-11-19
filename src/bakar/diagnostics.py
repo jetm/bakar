@@ -3012,14 +3012,14 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
     - The resolved ``TMPDIR`` on nfs/nfs4 under a local build tree is fatal:
       bitbake's sanity check aborts (``TMPDIR ... can't be located on nfs``)
       and pseudo's hardlink tracking corrupts. This is a ``Severity.BLOCK``
-      FAIL whose hint points at ``local_tmpdir_base``.
+      FAIL whose hint asks for node-local storage under the build ``TMPDIR``.
     - A path covered only by an ``autofs`` trap, or whose bounded mount lookup
       timed out, has an undetermined filesystem: a ``Severity.WARN`` FAIL,
       never a PASS.
     - The source workspace on a non-network blocking fstype (vfat/exfat/ntfs/9p
       or cifs/smb\\*) breaks the build through the *source layers* - case
       folding, missing xattrs, no atomic rename - regardless of where
-      ``TMPDIR`` lives, so a local ``TMPDIR`` override must NOT false-PASS it.
+      ``TMPDIR`` lives, so a local ``TMPDIR`` must NOT false-PASS it.
       This is a ``Severity.WARN`` FAIL.
 
     All-local or unrecognized fstypes PASS exactly as before.
@@ -3031,7 +3031,7 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
         return _skip(name, Severity.WARN, f"/proc/mounts unreadable: {exc}")
 
     # Resolve symlinks (strict=False semantics tolerate not-yet-created leaves): a
-    # local_tmpdir_base or build/ symlinked onto an NFS target would otherwise be
+    # build/ or tmp symlinked onto an NFS target would otherwise be
     # classified by its lexical local path and wrongly PASS while bitbake follows
     # the link to NFS. All three targets share ONE bounded deadline, so a wedged
     # mount costs 20 s in total rather than 20 s per target; a timed-out target
@@ -3052,7 +3052,7 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
 
     # (a) the workspace, then its build directory (TOPDIR), on NFS is refused
     # whatever TMPDIR is. TOPDIR holds bitbake.lock, the build config and the
-    # default TMPDIR, and local_tmpdir_base moves only the last.
+    # default TMPDIR.
     for label, path, entry in (("workspace", workspace, ws_entry), ("build directory", topdir, top_entry)):
         if entry is not None and entry[2] in _FS_NFS:
             return _fail(
@@ -3070,23 +3070,9 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
             Severity.BLOCK,
             f"resolved TMPDIR {tmpdir} is on {tmp_fstype} at {tmp_mount}: bitbake aborts on TMPDIR over NFS",
             fix_hint=(
-                "Set [build] local_tmpdir_base to a node-local ext4/btrfs/xfs path (host mode only) "
-                "so the build TMPDIR leaves NFS, then re-run."
+                "Put the build TMPDIR on node-local ext4, btrfs or xfs storage (a mount or symlink "
+                "onto NFS at that path is the usual cause), then re-run."
             ),
-        )
-
-    # (a3) an active local_tmpdir_base override that lands on a non-NFS blocking
-    # fstype (vfat/exfat/ntfs/9p) is a user misconfiguration: the redirected tmp
-    # cannot hold pseudo's xattrs/hardlinks or case-sensitive paths. Gated on the
-    # override so an un-overridden workspace on such an fs stays the (c) WARN
-    # below rather than escalating to BLOCK.
-    if cfg.local_tmpdir_base and cfg.host_mode and tmp_fstype in _FS_BLOCK:
-        return _fail(
-            name,
-            Severity.BLOCK,
-            f"resolved TMPDIR {tmpdir} is on {tmp_fstype} at {tmp_mount}: the build TMPDIR needs "
-            "xattrs/hardlinks/case-sensitivity this filesystem lacks",
-            fix_hint="Point [build] local_tmpdir_base at a node-local ext4/btrfs/xfs path, then re-run.",
         )
 
     # (b) an autofs-only entry or a timed-out lookup cannot confirm locality.
@@ -3111,7 +3097,7 @@ def check_workspace_filesystem(cfg: BuildConfig) -> CheckResult:
     ws_mount = ws_entry[1]
 
     # (c) workspace on a non-NFS blocking fstype breaks the source layers
-    # regardless of TMPDIR locality - a local override must not mask it.
+    # regardless of where TMPDIR lives.
     if ws_fstype in _FS_BLOCK:
         return _fail(
             name,
