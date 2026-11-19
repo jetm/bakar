@@ -775,7 +775,7 @@ def list_regular_files(paths: Sequence[Path], *, deadline_s: float) -> dict[Path
                 path: [
                     "sh",
                     "-c",
-                    'exec find "$1" -maxdepth 1 -mindepth 1 -type f -printf "%f\\0" > "$2"',
+                    'exec find -H "$1" -maxdepth 1 -mindepth 1 -type f -printf "%f\\0" > "$2"',
                     "sh",
                     str(path),
                     str(outfiles[path]),

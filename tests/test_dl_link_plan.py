@@ -117,3 +117,23 @@ def test_overlay_premirror_excludes_git():
     schemes = m.group(1).split("|")
     assert "git" not in schemes and "gitsm" not in schemes
     assert "https?" in schemes
+
+
+def test_unchecked_tarballs_kept_even_when_stamped(tmp_path):
+    names = ("gitsmshallow_a.tar.gz", "gitannexshallow_b.tar.gz", "hg_c.tar.gz", "repo_d.tar.gz")
+    plan = run(tmp_path, {M1: stamped(*names)})
+    assert plan.items == []
+    assert plan.kept == {"unchecked tarball": 4}
+
+
+def test_reserved_dl_dir_subdirectory_names_kept(tmp_path):
+    plan = run(tmp_path, {M1: stamped("git2", "uninative", "svn")})
+    assert plan.items == []
+    assert plan.kept == {"reserved name": 3}
+
+
+def test_local_stamp_without_payload_is_not_relinked(tmp_path):
+    (tmp_path / "foo.tar.gz.done").write_text("")
+    plan = run(tmp_path, {M1: stamped("foo.tar.gz")})
+    assert plan.items == []
+    assert plan.kept == {"local stamp without payload": 1}

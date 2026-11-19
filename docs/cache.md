@@ -131,7 +131,9 @@ What it links: regular files directly inside a ready mirror directory that have 
 
 What it never does:
 
-- Link `git2_` or `gitshallow_` names, or names ending `.tmp`, `.lock` or `.done`.
+- Link `git2_` or `gitshallow_` names, names ending `.tmp`, `.lock` or `.done`, or the tarballs BitBake extracts with no checksum (`gitsmshallow_`, `gitannexshallow_`, `hg_`, `repo_`). svn, cvs and bzr tarballs have no fixed prefix, so the verb cannot recognise them and links them when stamped.
+- Link a name BitBake uses as a downloads subdirectory (`git2`, `svn`, `cvs`, `bzr`, `hg`, `repo`, `p4`, `uninative`, `npm2`, `gomod`).
+- Link a name whose `.done` stamp already exists locally without its payload: BitBake would reuse that stamp's checksums and never hash the linked file.
 - Replace an existing entry: a file, a directory, and a live or dangling link are all left as they are.
 - Create a stamp or a lock file.
 - Read the contents of a mirror file.
@@ -139,7 +141,7 @@ What it never does:
 | Exit | Meaning |
 |------|---------|
 | 0 | The run completed, including a dry run and a run that linked nothing |
-| 1 | A message is printed and nothing is created: no downloads directory, the path is not a directory, `dl_mirror_paths` unset, the user config selects the container build, or no mirror directory is ready |
+| 1 | A message is printed and nothing is created: no downloads directory, the path is not a directory, `dl_mirror_paths` unset, the user config selects the container build, no mirror directory is ready, or the downloads directory cannot be read |
 
 Report lines, in order:
 
@@ -153,7 +155,7 @@ kept 2: no stamp
 dry run: nothing was linked (pass --apply to link)
 ```
 
-The `unlisted: <dir>` line appears once per directory whose listing did not finish. `would link` reads `linked` with `--apply`, and the last line then reads `applied`. The `kept N: <reason>` lines carry one of `no stamp`, `git mirror tarball`, `unsafe name`, `already present` or `link failed`.
+The `unlisted: <dir>` line appears once per directory whose listing did not finish. `would link` reads `linked` with `--apply`, and the last line then reads `applied`. The `kept N: <reason>` lines carry one of `no stamp`, `git mirror tarball`, `unchecked tarball`, `reserved name`, `local stamp without payload`, `unsafe name`, `already present` or `link failed`.
 
 See [features/dl-mirror.md](features/dl-mirror.md) for why a local name matters and for the limits.
 

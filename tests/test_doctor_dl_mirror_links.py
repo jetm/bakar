@@ -288,3 +288,27 @@ def test_message_names_only_the_files_actually_linked(tmp_path: Path, monkeypatc
     assert "linked 1 file(s)" in r.message
     assert "b.tgz" in r.message
     assert "a.tgz" not in r.message
+
+
+def test_nothing_listable_skips_instead_of_passing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _ready(monkeypatch)
+    m = _mirror(tmp_path, "m", ["a"])
+    real = dl_link.plan_links
+    monkeypatch.setattr(
+        dl_link,
+        "plan_links",
+        lambda d, ms, **kw: real(d, ms, lister=lambda dirs, deadline_s: dict.fromkeys(dirs), **kw),
+    )
+    r = check_dl_mirror_links(_cfg(_dl(tmp_path), [m]))
+    assert r.status == Status.SKIP
+    assert "could be listed" in r.message
+
+
+def test_linked_names_are_neutralized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _ready(monkeypatch)
+    bidi, csi = chr(0x202E), chr(0x9B)
+    m = _mirror(tmp_path, "m", [f"a{bidi}b{csi}c"])
+    r = check_dl_mirror_links(_cfg(_dl(tmp_path), [m]))
+    assert r.status == Status.PASS
+    assert bidi not in r.message
+    assert csi not in r.message

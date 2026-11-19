@@ -164,3 +164,15 @@ def test_spawn_failure_gives_none_for_all(tmp_path: Path, monkeypatch: pytest.Mo
     d.mkdir()
 
     assert list_regular_files([d], deadline_s=1.0) == {d: None}
+
+
+def test_symlinked_mirror_directory_is_listed(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "a.tar.gz").write_text("x")
+    link = tmp_path / "link"
+    link.symlink_to(real)
+
+    result = list_regular_files([link], deadline_s=5.0)
+
+    assert result[link] == ["a.tar.gz"]

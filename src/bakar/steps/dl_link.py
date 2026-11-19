@@ -20,10 +20,21 @@ from bakar.steps.cache_queue import is_unsafe_name
 _DONE_SUFFIX = ".done"
 _SKIP_SUFFIXES = (".done", ".tmp", ".lock")
 _GIT_MIRROR_PREFIXES = ("git2_", "gitshallow_")
+# Tarballs BitBake extracts with no checksum (supports_checksum is False), so a
+# link would put unverified bytes into a build. Link-only: push and prune keep
+# the two-prefix list above. svn, cvs and bzr tarballs carry no fixed prefix
+# (<module>_<host>_<path>_<rev>.tar.gz) and cannot be named here.
+_UNCHECKED_TARBALL_PREFIXES = ("gitsmshallow_", "gitannexshallow_", "hg_", "repo_")
+# Names BitBake creates as DL_DIR subdirectories; a link by this name makes
+# mkdirhier fail with ENOTDIR and every fetch of that kind fail with it.
+_RESERVED_NAMES = frozenset({"git2", "svn", "cvs", "bzr", "hg", "repo", "p4", "uninative", "npm2", "gomod"})
 _DEFAULT_DEADLINE_S = 20.0
 
 KEPT_NO_STAMP = "no stamp"
 KEPT_GIT_TARBALL = "git mirror tarball"
+KEPT_UNCHECKED = "unchecked tarball"
+KEPT_RESERVED = "reserved name"
+KEPT_ORPHAN_STAMP = "local stamp without payload"
 KEPT_UNSAFE = "unsafe name"
 KEPT_PRESENT = "already present"
 KEPT_LINK_FAILED = "link failed"
@@ -84,12 +95,18 @@ def plan_links(
             plan.examined += 1
             if is_unsafe_name(name):
                 reason = KEPT_UNSAFE
+            elif name in _RESERVED_NAMES:
+                reason = KEPT_RESERVED
             elif name.startswith(_GIT_MIRROR_PREFIXES):
                 reason = KEPT_GIT_TARBALL
+            elif name.startswith(_UNCHECKED_TARBALL_PREFIXES):
+                reason = KEPT_UNCHECKED
             elif name + _DONE_SUFFIX not in stamps:
                 reason = KEPT_NO_STAMP
             elif name in present:
                 reason = KEPT_PRESENT
+            elif name + _DONE_SUFFIX in present:
+                reason = KEPT_ORPHAN_STAMP
             else:
                 plan.items.append(LinkItem(name, mdir / name))
                 continue

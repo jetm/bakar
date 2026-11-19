@@ -217,7 +217,7 @@ are not forecast`.
 
 ## Cache-sharing checks
 
-Five checks cover the live push of finished downloads from builders to the
+Six checks cover the live push of finished downloads from builders to the
 store host and the mounted downloads directories (see
 [the capability note](capabilities/shared-cache-hub-push.md)).
 
@@ -254,7 +254,7 @@ Outcomes:
 | `dl-mirror-links` | Nothing to link | PASS / INFO |
 | `dl-mirror-links` | One or more links could not be created | FAIL / WARN |
 | `dl-mirror-links` | `dl_mirror_paths` unset, downloads directory unset, or a container build | SKIP / INFO |
-| `dl-mirror-links` | No mirror directory is ready (names `dl-mirror-paths-ready`), or the downloads directory cannot be read | SKIP / INFO |
+| `dl-mirror-links` | No mirror directory is ready (names `dl-mirror-paths-ready`), no ready directory could be listed, or the downloads directory cannot be read | SKIP / INFO |
 | `dl-mirror-links` | A mirror directory's listing took longer than 10 seconds: the directory is named in the message, nothing is linked from it, and the others are still linked | PASS / INFO |
 
 Only the http-over-NFS `sstate-mirror-shared-mount` outcome can stop a build: a
