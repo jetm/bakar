@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from bakar.steps.dl_link import (
+    EMPTY_HINT,
     KEPT_LINK_FAILED,
     KEPT_NO_STAMP,
     KEPT_PRESENT,
@@ -150,3 +151,17 @@ def test_render_applied_names_the_first_link_error() -> None:
     result = ApplyResult(kept={KEPT_LINK_FAILED: 2}, first_error="No space left on device")
     out = render_report(_plan(), result, apply=True).splitlines()
     assert out[-2:] == ["first link error: No space left on device", "applied"]
+
+
+def test_render_empty_directory_between_unlisted_and_count() -> None:
+    plan = LinkPlan(unlisted=[Path("/m1")], empty=[Path("/m2")], listed=1)
+    out = render_report(plan, ApplyResult(), apply=False).splitlines()
+    assert out[1] == "unlisted: /m1"
+    assert out[2] == f"empty: /m2 ({EMPTY_HINT})"
+    assert out[2].endswith("lists no regular files, as a share that is not mounted does)")
+    assert out[3] == "would link 0 file(s)"
+
+
+def test_render_no_empty_line_without_empty_directory() -> None:
+    out = render_report(LinkPlan(listed=1), ApplyResult(), apply=False)
+    assert "empty:" not in out

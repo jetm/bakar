@@ -30,6 +30,8 @@ _UNCHECKED_TARBALL_PREFIXES = ("gitsmshallow_", "gitannexshallow_", "hg_", "repo
 _RESERVED_NAMES = frozenset({"git2", "svn", "cvs", "bzr", "hg", "repo", "p4", "uninative", "npm2", "gomod"})
 _DEFAULT_DEADLINE_S = 20.0
 
+EMPTY_HINT = "lists no regular files, as a share that is not mounted does"
+
 KEPT_NO_STAMP = "no stamp"
 KEPT_GIT_TARBALL = "git mirror tarball"
 KEPT_UNCHECKED = "unchecked tarball"
@@ -53,6 +55,7 @@ class LinkPlan:
     items: list[LinkItem] = field(default_factory=list)
     kept: dict[str, int] = field(default_factory=dict)
     unlisted: list[Path] = field(default_factory=list)
+    empty: list[Path] = field(default_factory=list)
     examined: int = 0
     listed: int = 0
 
@@ -88,6 +91,8 @@ def plan_links(
             plan.unlisted.append(mdir)
             continue
         plan.listed += 1
+        if not names:
+            plan.empty.append(mdir)
         stamps = set(names)
         for name in sorted(names):
             if name.endswith(_SKIP_SUFFIXES) or name in seen:
@@ -137,6 +142,7 @@ def apply_links(plan: LinkPlan, dl_dir: Path) -> ApplyResult:
 def render_report(plan: LinkPlan, result: ApplyResult, *, apply: bool) -> str:
     lines = [f"{plan.listed} mirror directories listed, {plan.examined} payloads examined"]
     lines.extend(f"unlisted: {mdir}" for mdir in plan.unlisted)
+    lines.extend(f"empty: {mdir} ({EMPTY_HINT})" for mdir in plan.empty)
     if apply:
         lines.append(f"linked {result.linked} file(s)")
     else:

@@ -137,3 +137,33 @@ def test_local_stamp_without_payload_is_not_relinked(tmp_path):
     plan = run(tmp_path, {M1: stamped("foo.tar.gz")})
     assert plan.items == []
     assert plan.kept == {"local stamp without payload": 1}
+
+
+def test_empty_directory_recorded(tmp_path):
+    plan = run(tmp_path, {M1: [], M2: stamped("b")}, (M1, M2))
+    assert plan.empty == [M1]
+    assert plan.listed == 2
+    assert [i.target for i in plan.items] == [M2 / "b"]
+
+
+def test_unlisted_directory_is_not_empty(tmp_path):
+    plan = run(tmp_path, {M1: None})
+    assert plan.unlisted == [M1]
+    assert plan.empty == []
+
+
+def test_directory_with_only_unstamped_file_is_not_empty(tmp_path):
+    plan = run(tmp_path, {M1: ["foo.tar.gz"]})
+    assert plan.empty == []
+    assert plan.kept == {"no stamp": 1}
+
+
+def test_real_lister_directory_with_no_regular_files_is_empty(tmp_path):
+    dl = tmp_path / "dl"
+    dl.mkdir()
+    mdir = tmp_path / "mirror"
+    mdir.mkdir()
+    (mdir / "sub").mkdir()
+    (mdir / "link").symlink_to(tmp_path)
+    plan = plan_links(dl, [mdir])
+    assert plan.empty == [mdir]
