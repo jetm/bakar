@@ -610,22 +610,6 @@ def check_docker_ulimits(cfg: BuildConfig) -> CheckResult:
     return _ok("docker-ulimits", Severity.WARN, f"nofile soft={soft}")
 
 
-def _nearest_existing(path: Path) -> Path:
-    """Climb ``path`` to its nearest existing ancestor.
-
-    The machine-keyed local ``TMPDIR`` leaf does not exist before the first
-    build, so a capacity check on it must probe the closest ancestor that
-    does. The filesystem root always exists, so the walk terminates.
-    """
-    p = path
-    while not p.exists():
-        parent = p.parent
-        if parent == p:
-            break
-        p = parent
-    return p
-
-
 def check_disk_free(cfg: BuildConfig) -> CheckResult:
     """Each checked mount needs at least ``cfg.disk_free_threshold_gb`` free.
 
@@ -636,11 +620,6 @@ def check_disk_free(cfg: BuildConfig) -> CheckResult:
     not exist are skipped, and candidates that resolve to a filesystem
     device already checked (by ``os.stat().st_dev``) are deduplicated so a
     workspace and sstate dir on the same partition are measured once.
-
-    When ``local_tmpdir_base`` is set, the resolved local ``TMPDIR`` (which
-    holds the ~200G build tmp on its own node-local device) is added as a
-    candidate. Its machine-keyed leaf does not exist before the first build,
-    so it is climbed to the nearest existing ancestor for the capacity probe.
     """
     sstate = cfg.sstate_dir if cfg.sstate_dir is not None else os.environ.get("SSTATE_DIR")
     dl = cfg.dl_dir if cfg.dl_dir is not None else os.environ.get("DL_DIR")
@@ -648,7 +627,6 @@ def check_disk_free(cfg: BuildConfig) -> CheckResult:
         ("workspace", cfg.workspace),
         *([("sstate", Path(sstate))] if sstate else []),
         *([("downloads", Path(dl))] if dl else []),
-        *([("tmpdir", _nearest_existing(cfg.resolved_tmpdir))] if cfg.local_tmpdir_base and cfg.host_mode else []),
     ]
     low: list[str] = []
     seen_devs: set[int] = set()
