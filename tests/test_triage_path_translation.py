@@ -133,7 +133,7 @@ def test_registered_meta_avocado_run_text_uses_recorded_mount(
     _write_log(ws / "build-s/build/tmp/work/r/temp/log.do_compile")
     failures = [{"recipe": "r", "task": "do_compile", "logfile": "/work/build-s/build/tmp/work/r/temp/log.do_compile"}]
 
-    triage_cmd._print_structured_failures(failures, ws / "build-s", [], ws)
+    triage_cmd._print_structured_failures(failures, ws / "build-s", ws)
 
     assert "TAIL-MARKER" in capsys.readouterr().err
 

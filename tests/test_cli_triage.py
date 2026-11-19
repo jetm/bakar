@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING
 import pytest
 
 from bakar.cli import app
-from bakar.user_config import load_user_config
 from tests.conftest import SAMPLE_EVENTS_JSONL, SAMPLE_KAS_LOG
 
 if TYPE_CHECKING:
@@ -430,15 +429,6 @@ def _write_task_log(path: Path) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
-def _write_user_config(base: Path) -> None:
-    import os
-    from pathlib import Path as _Path
-
-    cfg = _Path(os.environ["HOME"]) / ".config" / "bakar" / "config.toml"
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(f'[build]\nlocal_tmpdir_base = "{base}"\n')
-
-
 def _json(runner: _CliRunner, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.chdir(workspace)
     result = runner.invoke(app, ["triage", "--json"])
@@ -495,36 +485,6 @@ def test_triage_json_structured_no_logfile(runner: _CliRunner, tmp_path: Path, m
     assert doc["recipe_log"] is None
     assert doc["recipe_log_tail"] == []
     assert doc["recipe_log_note"] is None
-
-
-def test_triage_local_tmpdir_base_log_is_read(
-    runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    (tmp_path / "ws").mkdir()
-    workspace = _make_workspace(tmp_path / "ws")
-    node_tmp = tmp_path / "node-tmp"
-    node_log = node_tmp / "work" / "log.do_compile.1"
-    node_log.parent.mkdir(parents=True)
-    node_log.write_text(f"noise\n{DISK_FULL_LINE}\n")
-    outside = tmp_path / "outside.log"
-    outside.write_text("secret-token-123\n")
-    _write_user_config(node_tmp)
-    monkeypatch.setattr("bakar.commands.triage.load_user_config", load_user_config)
-
-    _write_structured(workspace, str(node_log))
-    doc = _json(runner, workspace, monkeypatch)
-    assert doc["recipe_log_tail"][-1:] == [DISK_FULL_LINE]
-    assert doc["recipe_log_note"] is None
-
-    result = runner.invoke(app, ["triage"])
-    assert result.exit_code == 0, result.output
-    assert "task log:" in result.output
-    assert DISK_FULL_LINE in result.output
-
-    _write_structured(workspace, str(outside))
-    doc = _json(runner, workspace, monkeypatch)
-    assert doc["recipe_log_tail"] == []
-    assert doc["recipe_log_note"] == "logfile outside workspace, not read"
 
 
 def test_triage_text_structured_task_log(runner: _CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

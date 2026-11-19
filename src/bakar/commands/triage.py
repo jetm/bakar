@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -78,15 +77,7 @@ def _read_structured_failures(run_dir: Path) -> list[dict] | None:
     return [f for f in failures if isinstance(f, dict)]
 
 
-def _extra_log_roots() -> list[Path]:
-    """Roots besides the workspace that hold task logs on this host."""
-    base = load_user_config().local_tmpdir_base
-    return [Path(os.path.abspath(os.path.expanduser(base)))] if base else []
-
-
-def _print_structured_failures(
-    failures: list[dict], workspace: Path, extra_roots: list[Path], translate_root: Path | None = None
-) -> None:
+def _print_structured_failures(failures: list[dict], workspace: Path, translate_root: Path | None = None) -> None:
     """Render the structured failure records, reading each task log through
     ``read_failure_log`` (container-path translation, containment, tail and
     hints).
@@ -96,7 +87,7 @@ def _print_structured_failures(
         task = failure.get("task") or "?"
         console.print(f"[red]✗[/] recipe [bold]{recipe}[/] task [bold]{task}[/] failed")
 
-        log = read_failure_log(failure.get("logfile"), workspace, extra_roots, translate_root=translate_root)
+        log = read_failure_log(failure.get("logfile"), workspace, translate_root=translate_root)
         if log.state == "outside":
             console.print(f"[dim]logfile outside workspace, not read: {log.path}[/]")
         elif log.state == "unreadable":
@@ -405,9 +396,7 @@ def triage(
     translate_root = _translation_root_for(run_dir, translation_workspace)
     if output_json and structured:
         f0 = structured[0]
-        log = read_failure_log(
-            f0.get("logfile"), translation_workspace, _extra_log_roots(), translate_root=translate_root
-        )
+        log = read_failure_log(f0.get("logfile"), translation_workspace, translate_root=translate_root)
         _emit_triage_json(
             run_dir.name,
             f"{f0.get('recipe')}:{f0.get('task')}",
@@ -419,7 +408,7 @@ def triage(
         )
         return
     if structured:
-        _print_structured_failures(structured, translation_workspace, _extra_log_roots(), translate_root)
+        _print_structured_failures(structured, translation_workspace, translate_root)
         return
 
     # analyse translates against report_root, so that is the fallback a run
