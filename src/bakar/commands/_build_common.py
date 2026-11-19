@@ -119,10 +119,9 @@ def _finish_build(
         if _hints.agent_mode():
             _hints.emit(_hints.after_finish(log.run_id, rc))
         raise typer.Exit(code=rc)
-    # resolved_tmpdir is the single source of truth for the build TMPDIR: it
-    # honors a local_tmpdir_base override (so the banner points at the real
-    # images) and already encodes the family tmp-dir layout (tmp-glibc for qcom,
-    # tmp elsewhere).
+    # resolved_tmpdir is the single source of truth for the build TMPDIR and
+    # already encodes the family tmp-dir layout (tmp-glibc for qcom, tmp
+    # elsewhere).
     deploy = cfg.resolved_tmpdir / "deploy" / "images" / machine
     if _state._USER_CONFIG is not None and _state._USER_CONFIG.show_sstate_summary:
         _print_sstate_summary(log.run_dir / "kas.log")

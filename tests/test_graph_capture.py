@@ -511,10 +511,9 @@ def test_capture_aborts_the_copy_loop_when_an_artifact_is_missing(monkeypatch, t
 def test_capture_reads_topdir_from_build_dir_name_not_resolved_tmpdir(monkeypatch, tmp_path) -> None:
     """The artifacts are read from ``bsp_root/build_dir_name``, not ``resolved_tmpdir.parent``.
 
-    The two diverge whenever a node-local tmpdir override is configured
-    (``BuildConfig.local_tmpdir_base`` in host mode): ``resolved_tmpdir`` then
-    points under the override base, and its parent is that base itself, not
-    the build directory ``bitbake -g`` actually writes the two artifacts into.
+    ``resolved_tmpdir`` is the single source of truth for the build TMPDIR and
+    need not live under ``bsp_root/build_dir_name``; the build directory is
+    where ``bitbake -g`` writes the two artifacts.
     """
     import os
 

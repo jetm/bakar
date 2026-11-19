@@ -277,11 +277,7 @@ def _capture_dependency_graph(ctx: KasBuildContext, log: RunLogger) -> dict[str,
             log.warn(f"dependency graph: capture exited {rc}; see {log.run_dir / 'depgraph.log'}")
             return None
 
-        # Not cfg.resolved_tmpdir.parent: with a node-local tmpdir override
-        # configured (BuildConfig.local_tmpdir_base, host mode), resolved_tmpdir
-        # points under that override base, not under TOPDIR - its parent would
-        # be the override base itself, not the build directory bitbake -g
-        # actually writes the two artifacts into.
+        # bitbake -g writes the two artifacts into the build directory.
         topdir = cfg.bsp_root / cfg.build_dir_name
         for name in GRAPH_ARTIFACTS:
             src = topdir / name
