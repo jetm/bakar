@@ -270,3 +270,21 @@ def test_never_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _ready(monkeypatch, states)
         for make in cases:
             assert check_dl_mirror_links(make()).severity != Severity.BLOCK  # type: ignore[arg-type]
+
+
+def test_message_names_only_the_files_actually_linked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _ready(monkeypatch)
+    m = _mirror(tmp_path, "m", ["a.tgz", "b.tgz"])
+    dl = _dl(tmp_path)
+    real_apply = dl_link.apply_links
+
+    def racing_apply(plan: dl_link.LinkPlan, dl_dir: Path) -> dl_link.ApplyResult:
+        (dl_dir / "a.tgz").write_bytes(b"bitbake")
+        return real_apply(plan, dl_dir)
+
+    monkeypatch.setattr(dl_link, "apply_links", racing_apply)
+    r = check_dl_mirror_links(_cfg(dl, [m]))
+    assert r.status == Status.PASS
+    assert "linked 1 file(s)" in r.message
+    assert "b.tgz" in r.message
+    assert "a.tgz" not in r.message

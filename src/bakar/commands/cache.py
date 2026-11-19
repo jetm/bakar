@@ -182,7 +182,11 @@ def link_mirror(
     if not ready:
         console.print("[red]no mirror directory is ready: check build.dl_mirror_paths[/]")
         raise typer.Exit(code=1)
-    plan = dl_link.plan_links(dl_dir, ready)
+    try:
+        plan = dl_link.plan_links(dl_dir, ready)
+    except OSError as exc:
+        console.print(f"[red]cannot read the downloads directory {escape(str(dl_dir))}: {escape(str(exc))}[/]")
+        raise typer.Exit(code=1) from exc
     result = dl_link.apply_links(plan, dl_dir) if apply else dl_link.ApplyResult()
     typer.echo(dl_link.render_report(plan, result, apply=apply))
 

@@ -49,6 +49,7 @@ class LinkPlan:
 @dataclass
 class ApplyResult:
     linked: int = 0
+    linked_names: list[str] = field(default_factory=list)
     kept: dict[str, int] = field(default_factory=dict)
 
 
@@ -108,6 +109,7 @@ def apply_links(plan: LinkPlan, dl_dir: Path) -> ApplyResult:
             reason = KEPT_LINK_FAILED
         else:
             result.linked += 1
+            result.linked_names.append(item.name)
             continue
         result.kept[reason] = result.kept.get(reason, 0) + 1
     return result

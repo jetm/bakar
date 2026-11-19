@@ -771,8 +771,6 @@ def list_regular_files(paths: Sequence[Path], *, deadline_s: float) -> dict[Path
         try:
             workdir = tempfile.mkdtemp(prefix="bakar-list-")
             outfiles = {path: Path(workdir) / f"{index}.out" for index, path in enumerate(unique)}
-            for outfile in outfiles.values():
-                outfile.touch()
             specs = {
                 path: [
                     "sh",

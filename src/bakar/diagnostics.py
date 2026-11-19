@@ -2847,7 +2847,7 @@ def check_dl_mirror_links(cfg: BuildConfig) -> CheckResult:
             f"{failed} link(s) could not be created in {dl_dir}; run bakar cache link-mirror{note}",
         )
     if result.linked:
-        names = ", ".join(sorted(i.name for i in plan.items)[:_DL_MIRROR_LINKS_NAME_MAX])
+        names = ", ".join(sorted(result.linked_names)[:_DL_MIRROR_LINKS_NAME_MAX])
         return _ok(name, Severity.INFO, f"linked {result.linked} file(s) from the mirror: {names}{note}")
     return _ok(name, Severity.INFO, f"nothing to link{note}")
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import types
 from typing import TYPE_CHECKING
 
@@ -153,3 +154,17 @@ def test_help_lists_verb() -> None:
     result = runner.invoke(app, ["cache", "--help"])
     assert result.exit_code == 0
     assert "link-mirror" in result.output
+
+
+def test_unreadable_downloads_directory_exits_1(monkeypatch: pytest.MonkeyPatch, dl_dir: Path, mirror: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root reads any directory")
+    _config(monkeypatch, dl_dir=str(dl_dir), dl_mirror_paths=str(mirror))
+    dl_dir.chmod(0o311)
+    try:
+        result = runner.invoke(app, ["cache", "link-mirror", "--apply"])
+    finally:
+        dl_dir.chmod(0o755)
+    assert result.exit_code == 1
+    assert "cannot read the downloads directory" in result.output
+    assert _listing(dl_dir) == []

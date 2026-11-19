@@ -61,6 +61,7 @@ def test_name_created_after_planning_is_left_alone(tmp_path: Path) -> None:
     assert (dl / "a.tgz").read_bytes() == b"bitbake"
     assert not (dl / "a.tgz").is_symlink()
     assert result.linked == 1
+    assert result.linked_names == ["b.tgz"]
     assert result.kept == {KEPT_PRESENT: 1}
 
 
