@@ -228,6 +228,7 @@ store host and the mounted downloads directories (see
 | `store-stale-tarballs` | WARN | On a host with `cache_push_target` unset, no `git2_*.tar.gz.tmp` file in the top level of the downloads directory is older than one hour | Remove the named temp files |
 | `dl-mirror-paths-ready` | WARN | On a host-mode build with `dl_mirror_paths` set, every listed directory exists and answers a bounded `stat -f` (it does not prove a share is mounted on it) | See [the dl-mirror feature](features/dl-mirror.md) |
 | `dl-dir-size` | WARN | On a host with `cache_push_target` set, the regular files in the downloads directory total 60 GB or less | `bakar cache prune-downloads` |
+| `dl-mirror-links` | WARN | On a host-mode build with `dl_mirror_paths` set, every file in a ready mirror directory that is not yet in the downloads directory is linked there. This check creates symbolic links in the downloads directory, never replaces an existing entry and creates no stamp, and runs in `bakar doctor` and every build pre-flight. It is the only part of `bakar doctor`, besides the uninative cache repair, that writes into a cache directory. Git and gitsm mirror tarballs, and files with no `.done` stamp beside them in the mirror, are never linked | `bakar cache link-mirror` |
 
 Outcomes:
 
@@ -249,6 +250,12 @@ Outcomes:
 | `dl-dir-size` | Downloads directory over 60 GB | FAIL / WARN |
 | `dl-dir-size` | Downloads directory at or under 60 GB | PASS / INFO |
 | `dl-dir-size` | Not measured (walk exceeded 5 s, or directory unreadable), or `cache_push_target` unset (store host) | SKIP / INFO |
+| `dl-mirror-links` | Linked one or more files from the mirror (count and up to 10 names) | PASS / INFO |
+| `dl-mirror-links` | Nothing to link | PASS / INFO |
+| `dl-mirror-links` | One or more links could not be created | FAIL / WARN |
+| `dl-mirror-links` | `dl_mirror_paths` unset, downloads directory unset, or a container build | SKIP / INFO |
+| `dl-mirror-links` | No mirror directory is ready (names `dl-mirror-paths-ready`), or the downloads directory cannot be read | SKIP / INFO |
+| `dl-mirror-links` | A mirror directory's listing took longer than 10 seconds: the directory is named in the message, nothing is linked from it, and the others are still linked | PASS / INFO |
 
 Only the http-over-NFS `sstate-mirror-shared-mount` outcome can stop a build: a
 mirror fetch into a shared sstate directory takes a lock inside it. An inactive
