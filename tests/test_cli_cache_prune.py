@@ -60,6 +60,66 @@ def test_apply_removes_verified_items(dl_dir: Path) -> None:
     assert not (dl_dir / "pkg-1.0.tar.gz.done").exists()
 
 
+LINK_LINE = "bakar cache link-mirror --apply"
+
+
+def _config(monkeypatch: pytest.MonkeyPatch, **fields: object) -> None:
+    cfg = types.SimpleNamespace(**fields)
+    monkeypatch.setattr(_state, "_load_user_config_safe", lambda: cfg)
+
+
+def _second_hub_item(dl: Path) -> None:
+    (dl / "pkg-2.0.tar.gz").write_bytes(PAYLOAD)
+    (dl / "pkg-2.0.tar.gz.done").write_bytes(b"")
+
+
+def test_apply_of_hub_items_with_mirror_paths_ends_with_link_line(
+    dl_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(monkeypatch, dl_mirror_paths="/mnt/mirror")
+    _second_hub_item(dl_dir)
+    result = runner.invoke(app, ["cache", "prune-downloads", "--apply"])
+    assert result.exit_code == 0, result.output
+    assert "removed 2 item(s)" in result.output
+    last = result.output.strip().splitlines()[-1]
+    assert LINK_LINE in last
+    assert "fails at unpack" in result.output
+
+
+def test_dry_run_prints_no_link_line(dl_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _config(monkeypatch, dl_mirror_paths="/mnt/mirror")
+    result = runner.invoke(app, ["cache", "prune-downloads"])
+    assert result.exit_code == 0, result.output
+    assert LINK_LINE not in result.output
+
+
+def test_apply_of_only_a_tarball_prints_no_link_line(dl_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _config(monkeypatch, dl_mirror_paths="/mnt/mirror")
+    for name in ("pkg-1.0.tar.gz", "pkg-1.0.tar.gz.done"):
+        (dl_dir / name).unlink()
+    (dl_dir / "git2_x.tar.gz").write_bytes(PAYLOAD)
+    (dl_dir / "git2_x.tar.gz.done").write_bytes(b"")
+    (dl_dir / "git2" / "x").mkdir(parents=True)
+    (dl_dir / "git2" / "x" / "HEAD").write_text("ref: refs/heads/main\n")
+    (dl_dir / "git2" / "x.done").write_bytes(b"")
+    result = runner.invoke(app, ["cache", "prune-downloads", "--apply"])
+    assert result.exit_code == 0, result.output
+    assert "removed 1 item(s)" in result.output
+    assert not (dl_dir / "git2_x.tar.gz").exists()
+    assert LINK_LINE not in result.output
+
+
+def test_apply_of_hub_items_without_mirror_paths_prints_no_link_line(
+    dl_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(monkeypatch)
+    _second_hub_item(dl_dir)
+    result = runner.invoke(app, ["cache", "prune-downloads", "--apply"])
+    assert result.exit_code == 0, result.output
+    assert "removed 2 item(s)" in result.output
+    assert LINK_LINE not in result.output
+
+
 def test_no_directory_configured_exits_1_naming_both_settings() -> None:
     result = runner.invoke(app, ["cache", "prune-downloads", "--apply"])
     assert result.exit_code == 1

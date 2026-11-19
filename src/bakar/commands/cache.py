@@ -142,6 +142,11 @@ def prune_downloads(
     )
     result = cache_prune.apply_plan(plan, dl_dir) if apply else None
     typer.echo(cache_prune.render_report(plan, result, apply))
+    if result is not None and result.removed["hub"] > 0 and _configured("dl_mirror_paths"):
+        typer.echo(
+            "run `bakar cache link-mirror --apply` to restore links: a build directory that "
+            "fetched a removed file earlier fails at unpack until a link replaces it."
+        )
 
 
 @cache_app.command("link-mirror")
