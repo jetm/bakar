@@ -176,3 +176,54 @@ def test_container_config_refused_before_the_directory_checks(monkeypatch: pytes
     assert result.exit_code == 1
     assert "container" in result.output
     assert "downloads" not in result.output
+
+
+def _empty_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines() if line.startswith("empty:")]
+
+
+def test_empty_directory_reported_and_nothing_created(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dl_dir: Path
+) -> None:
+    hollow = tmp_path / "hollow"
+    hollow.mkdir()
+    _config(monkeypatch, dl_dir=str(dl_dir), dl_mirror_paths=str(hollow))
+    result = runner.invoke(app, ["cache", "link-mirror"])
+    assert result.exit_code == 0, result.output
+    lines = _empty_lines(result.output)
+    assert len(lines) == 1
+    assert str(hollow) in lines[0]
+    assert "not mounted" in lines[0]
+    assert "1 mirror directories listed, 0 payloads examined" in result.output
+    assert "would link 0 file(s)" in result.output
+    applied = runner.invoke(app, ["cache", "link-mirror", "--apply"])
+    assert applied.exit_code == 0, applied.output
+    assert _listing(dl_dir) == []
+
+
+def test_empty_first_directory_does_not_stop_the_second(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dl_dir: Path, mirror: Path
+) -> None:
+    hollow = tmp_path / "hollow"
+    hollow.mkdir()
+    _config(monkeypatch, dl_dir=str(dl_dir), dl_mirror_paths=f"{hollow} {mirror}")
+    result = runner.invoke(app, ["cache", "link-mirror", "--apply"])
+    assert result.exit_code == 0, result.output
+    assert (dl_dir / "pkg-1.0.tar.gz").read_bytes() == b"payload"
+    lines = _empty_lines(result.output)
+    assert len(lines) == 1
+    assert str(hollow) in lines[0]
+    assert str(mirror) not in lines[0]
+
+
+def test_empty_directory_holding_only_a_subdirectory_reported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dl_dir: Path
+) -> None:
+    nested = tmp_path / "nested"
+    (nested / "sub").mkdir(parents=True)
+    _config(monkeypatch, dl_dir=str(dl_dir), dl_mirror_paths=str(nested))
+    result = runner.invoke(app, ["cache", "link-mirror"])
+    assert result.exit_code == 0, result.output
+    lines = _empty_lines(result.output)
+    assert len(lines) == 1
+    assert str(nested) in lines[0]
