@@ -338,3 +338,92 @@ def test_dry_run_gate_leaves_the_link_check_out(tmp_path: Path, monkeypatch: pyt
     _helpers._run_doctor_gate(_cfg(None, None), log, None, dry_run=True)
     _helpers._run_doctor_gate(_cfg(None, None), log, None)
     assert seen == [{"dl-mirror-links"}, None]
+
+
+def test_only_empty_directory_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _ready(monkeypatch)
+    m = _mirror(tmp_path, "m", [])
+    dl = _dl(tmp_path)
+    r = check_dl_mirror_links(_cfg(dl, [m]))
+    assert r.status == Status.FAIL
+    assert r.severity == Severity.WARN
+    assert r.severity != Severity.BLOCK
+    assert str(m) in r.message
+    assert "not mounted" in r.message
+    assert _entries(dl) == set()
+
+
+def test_empty_directory_named_when_another_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _ready(monkeypatch)
+    empty = _mirror(tmp_path, "empty", [])
+    full = _mirror(tmp_path, "full", ["a", "b", "c"])
+    dl = _dl(tmp_path)
+    r = check_dl_mirror_links(_cfg(dl, [empty, full]))
+    assert r.status == Status.PASS
+    assert r.severity == Severity.INFO
+    assert "linked 3 file(s)" in r.message
+    assert str(empty) in r.message
+    assert _entries(dl) == {"a", "b", "c"}
+
+
+def test_empty_plus_unlisted_warns_naming_each_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _ready(monkeypatch)
+    empty = _mirror(tmp_path, "empty", [])
+    bad = _mirror(tmp_path, "bad", ["z"])
+    real = dl_link.plan_links
+
+    def lister(dirs, deadline_s):
+        return {d: ([] if d == empty else None) for d in dirs}
+
+    def wrapped(dl_dir, mirror_dirs, **kw):
+        return real(dl_dir, mirror_dirs, lister=lister, deadline_s=kw["deadline_s"])
+
+    monkeypatch.setattr(dl_link, "plan_links", wrapped)
+    dl = _dl(tmp_path)
+    r = check_dl_mirror_links(_cfg(dl, [empty, bad]))
+    assert r.status == Status.FAIL
+    assert r.severity == Severity.WARN
+    assert r.message.count(str(empty)) == 1
+    assert f"mirror not listed: {bad}" in r.message
+    assert _entries(dl) == set()
+
+
+def test_unstamped_only_mirror_names_no_empty_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _ready(monkeypatch)
+    m = _mirror(tmp_path, "m", [])
+    (m / "nostamp.tar.gz").write_bytes(b"x")
+    r = check_dl_mirror_links(_cfg(_dl(tmp_path), [m]))
+    assert r.status == Status.PASS
+    assert "nothing to link" in r.message
+    assert "lists no files" not in r.message
+
+
+def test_partly_empty_mirror_with_nothing_to_link_passes_and_names_the_empty_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ready(monkeypatch)
+    empty = _mirror(tmp_path, "empty", [])
+    full = _mirror(tmp_path, "full", ["a"])
+    dl = _dl(tmp_path)
+    (dl / "a").write_bytes(b"already here")
+    r = check_dl_mirror_links(_cfg(dl, [empty, full]))
+    assert r.status == Status.PASS
+    assert r.severity == Severity.INFO
+    assert "nothing to link" in r.message
+    assert f"mirror lists no files: {empty}" in r.message
+    assert _entries(dl) == {"a"}
+
+
+def test_every_listed_directory_empty_warns_naming_each_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ready(monkeypatch)
+    first = _mirror(tmp_path, "first", [])
+    second = _mirror(tmp_path, "second", [])
+    dl = _dl(tmp_path)
+    r = check_dl_mirror_links(_cfg(dl, [first, second]))
+    assert r.status == Status.FAIL
+    assert r.severity == Severity.WARN
+    assert r.message.count(str(first)) == 1
+    assert r.message.count(str(second)) == 1
+    assert _entries(dl) == set()

@@ -2813,9 +2813,12 @@ def check_dl_mirror_links(cfg: BuildConfig) -> CheckResult:
         plan = dl_link.plan_links(Path(dl_dir), ready, deadline_s=_DL_MIRROR_LINKS_DEADLINE_S)
     except OSError:
         return _skip(name, Severity.INFO, f"cannot read {dl_dir}")
-    note = ""
+    unlisted_note = ""
     if plan.unlisted:
-        note = "; mirror not listed: " + ", ".join(str(p) for p in plan.unlisted)
+        unlisted_note = "; mirror not listed: " + ", ".join(str(p) for p in plan.unlisted)
+    empty_dirs = ", ".join(str(p) for p in plan.empty)
+    empty_note = f"; mirror lists no files: {empty_dirs}" if plan.empty else ""
+    note = unlisted_note + empty_note
     result = dl_link.apply_links(plan, Path(dl_dir))
     failed = result.kept.get(dl_link.KEPT_LINK_FAILED, 0)
     if failed:
@@ -2830,6 +2833,9 @@ def check_dl_mirror_links(cfg: BuildConfig) -> CheckResult:
         return _ok(name, Severity.INFO, f"linked {result.linked} file(s) from the mirror: {names}{note}")
     if plan.listed == 0:
         return _skip(name, Severity.INFO, f"no mirror directory could be listed{note}")
+    if plan.empty and len(plan.empty) == plan.listed:
+        message = f"no file to link: {empty_dirs} {dl_link.EMPTY_HINT}{unlisted_note}"
+        return _fail(name, Severity.WARN, message)
     return _ok(name, Severity.INFO, f"nothing to link{note}")
 
 
