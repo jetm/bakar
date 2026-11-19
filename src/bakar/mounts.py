@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -739,6 +741,62 @@ def _parse_free_bytes(stdout: str) -> int | None:
     if len(fields) != 2 or not all(f.isascii() and f.isdigit() for f in fields):
         return None
     return int(fields[0]) * int(fields[1])
+
+
+def list_regular_files(paths: Sequence[Path], *, deadline_s: float) -> dict[Path, list[str] | None]:
+    """Bounded, concurrent listing of the regular files directly inside each directory.
+
+    Runs one ``find`` child per unique directory through :func:`_run_bounded`,
+    all sharing one ``deadline_s``, so a wedged NFS share costs the deadline
+    once. Only regular files at depth one are returned: directories, symbolic
+    links and deeper entries are excluded.
+
+    The child's stdout goes to a file in a private temporary directory rather
+    than the runner's pipe, because the runner reads pipes only after the child
+    exits and a large listing would fill the pipe buffer and block until the
+    deadline. ``exec`` replaces the shell so the runner's kill reaches ``find``
+    itself, not an orphaned grandchild.
+
+    Returns a dict keyed by the input paths. The value is the list of file
+    names (NUL-split, decoded with ``os.fsdecode`` so non-UTF-8 bytes survive as
+    surrogate escapes for the caller to reject), or ``None`` when the listing
+    did not finish within the deadline, the child failed, or it could not
+    start. Never raises.
+    """
+    unique = [p for p in dict.fromkeys(paths) if "\x00" not in str(p)]
+    results: dict[Path, list[str] | None] = {}
+    if unique:
+        deadline = time.monotonic() + deadline_s
+        workdir: str | None = None
+        try:
+            workdir = tempfile.mkdtemp(prefix="bakar-list-")
+            outfiles = {path: Path(workdir) / f"{index}.out" for index, path in enumerate(unique)}
+            for outfile in outfiles.values():
+                outfile.touch()
+            specs = {
+                path: [
+                    "sh",
+                    "-c",
+                    'exec find "$1" -maxdepth 1 -mindepth 1 -type f -printf "%f\\0" > "$2"',
+                    "sh",
+                    str(path),
+                    str(outfiles[path]),
+                ]
+                for path in unique
+            }
+            batch = _run_bounded(specs, deadline)
+            for path, (rc, _stdout, _stderr) in batch.items():
+                if rc != 0:
+                    results[path] = None
+                    continue
+                raw = outfiles[path].read_bytes()
+                results[path] = [os.fsdecode(name) for name in raw.split(b"\0") if name]
+        except OSError, ValueError:  # cannot create the workdir, start the children or read a listing
+            return dict.fromkeys(paths)
+        finally:
+            if workdir is not None:
+                shutil.rmtree(workdir, ignore_errors=True)
+    return {path: results.get(path) for path in paths}
 
 
 def assess_cache_mounts(
