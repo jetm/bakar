@@ -19,6 +19,7 @@ and the toggle case has it True.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -217,3 +218,33 @@ def test_bbsetup_clean_refuses_when_a_peer_holds_the_marker(
     assert tmp_dir.is_dir()
     assert (tmp_dir / "work").is_dir()
     assert run_build.call_count == 0
+
+
+def test_bbsetup_clean_sweeps_dead_pid_trash_inside_the_build_dir(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--clean`` sweeps ``.bakar-trash-<pid>-*`` left in the build dir by a killed tmp-only removal.
+
+    The TMPDIR's parent is the build directory, which is where a run killed between
+    the rename and the delete strands the trash of ``tmp``. Trash of a live pid is
+    never touched, because that run may still be deleting it.
+    """
+    import subprocess as sp
+
+    build_dir = tmp_path / "ws" / "build"
+    proc = sp.Popen(["true"])
+    proc.wait()
+    dead = build_dir / f".bakar-trash-{proc.pid}-tmp"
+    live = build_dir / f".bakar-trash-{os.getppid()}-tmp"
+    for trash in (dead, live):
+        (trash / "work").mkdir(parents=True)
+    monkeypatch.setattr("bakar.build_stop.lock_mutation_guard", lambda c: None)
+
+    exit_code, _print_layer_hashes, run_build, output = _invoke_bbsetup_build(
+        runner, tmp_path, show_layers=False, show_hashes=False, clean=True
+    )
+
+    assert exit_code == 0, output
+    assert not dead.exists()
+    assert live.is_dir()
+    assert run_build.call_count == 1
