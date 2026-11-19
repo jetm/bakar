@@ -56,11 +56,11 @@ def _entries(d: Path) -> set[str]:
 
 def _ready(monkeypatch: pytest.MonkeyPatch, states: dict[str, str] | None = None) -> list[list[Path]]:
     calls: list[list[Path]] = []
-    states = states or {}
+    state_by_dir: dict[str, str] = states or {}
 
     def fake(dirs):
         calls.append(list(dirs))
-        return [hub_mount.DirStatus(path=d, state=states.get(str(d), "ready"), detail="") for d in dirs]
+        return [hub_mount.DirStatus(path=d, state=state_by_dir.get(str(d), "ready"), detail="") for d in dirs]
 
     monkeypatch.setattr(hub_mount, "probe_dirs", fake)
     return calls
