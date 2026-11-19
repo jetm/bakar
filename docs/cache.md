@@ -138,6 +138,8 @@ What it never does:
 - Create a stamp or a lock file.
 - Read the contents of a mirror file.
 
+Known limits: svn, cvs and bzr tarballs are linked when stamped because they have no fixed name prefix, a run has no cap on the number of links it creates, and a dangling link is never removed or repaired by the verb or the doctor row, so it stays until BitBake replaces it at its next fetch of that source. See [features/dl-mirror.md](features/dl-mirror.md) for the reasons.
+
 | Exit | Meaning |
 |------|---------|
 | 0 | The run completed, including a dry run and a run that linked nothing |
@@ -148,6 +150,7 @@ Report lines, in order:
 ```text
 2 mirror directories listed, 412 payloads examined
 unlisted: /mnt/hub/downloads-incoming
+empty: /mnt/hub/scratch (lists no regular files, as a share that is not mounted does)
 would link 3 file(s)
 kept 8: already present
 kept 5: git mirror tarball
@@ -155,7 +158,7 @@ kept 2: no stamp
 dry run: nothing was linked (pass --apply to link)
 ```
 
-The `unlisted: <dir>` line appears once per directory whose listing did not finish. `would link` reads `linked` with `--apply`, and the last line then reads `applied`. The `kept N: <reason>` lines carry one of `no stamp`, `git mirror tarball`, `unchecked tarball`, `reserved name`, `local stamp without payload`, `unsafe name`, `already present` or `link failed`. With `--apply`, a `first link error: <reason>` line follows when a link could not be created, giving the operating system's reason for the first failure.
+The `unlisted: <dir>` line appears once per directory whose listing did not finish. The `empty: <dir> (lists no regular files, as a share that is not mounted does)` line appears once per directory whose listing finished with no regular file, sits after the `unlisted:` lines, also covers a directory holding only subdirectories or symbolic links, and does not change the exit code. `would link` reads `linked` with `--apply`, and the last line then reads `applied`. The `kept N: <reason>` lines carry one of `no stamp`, `git mirror tarball`, `unchecked tarball`, `reserved name`, `local stamp without payload`, `unsafe name`, `already present` or `link failed`. With `--apply`, a `first link error: <reason>` line follows when a link could not be created, giving the operating system's reason for the first failure.
 
 See [features/dl-mirror.md](features/dl-mirror.md) for why a local name matters and for the limits.
 
@@ -184,7 +187,7 @@ The push target is a separate receiving directory on the store host (for example
 | `cache-push-service` | WARN (INFO past 15 minutes) | The unit is inactive, or the oldest queued entry is over 60 minutes old (over 15 minutes is INFO) |
 | `sstate-mirror-shared-mount` | BLOCK (WARN when undetermined) | An http(s) sstate mirror is set while the sstate directory is on NFS |
 | `dl-mirror-paths-ready` | WARN | A directory listed in `dl_mirror_paths` is not ready for a host-mode build (skipped for container builds and when the key is unset) |
-| `dl-mirror-links` | WARN | Host mode only, skipped when `dl_mirror_paths` or the downloads directory is unset. It creates the links `bakar cache link-mirror --apply` would create and reports INFO `linked N file(s) from the mirror: <up to 10 names>` or `nothing to link`. WARN only when a link could not be created (`N link(s) could not be created in <dir>; run bakar cache link-mirror`). INFO skip for a container build, and INFO when no mirror directory is ready (see `dl-mirror-paths-ready`). The mirror listing is bounded to 10 seconds. Never BLOCK |
+| `dl-mirror-links` | WARN | Host mode only, skipped when `dl_mirror_paths` or the downloads directory is unset. It creates the links `bakar cache link-mirror --apply` would create and reports INFO `linked N file(s) from the mirror: <up to 10 names>` or `nothing to link`. WARN when a link could not be created (`N link(s) could not be created in <dir>; run bakar cache link-mirror`), or when every directory it listed lists no files. INFO skip for a container build, and INFO when no mirror directory is ready (see `dl-mirror-paths-ready`). The mirror listing is bounded to 10 seconds. Never BLOCK |
 | `store-stale-tarballs` | WARN | A `git2_*.tar.gz.tmp` file over an hour old sits at the top of the downloads directory |
 | `dl-dir-size` | WARN | On a pusher host (`cache_push_target` set), the regular files in the downloads directory total over 60 GB; the message points at `bakar cache prune-downloads`. Skipped when the walk takes over 5 seconds |
 
