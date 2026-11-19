@@ -46,7 +46,10 @@ Limits:
 
 - `git` and `gitsm` sources are never linked. A build that lacks one needs a refetch of that recipe.
 - A source that a fetcher stores in a subdirectory of the downloads directory is not linked; only files directly inside a mirror directory are.
-- A dangling link is left as it is; the verb never replaces an existing entry.
+- `svn`, `cvs` and `bzr` tarballs have no fixed name prefix, so they cannot be excluded the way the other unchecked tarballs are. One that is stamped on the hub is linked and goes unverified until a later fetch checks it.
+- A run has no cap on links, so the first run against a large store creates one symbolic link per eligible file.
+- A dangling link is never removed or repaired by the verb or the doctor row, which never replace an existing entry. BitBake replaces a dangling link itself at its next fetch of that source.
+- A mirror directory listing no regular files is reported as empty by the verb and, when every listed directory is empty, as a warning by the doctor row, usually because a share is not mounted.
 - A hub that drops during a build stalls reads through the links like any other read through the mount (see the limit below).
 
 ### Known limit: a hub that drops during a build
