@@ -280,44 +280,6 @@ def _inject_literal_mold(cfg: BuildConfig, text: str) -> str:
     return _append_local_conf_lines(text, lines)
 
 
-def _inject_local_tmpdir(cfg: BuildConfig, text: str) -> str:
-    """Append a literal ``TMPDIR`` assignment to the main tuning overlay's
-    ``local_conf_header`` block, redirecting the build tmp to node-local disk.
-
-    Fires only when ``local_tmpdir_base`` is set AND the build is host mode -
-    otherwise returns ``text`` unchanged so an unset-knob build is byte-for-byte
-    identical to today. ``cfg.resolved_tmpdir`` is itself host-mode-gated, but
-    the no-op is enforced here independently so the injector cannot ever emit a
-    workspace-relative ``TMPDIR`` line for a build that never asked for one.
-
-    bitbake reads ``TMPDIR`` from ``local.conf`` (weak ``?=`` default in
-    bitbake.conf, overridden by the hard local.conf assignment), so the
-    ``local_conf_header`` channel is the reliable one - the same one
-    :func:`_inject_literal_sccache` uses; ``TMPDIR`` is not a kas-read variable
-    and the env passthrough allowlist never forwards it.
-
-    Wired into the MAIN tuning overlay only (not the sccache/ccache/mold
-    extras), since kas merges every overlay's header block and injecting into
-    the shared chain would emit N duplicate ``TMPDIR`` lines. A regex guard
-    keeps a re-materialize from doubling the line (mirroring
-    :func:`_inject_literal_sccache`)."""
-    if not cfg.local_tmpdir_base or not cfg.host_mode:
-        return text
-    if re.search(r"^\s*TMPDIR\s*=", text, re.MULTILINE):
-        return text
-    tmpdir = str(cfg.resolved_tmpdir)
-    # The value lands inside a quoted bitbake assignment. A quote, backslash, or
-    # control char in local_tmpdir_base/machine would terminate the string and
-    # inject arbitrary local.conf statements (or make the overlay unparsable).
-    # Fail fast on the misconfiguration rather than emitting a broken conf.
-    if any(c in tmpdir for c in '"\\\n\r\x00'):
-        raise ValueError(
-            f"local_tmpdir_base resolves to a path unsafe for local.conf injection "
-            f"(contains a quote, backslash, or control character): {tmpdir!r}"
-        )
-    return _append_local_conf_lines(text, [f'TMPDIR = "{tmpdir}"'])
-
-
 # The base overlays statically strip rm_work (default off while bakar is in
 # use); _inject_rm_work deletes that whole block when [build] rm_work is opted
 # back on. The block spans its comment through the USER_CLASSES line, so the

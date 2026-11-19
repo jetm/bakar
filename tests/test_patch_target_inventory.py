@@ -20,6 +20,7 @@ REMOVED = [
     "_resolve_capture_target",
     "_PLAIN_STATUS_INTERVAL",
     "GRAPH_CAPTURE_POLL_S",
+    "_inject_local_tmpdir",
 ]
 
 KEPT = [
@@ -33,7 +34,6 @@ KEPT = [
     "_inject_literal_mold",
     "_inject_literal_parallelism",
     "_inject_literal_sccache",
-    "_inject_local_tmpdir",
     "_resolve_parallelism",
 ]
 

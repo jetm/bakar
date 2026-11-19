@@ -114,7 +114,6 @@ from bakar.steps.kas_overlay import (
     _inject_literal_mold,  # noqa: F401 - re-exported for external/test imports
     _inject_literal_parallelism,  # noqa: F401 - re-exported for external/test imports
     _inject_literal_sccache,  # noqa: F401 - re-exported for external/test imports
-    _inject_local_tmpdir,  # noqa: F401 - re-exported for external/test imports
     _resolve_parallelism,  # noqa: F401 - re-exported for external/test imports
     materialize_cache_classify_layer,
     materialize_host_layer,
