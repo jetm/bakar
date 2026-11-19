@@ -4,8 +4,8 @@ Without this, every command except ``build`` resolved a different machine than
 ``build`` did for the same kas spec, because ``build`` alone threaded
 ``machine_from_yaml()`` into its ``BSPSpec``. For the generic family the machine
 then degenerated to the literal "generic" (see ``_FamilyDefaults`` d_machine),
-and since ``local_tmpdir`` is keyed on ``<bsp_root.name>-<machine>-<digest>``,
-``bakar bitbake`` operated in a *different TMPDIR* than the build it was meant to
+and since the build directory name is keyed on the machine, ``bakar bitbake``
+operated in a *different build directory* than the build it was meant to
 follow up on.
 
 The observed failure: `bakar bitbake avocado-stone -c stone_provision <spec>`

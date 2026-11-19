@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 # The NFS subset of _FS_BLOCK. Only these are fatal for the build TMPDIR
 # (bitbake's sanity check aborts on TMPDIR over NFS); the rest break only the
-# source-layer workspace root, so a local TMPDIR override cannot rescue them.
+# source-layer workspace root.
 _FS_NFS: frozenset[str] = frozenset({"nfs", "nfs4"})
 
 # Above systemd's 15-second automount mount timeout on the cluster's fstab

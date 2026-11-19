@@ -39,10 +39,8 @@ def deploy_dir(cfg: BuildConfig) -> Path:
     declares which repositories a sync renders - so this is the directory the
     feed stages from, not ``deploy`` itself.
 
-    Derived from ``resolved_tmpdir`` rather than the workspace so a
-    ``local_tmpdir_base`` override is honored: on the cluster the source tree is
-    on NFS while the build TMPDIR is node-local, and staging from the workspace
-    would find nothing.
+    Derived from ``resolved_tmpdir`` because that is the build TMPDIR, and
+    bitbake writes ``deploy`` beneath it.
     """
     return cfg.resolved_tmpdir / "deploy" / "rpm"
 
