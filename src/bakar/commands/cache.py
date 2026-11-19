@@ -1,11 +1,13 @@
-"""bakar cache subcommand - push downloads to the central store, report the queue, capture hangs, prune downloads.
+"""bakar cache subcommand - push downloads, report the queue, capture hangs, prune downloads, link mirrors.
 
-Four verbs: ``push --watch`` (live push of finished downloads), ``status``
-(push-queue summary), ``capture`` (hang diagnostics for running BitBake) and
+Five verbs: ``push --watch`` (live push of finished downloads), ``status``
+(push-queue summary), ``capture`` (hang diagnostics for running BitBake),
 ``prune-downloads`` (remove downloads the hub or a clone already holds; a dry
-run unless ``--apply``). Directories and the push target come from the loaded
-user config, with the ``DL_DIR`` and ``SSTATE_DIR`` environment variables
-taking precedence.
+run unless ``--apply``) and ``link-mirror`` (link files held by the configured
+mirror directories into the downloads directory; a dry run unless
+``--apply``). Directories and the push target come from the loaded user
+config, with the ``DL_DIR`` and ``SSTATE_DIR`` environment variables taking
+precedence. The mirror directories come from the user config alone.
 """
 
 from __future__ import annotations
@@ -21,19 +23,22 @@ from rich.markup import escape
 import bakar.commands._app as _state
 from bakar.commands._app import app, console
 from bakar.commands._helpers import declare_global_mode_exclusion
-from bakar.steps import cache_capture, cache_prune, cache_push
+from bakar.steps import cache_capture, cache_prune, cache_push, dl_link, hub_mount
 from bakar.steps.cache_queue import PushQueue
 
 declare_global_mode_exclusion(
     "cache",
     "pushes downloads over ssh, reads the push queue, captures process state and, with --apply, removes files from "
-    "the local downloads directory; launches no kas",
+    "the local downloads directory and creates links in it; launches no kas",
 )
 
 PUSH_KEY = Path("~/.ssh/bakar-cache-push")
 
 cache_app = typer.Typer(
-    help="Push downloads to the central store, report the push queue, and capture hang diagnostics.",
+    help=(
+        "Push downloads to the central store, report the push queue, capture hang diagnostics, "
+        "prune downloads and link mirror files."
+    ),
     no_args_is_help=True,
 )
 
@@ -137,6 +142,44 @@ def prune_downloads(
     )
     result = cache_prune.apply_plan(plan, dl_dir) if apply else None
     typer.echo(cache_prune.render_report(plan, result, apply))
+
+
+@cache_app.command("link-mirror")
+def link_mirror(
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Create the links. Nothing is created without this flag."),
+    ] = False,
+) -> None:
+    """Link files held by the mirror directories into the downloads directory."""
+    dl_dir = _dir("DL_DIR", _configured("dl_dir"))
+    if dl_dir is None:
+        console.print("[red]no downloads directory: set DL_DIR or build.dl_dir to an existing directory[/]")
+        raise typer.Exit(code=1)
+    if not dl_dir.is_dir():
+        console.print(f"[red]downloads path is not a directory: {escape(str(dl_dir))}[/]")
+        raise typer.Exit(code=1)
+    value = _configured("dl_mirror_paths")
+    if not value:
+        console.print("[red]no mirror directories: set build.dl_mirror_paths[/]")
+        raise typer.Exit(code=1)
+    if _configured("container") is True:
+        console.print(
+            "[red]the user configuration selects the container build; "
+            "mirror directories are not used in a container build[/]"
+        )
+        raise typer.Exit(code=1)
+    statuses = hub_mount.probe_dirs(hub_mount.parse_dirs(value))
+    for status in statuses:
+        if status.state != "ready":
+            console.print(f"[yellow]skipping mirror directory {escape(str(status.path))}: {escape(status.state)}[/]")
+    ready = [s.path for s in statuses if s.state == "ready"]
+    if not ready:
+        console.print("[red]no mirror directory is ready: check build.dl_mirror_paths[/]")
+        raise typer.Exit(code=1)
+    plan = dl_link.plan_links(dl_dir, ready)
+    result = dl_link.apply_links(plan, dl_dir) if apply else dl_link.ApplyResult()
+    typer.echo(dl_link.render_report(plan, result, apply=apply))
 
 
 app.add_typer(cache_app, name="cache")
