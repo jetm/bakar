@@ -932,12 +932,12 @@ def _build_kas_arg(
     layer = _layer_reuse_entry(kas_yaml)
     if layer is not None:
         _setup_meta_avocado_build_dir(cfg)
-        overlay_rel = materialize_overlay(cfg, overlay_source, is_main_overlay=True)
+        overlay_rel = materialize_overlay(cfg, overlay_source)
         extra_overlay_rels = [materialize_overlay(cfg, p) for p in extra_overlays or []]
         return str(_dump_layer_entry(cfg, layer, overlay_rel, extra_overlay_rels))
     if cfg.is_meta_avocado:
         _setup_meta_avocado_build_dir(cfg)
-        overlay_rel = materialize_overlay(cfg, overlay_source, is_main_overlay=True)
+        overlay_rel = materialize_overlay(cfg, overlay_source)
         extra_overlay_rels = [materialize_overlay(cfg, p) for p in extra_overlays or []]
         entry = _entry_without_bakar_sections(kas_yaml)
         try:
@@ -963,7 +963,7 @@ def _build_kas_arg(
                 entry.unlink(missing_ok=True)
         return str(dump)
     kas_yaml_rel = _resolve_user_yaml(cfg, kas_yaml)
-    overlay_rel = materialize_overlay(cfg, overlay_source, is_main_overlay=True)
+    overlay_rel = materialize_overlay(cfg, overlay_source)
     if extra_overlays:
         extra_rels = [materialize_overlay(cfg, p) for p in extra_overlays]
         return ":".join([str(kas_yaml_rel), str(overlay_rel), *[str(r) for r in extra_rels]])

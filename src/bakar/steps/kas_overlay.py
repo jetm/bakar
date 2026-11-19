@@ -342,7 +342,7 @@ def _inject_rm_work(cfg: BuildConfig, text: str) -> str:
     return _RM_WORK_BLOCK_RE.sub("", text)
 
 
-def materialize_overlay(cfg: BuildConfig, overlay_source: Path, *, is_main_overlay: bool = False) -> Path:
+def materialize_overlay(cfg: BuildConfig, overlay_source: Path) -> Path:
     """Copy ``overlay_source`` into ``<bsp_root>/.bakar/overlays/``.
 
     Returns the path *relative to* ``cfg.bsp_root`` so callers can
@@ -360,11 +360,6 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path, *, is_main_overl
     configs in the same repo (or outside any repo) and sidesteps the
     bind-mount issue where a symlink target outside ``KAS_WORK_DIR``
     dangles inside the kas-container view.
-
-    ``is_main_overlay`` gates the ``TMPDIR`` injection to the single main
-    tuning overlay (the ``overlay_source`` from ``KasBuildContext``), never the
-    sccache/ccache/mold extras, so the merged local.conf carries exactly one
-    ``TMPDIR`` line.
     """
     overlay_dir = cfg.bsp_root / _OVERLAY_DIR_RELPATH
     overlay_dir.mkdir(parents=True, exist_ok=True)
@@ -389,11 +384,6 @@ def materialize_overlay(cfg: BuildConfig, overlay_source: Path, *, is_main_overl
                 cfg.effective_ccache_dir.mkdir(parents=True, exist_ok=True)
         if overlay_source.name == "bakar-tuning-mold.yml":
             injected = _inject_literal_mold(cfg, injected)
-        # TMPDIR goes on the main overlay only: kas merges every overlay's
-        # local_conf_header block, so injecting into the shared chain would emit
-        # one duplicate TMPDIR line per extra overlay.
-        if is_main_overlay:
-            injected = _inject_local_tmpdir(cfg, injected)
         if injected != original:
             dest.write_text(injected, encoding="utf-8")
     return dest.relative_to(cfg.bsp_root)
