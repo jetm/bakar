@@ -2807,6 +2807,51 @@ def check_dl_mirror_paths_ready(cfg: BuildConfig) -> CheckResult:
     )
 
 
+_DL_MIRROR_LINKS_NAME_MAX = 10
+_DL_MIRROR_LINKS_DEADLINE_S = 10.0
+
+
+def check_dl_mirror_links(cfg: BuildConfig) -> CheckResult:
+    """Link mirror payloads the downloads directory lacks; WARN at most, never BLOCK.
+
+    The links are created by ``dl_link.apply_links``, the same call as
+    ``bakar cache link-mirror --apply``; this function creates nothing itself.
+    """
+    name = "dl-mirror-links"
+    if not cfg.dl_mirror_paths:
+        return _skip(name, Severity.INFO, "no dl_mirror_paths configured")
+    dl_dir = os.environ.get("DL_DIR") or cfg.dl_dir
+    if not dl_dir:
+        return _skip(name, Severity.INFO, "no downloads directory configured")
+    if not cfg.host_mode:
+        return _skip(name, Severity.INFO, "container build: the mirror directories are not used")
+    from bakar.steps import dl_link, hub_mount
+
+    statuses = hub_mount.probe_dirs(hub_mount.parse_dirs(cfg.dl_mirror_paths))
+    ready = [s.path for s in statuses if s.state == "ready"]
+    if not ready:
+        return _skip(name, Severity.INFO, "no mirror directory is ready; see dl-mirror-paths-ready")
+    try:
+        plan = dl_link.plan_links(Path(dl_dir), ready, deadline_s=_DL_MIRROR_LINKS_DEADLINE_S)
+    except OSError:
+        return _skip(name, Severity.INFO, f"cannot read {dl_dir}")
+    note = ""
+    if plan.unlisted:
+        note = "; mirror not listed: " + ", ".join(str(p) for p in plan.unlisted)
+    result = dl_link.apply_links(plan, Path(dl_dir))
+    failed = result.kept.get(dl_link.KEPT_LINK_FAILED, 0)
+    if failed:
+        return _fail(
+            name,
+            Severity.WARN,
+            f"{failed} link(s) could not be created in {dl_dir}; run bakar cache link-mirror{note}",
+        )
+    if result.linked:
+        names = ", ".join(sorted(i.name for i in plan.items)[:_DL_MIRROR_LINKS_NAME_MAX])
+        return _ok(name, Severity.INFO, f"linked {result.linked} file(s) from the mirror: {names}{note}")
+    return _ok(name, Severity.INFO, f"nothing to link{note}")
+
+
 def check_store_stale_tarballs(cfg: BuildConfig) -> CheckResult:
     """Warn about ``git2_*.tar.gz.tmp`` files left over in the store host's DL_DIR."""
     name = "store-stale-tarballs"
@@ -4050,6 +4095,7 @@ SHARED_CHECKS: tuple[CheckFunc, ...] = (
     check_dl_mirror_paths_ready,
     check_store_stale_tarballs,
     check_dl_dir_size,
+    check_dl_mirror_links,
     # WARN only: a scheduler bitbake does not ship, and central endpoints a
     # single-node build points at but cannot reach. central-endpoints is NOT a
     # _CLUSTER_CHECKS member: it must run when cluster mode is off.
@@ -4116,6 +4162,7 @@ _CACHE_TOUCHING_CHECKS: tuple[CheckFunc, ...] = (
     check_native_forecast,
     check_sstate_mirror_shared_mount,
     check_store_stale_tarballs,
+    check_dl_mirror_links,
 )
 
 
@@ -4161,6 +4208,7 @@ CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "dl-mirror-paths-ready",
             "store-stale-tarballs",
             "dl-dir-size",
+            "dl-mirror-links",
         ),
     ),
     (
@@ -4268,6 +4316,7 @@ _CHECK_METADATA: tuple[tuple[CheckFunc, str, Severity], ...] = (
     (check_dl_mirror_paths_ready, "dl-mirror-paths-ready", Severity.WARN),
     (check_store_stale_tarballs, "store-stale-tarballs", Severity.WARN),
     (check_dl_dir_size, "dl-dir-size", Severity.WARN),
+    (check_dl_mirror_links, "dl-mirror-links", Severity.WARN),
     (check_scheduler_value, "scheduler", Severity.WARN),
     (check_central_endpoints, "central-endpoints", Severity.WARN),
     # NXP-only (BspModel.doctor_extras)

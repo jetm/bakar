@@ -327,6 +327,7 @@ DIAGNOSTICS_CHECK_NAMES: frozenset[str] = frozenset(
         "check_daemon_state",
         "check_disk_free",
         "check_dl_dir_size",
+        "check_dl_mirror_links",
         "check_dl_mirror_paths_ready",
         "check_dl_mirror_reachable",
         "check_docker_daemon",
