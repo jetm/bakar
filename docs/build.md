@@ -670,10 +670,9 @@ uses the same name. A value arriving through the environment skips the config
 loader, so an unsupported placeholder in it is refused when the build directory
 is computed.
 
-Each build directory has its own TOPDIR, so a `local_tmpdir_base` redirect gives
-each its own TMPDIR. Builds of the same machine from two worktrees no longer
-serialize on one bitbake lock or overwrite each other's generated
-`avocado-bakar.yml`.
+Each build directory has its own TOPDIR and therefore its own `TMPDIR`. Builds
+of the same machine from two worktrees no longer serialize on one bitbake lock
+or overwrite each other's generated `avocado-bakar.yml`.
 
 Worktree builds are tested in host mode only: `kas-container` mounts just the
 workspace, so a checkout outside it is not visible inside a container build.
