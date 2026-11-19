@@ -73,12 +73,7 @@ def test_resolve_env_manifest_used_when_no_explicit_arg(
     assert cfg.manifest == env_manifest
 
 
-def _meta_avocado_cfg(
-    stem: str,
-    *,
-    local_tmpdir_base: str | None = None,
-    host_mode: bool = True,
-) -> BuildConfig:
+def _meta_avocado_cfg(stem: str, *, host_mode: bool = True) -> BuildConfig:
     """A meta-avocado generic BuildConfig whose bsp_root is ``build-<stem>``.
 
     meta-avocado classifies as the ``generic`` family with machine degenerating
@@ -98,33 +93,13 @@ def _meta_avocado_cfg(
         kas_container_image="",
         host_mode=host_mode,
         kas_yaml_override=workspace / "meta-avocado" / "kas" / "machine" / f"{stem}.yml",
-        local_tmpdir_base=local_tmpdir_base,
     )
 
 
 @pytest.mark.unit
-def test_resolved_tmpdir_override_applies_in_host_mode() -> None:
-    """Knob set + host_mode -> ``<base>/<bsp_root.name>-<machine>-<digest>`` on local disk."""
-    cfg = _meta_avocado_cfg("qemux86-64", local_tmpdir_base="/local/tmp", host_mode=True)
-    assert cfg.resolved_tmpdir.parent == Path("/local/tmp")
-    prefix = f"{cfg.bsp_root.name}-{cfg.machine}-"
-    assert cfg.resolved_tmpdir.name.startswith(prefix)
-    digest = cfg.resolved_tmpdir.name[len(prefix) :]
-    assert len(digest) == 8 and all(c in "0123456789abcdef" for c in digest)
-
-
-@pytest.mark.unit
-def test_resolved_tmpdir_override_suppressed_off_host_mode() -> None:
-    """Knob set + NOT host_mode -> workspace-relative default (override ignored)."""
-    cfg = _meta_avocado_cfg("qemux86-64", local_tmpdir_base="/local/tmp", host_mode=False)
-    assert cfg.resolved_tmpdir == cfg.bsp_root / cfg.build_dir_name / "tmp"
-    assert not str(cfg.resolved_tmpdir).startswith("/local/tmp")
-
-
-@pytest.mark.unit
 def test_resolved_tmpdir_default_is_workspace_relative_when_unset() -> None:
-    """Knob unset -> ``bsp_root/build_dir_name/tmp`` with no doubled ``build`` segment."""
-    cfg = _meta_avocado_cfg("qemux86-64", local_tmpdir_base=None)
+    """Default -> ``bsp_root/build_dir_name/tmp`` with no doubled ``build`` segment."""
+    cfg = _meta_avocado_cfg("qemux86-64")
     assert cfg.resolved_tmpdir == cfg.bsp_root / cfg.build_dir_name / "tmp"
     assert cfg.resolved_tmpdir == Path("/ws/sources/build-qemux86-64/build/tmp")
 
@@ -133,29 +108,23 @@ def test_resolved_tmpdir_default_is_workspace_relative_when_unset() -> None:
 def test_resolved_tmpdir_ignores_env_tmpdir(monkeypatch: pytest.MonkeyPatch) -> None:
     """An env ``TMPDIR`` never leaks into the resolved path (unlike SSTATE_DIR)."""
     monkeypatch.setenv("TMPDIR", "/run/user/1000/tmp")
-    unset = _meta_avocado_cfg("qemux86-64", local_tmpdir_base=None)
+    unset = _meta_avocado_cfg("qemux86-64")
     assert unset.resolved_tmpdir == Path("/ws/sources/build-qemux86-64/build/tmp")
     assert "/run/user/1000/tmp" not in str(unset.resolved_tmpdir)
-    override = _meta_avocado_cfg("qemux86-64", local_tmpdir_base="/local/tmp", host_mode=True)
-    assert str(override.resolved_tmpdir).startswith("/local/tmp/build-qemux86-64-generic-")
-    assert "/run/user/1000/tmp" not in str(override.resolved_tmpdir)
 
 
 @pytest.mark.unit
 def test_resolved_tmpdir_distinct_per_bsp_root() -> None:
     """Two meta-avocado stems sharing machine "generic" get distinct tmp paths."""
-    a = _meta_avocado_cfg("qemux86-64", local_tmpdir_base="/local/tmp", host_mode=True)
-    b = _meta_avocado_cfg("qemuarm64", local_tmpdir_base="/local/tmp", host_mode=True)
+    a = _meta_avocado_cfg("qemux86-64")
+    b = _meta_avocado_cfg("qemuarm64")
     assert a.machine == b.machine == "generic"
     assert a.resolved_tmpdir != b.resolved_tmpdir
-    assert a.resolved_tmpdir.parent == b.resolved_tmpdir.parent == Path("/local/tmp")
-    assert a.resolved_tmpdir.name.startswith("build-qemux86-64-generic-")
-    assert b.resolved_tmpdir.name.startswith("build-qemuarm64-generic-")
 
 
 @pytest.mark.unit
 def test_resolved_tmpdir_qcom_uses_tmp_glibc_leaf() -> None:
-    """The knob-unset default leaf is ``tmp-glibc`` for qcom, ``tmp`` elsewhere."""
+    """The default leaf is ``tmp-glibc`` for qcom, ``tmp`` elsewhere."""
     qcom = BuildConfig(
         workspace=Path("/ws"),
         bsp_family="qcom",
@@ -173,12 +142,7 @@ def test_resolved_tmpdir_qcom_uses_tmp_glibc_leaf() -> None:
 
 @pytest.mark.unit
 def test_resolved_tmpdir_distinct_across_nxp_workspaces() -> None:
-    """Two nxp checkouts (same family dir, same machine) never share one tmp.
-
-    ``bsp_root.name`` is the family literal ``"nxp"`` for every nxp workspace, so
-    a global ``local_tmpdir_base`` would collide two checkouts without the
-    ``bsp_root``-path digest.
-    """
+    """Two nxp checkouts (same family dir, same machine) never share one tmp."""
 
     def _nxp(workspace: str) -> BuildConfig:
         return BuildConfig(
@@ -192,7 +156,6 @@ def test_resolved_tmpdir_distinct_across_nxp_workspaces() -> None:
             repo_branch="scarthgap",
             kas_container_image="",
             host_mode=True,
-            local_tmpdir_base="/local/tmp",
         )
 
     a = _nxp("/work-a")
@@ -207,9 +170,7 @@ def test_resolved_tmpdir_distinct_across_qcom_distros() -> None:
     """Two qcom distros in one checkout, same machine, never share one tmp.
 
     qcom ``bsp_root`` is ``workspace/qcom`` for every distro; only
-    ``build_dir_name`` (``build-<distro>``) varies. Keying the digest on the
-    full TOPDIR (``bsp_root/build_dir_name``) rather than ``bsp_root`` alone is
-    what keeps the two distros' resolved TMPDIRs distinct.
+    ``build_dir_name`` (``build-<distro>``) varies.
     """
 
     def _qcom(distro: str) -> BuildConfig:
@@ -224,7 +185,6 @@ def test_resolved_tmpdir_distinct_across_qcom_distros() -> None:
             repo_branch="scarthgap",
             kas_container_image="",
             host_mode=True,
-            local_tmpdir_base="/local/tmp",
         )
 
     a = _qcom("qcom-wayland")

@@ -10,7 +10,6 @@ rest of bakar does not have to know about the workspace layout.
 
 from __future__ import annotations
 
-import hashlib
 import importlib.resources
 import os
 import re
@@ -456,12 +455,6 @@ class BuildConfig:
     # unrecorded regimes. The build announces the "seed" case; nothing else can
     # tell the two apart once the value is a bare string.
     sstate_mirrors_source: str | None = field(default=None)
-    # Node-local base for the build TMPDIR. When set (and the build is host
-    # mode), the build tmp is redirected off the workspace to
-    # ``<local_tmpdir_base>/<bsp_root.name>-<machine>`` on another local disk. A
-    # workspace on NFS is refused by the doctor, so this does not make one
-    # buildable. Absent (None) keeps the workspace-relative tmp; see resolved_tmpdir.
-    local_tmpdir_base: str | None = field(default=None)
     # Build-directory name template for a kas file in a linked meta-avocado
     # worktree; None means the default ``build-{stem}-{worktree}``. See
     # worktree_build_template and bsp_root.
@@ -698,23 +691,7 @@ class BuildConfig:
     def resolved_tmpdir(self) -> Path:
         """Directory bitbake uses as its build ``TMPDIR``.
 
-        When ``local_tmpdir_base`` is set AND the build is host mode, the tmp is
-        redirected to ``<local_tmpdir_base>/<bsp_root.name>-<machine>-<digest>``
-        on node-local disk, separate from the workspace (which the doctor
-        refuses on NFS). The leaf must be unique
-        per build directory, but ``bsp_root.name`` alone is not: for nxp/ti it is
-        the family literal (two checkouts share ``nxp``) and for meta-avocado
-        ``machine`` degenerates to ``"generic"``. An 8-char digest of the
-        resolved TOPDIR (``bsp_root/build_dir_name``) is appended so neither two
-        distinct checkouts nor two qcom distros under one checkout ever map onto
-        one tmp. The base is absolutized
-        so a relative knob value resolves identically for the diagnostics and
-        the injected ``local.conf`` line (bitbake resolves a relative local.conf
-        TMPDIR against TOPDIR, bakar against its cwd - they would disagree).
-
-        Otherwise (knob unset, or a container build where the in-container tmp
-        stays behind the ``/work`` bind mount) it is the workspace-relative
-        default ``bsp_root/build_dir_name/<tmp_leaf>`` - today's path, unchanged.
+        It is the workspace-relative ``bsp_root/build_dir_name/<tmp_leaf>``.
         ``tmp_leaf`` is ``tmp-glibc`` for the qcom family and ``tmp`` for every
         other, mirroring the build-dir layout each family produces (see the
         ``tmp_name`` split in ``commands/build.py``).
@@ -723,18 +700,8 @@ class BuildConfig:
         that is a universal POSIX temp path exported by CI runners and shells,
         never forwarded to bitbake, so honoring it would either inject ``/tmp``
         into local.conf or make the diagnostics judge a path the build never
-        uses. An explicit env override belongs on ``local_tmpdir_base`` itself.
+        uses.
         """
-        if self.local_tmpdir_base and self.host_mode:
-            base = Path(os.path.abspath(os.path.expanduser(self.local_tmpdir_base)))
-            # Digest the full TOPDIR (bsp_root/build_dir_name), not bsp_root
-            # alone: for qcom bsp_root is workspace/qcom for every distro and
-            # only build_dir_name (build-<distro>) varies, so a bsp_root-only
-            # digest would collapse two distros onto one tmp. TOPDIR is the
-            # exact per-build-directory uniqueness domain.
-            topdir = os.path.abspath(self.bsp_root / self.build_dir_name)
-            digest = hashlib.sha256(topdir.encode()).hexdigest()[:8]
-            return base / f"{self.bsp_root.name}-{self.machine}-{digest}"
         tmp_leaf = "tmp-glibc" if self.bsp_family == "qcom" else "tmp"
         return self.bsp_root / self.build_dir_name / tmp_leaf
 
@@ -857,8 +824,7 @@ class BuildConfig:
                 if self.kas_yaml_override.name == GENERATED_BUILD_YAML:
                     return self.kas_yaml_override.resolve().parent
                 # Each linked worktree gets its own build dir so two branches
-                # of meta-avocado never share TOPDIR (and so never share the
-                # digest-keyed local TMPDIR either).
+                # of meta-avocado never share TOPDIR.
                 return self.workspace / meta_avocado_build_dir_name(
                     self.kas_yaml_override, self.worktree_build_dir_template
                 )
@@ -1371,9 +1337,9 @@ def resolve(request: ResolveRequest) -> BuildConfig:
 
     # A BYO kas YAML declares its own machine, so read it rather than letting the
     # family default answer. For the generic family that default is the literal
-    # "generic" (see _FamilyDefaults), and local_tmpdir is keyed on
-    # <bsp_root.name>-<machine>-<digest> - so a command that resolved "generic"
-    # operated in a different TMPDIR than the build it was following up on, against
+    # "generic" (see _FamilyDefaults), and the machine decides which MACHINE the
+    # build runs and which deploy tree it writes - so a command that resolved "generic"
+    # operated on a different machine than the build it was following up on, against
     # a deploy tree that had never held a full image. `bakar build` avoided this by
     # threading machine_from_yaml() into its own BSPSpec; nothing else did, which
     # made build the odd one out instead of the reference.
@@ -1465,7 +1431,6 @@ def resolve(request: ResolveRequest) -> BuildConfig:
             workspace,
         ),
         worktree_build_dir_template=worktree_build_template(user_config),
-        local_tmpdir_base=user_config.local_tmpdir_base if user_config else None,
         scheduler=user_config.scheduler if user_config else None,
         pressure_max_cpu=user_config.pressure_max_cpu if user_config else None,
         pressure_max_io=user_config.pressure_max_io if user_config else None,

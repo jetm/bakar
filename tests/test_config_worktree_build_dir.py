@@ -104,24 +104,23 @@ def test_main_checkout_keeps_plain_build_dir(
 
 @pytest.mark.unit
 def test_two_worktrees_get_distinct_roots_and_tmpdirs(
-    meta_avocado_worktree_layout: MetaAvocadoWorktreeLayout, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    meta_avocado_worktree_layout: MetaAvocadoWorktreeLayout, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv(_ENV, raising=False)
     layout = meta_avocado_worktree_layout
     second = layout.worktree.parent / "wt2"
     _add_worktree(layout.main, second, "wt2")
-    user = UserConfig(local_tmpdir_base=str(tmp_path / "local-tmp"))
 
-    cfg1 = _resolve(layout.ws, layout.kas_yaml, user)
-    cfg2 = _resolve(layout.ws, second / "kas" / "machine" / "m.yml", user)
+    cfg1 = _resolve(layout.ws, layout.kas_yaml)
+    cfg2 = _resolve(layout.ws, second / "kas" / "machine" / "m.yml")
 
     assert cfg1.host_mode and cfg2.host_mode
     assert cfg1.bsp_root == layout.ws / "build-m-wt1"
     assert cfg2.bsp_root == layout.ws / "build-m-wt2"
-    tmp1, tmp2 = cfg1.resolved_tmpdir, cfg2.resolved_tmpdir
-    assert tmp1.parent == tmp2.parent == tmp_path / "local-tmp"
-    assert tmp1 != tmp2
-    assert tmp1.name.rsplit("-", 1)[1] != tmp2.name.rsplit("-", 1)[1]
+    # Distinct only because the build directories differ.
+    assert cfg1.resolved_tmpdir == layout.ws / "build-m-wt1" / cfg1.build_dir_name / "tmp"
+    assert cfg2.resolved_tmpdir == layout.ws / "build-m-wt2" / cfg2.build_dir_name / "tmp"
+    assert cfg1.resolved_tmpdir != cfg2.resolved_tmpdir
 
 
 def _make_layer_repo(root: Path, name: str = "meta-acme") -> Path:
