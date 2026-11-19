@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a `source` record (`host`, `run_id`, `pulled_at`, `observed_layers`, `pin_override`) to `delta.json` for a delta published from a remote build
 - Changed `bakar build --on` to record the delivered kas path and workspace in the host run's environment as `BAKAR_DISPATCH_KAS` and `BAKAR_DISPATCH_WORKSPACE`, for meta-avocado and layer-repository dispatches
 
+### Removed
+
+- **BREAKING** Removed the `[build] local_tmpdir_base` setting, which redirected the build `TMPDIR` to a node-local directory so a source workspace could live on NFS. `bakar doctor` blocks a workspace on NFS whatever the `TMPDIR` is, so the redirect had no remaining use. The build `TMPDIR` is now always the tmp directory inside the build directory. A config that still sets the key gets the unknown-key warning and the key is ignored; delete the key and any leftover base directory. `bakar clean` removes only the build directory, and `bakar triage` reads task logs only from under the workspace.
+
 ## [0.42.0] - 2026-11-12
 
 ### Added
