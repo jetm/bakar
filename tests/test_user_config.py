@@ -461,23 +461,14 @@ def test_missing_file_buildtools_dirs_defaults_to_none(tmp_path: Path) -> None:
     assert result.buildtools_dirs is None
 
 
-def test_local_tmpdir_base_surfaces_on_resolved_config(tmp_path: Path) -> None:
+def test_removed_local_tmpdir_base_key_warns_and_is_ignored(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     config_file.write_text('[build]\nlocal_tmpdir_base = "/x"\n')
 
-    cfg = load_user_config(config_file)
+    with pytest.warns(UserWarning, match=r"unknown key 'local_tmpdir_base' in \[build\]"):
+        cfg = load_user_config(config_file)
 
-    assert cfg.local_tmpdir_base == "/x"
-    assert isinstance(cfg.local_tmpdir_base, str)
-
-
-def test_local_tmpdir_base_absent_yields_none(tmp_path: Path) -> None:
-    config_file = tmp_path / "config.toml"
-    config_file.write_text("[build]\ndoctor = true\n")
-
-    cfg = load_user_config(config_file)
-
-    assert cfg.local_tmpdir_base is None
+    assert not hasattr(cfg, "local_tmpdir_base")
 
 
 def test_capture_graph_defaults_on_and_loads_from_build_table(tmp_path: Path) -> None:
