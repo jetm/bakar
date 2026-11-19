@@ -1,9 +1,10 @@
-"""Decide which mirror payloads to link into the downloads directory.
+"""Decide which mirror payloads to link into the downloads directory, then link them.
 
-Pure planning: the only filesystem contact is one ``os.scandir`` of the
+Planning is pure: the only filesystem contact is one ``os.scandir`` of the
 downloads directory (names only, no per-file stat) and the bounded mirror
 listing supplied by ``lister``. No mirror file is statted, opened or read and
-no link is followed.
+no link is followed. Applying creates links with ``os.symlink`` only: it never
+replaces, removes, renames or chmods an entry and writes nothing else.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ KEPT_NO_STAMP = "no stamp"
 KEPT_GIT_TARBALL = "git mirror tarball"
 KEPT_UNSAFE = "unsafe name"
 KEPT_PRESENT = "already present"
+KEPT_LINK_FAILED = "link failed"
 
 Lister = Callable[..., dict[Path, list[str] | None]]
 
@@ -41,6 +43,13 @@ class LinkPlan:
     kept: dict[str, int] = field(default_factory=dict)
     unlisted: list[Path] = field(default_factory=list)
     examined: int = 0
+    listed: int = 0
+
+
+@dataclass
+class ApplyResult:
+    linked: int = 0
+    kept: dict[str, int] = field(default_factory=dict)
 
 
 def _local_names(dl_dir: Path) -> set[str]:
@@ -65,6 +74,7 @@ def plan_links(
         if names is None:
             plan.unlisted.append(mdir)
             continue
+        plan.listed += 1
         stamps = set(names)
         for name in sorted(names):
             if name.endswith(_SKIP_SUFFIXES) or name in seen:
@@ -84,3 +94,38 @@ def plan_links(
                 continue
             plan.kept[reason] = plan.kept.get(reason, 0) + 1
     return plan
+
+
+def apply_links(plan: LinkPlan, dl_dir: Path) -> ApplyResult:
+    """Create each planned link; an existing name is never touched."""
+    result = ApplyResult()
+    for item in plan.items:
+        try:
+            os.symlink(item.target, dl_dir / item.name)
+        except FileExistsError:
+            reason = KEPT_PRESENT
+        except OSError:
+            reason = KEPT_LINK_FAILED
+        else:
+            result.linked += 1
+            continue
+        result.kept[reason] = result.kept.get(reason, 0) + 1
+    return result
+
+
+def render_report(plan: LinkPlan, result: ApplyResult, *, apply: bool) -> str:
+    lines = [f"{plan.listed} mirror directories listed, {plan.examined} payloads examined"]
+    lines.extend(f"unlisted: {mdir}" for mdir in plan.unlisted)
+    if apply:
+        lines.append(f"linked {result.linked} file(s)")
+    else:
+        lines.append(f"would link {len(plan.items)} file(s)")
+    kept = dict(plan.kept)
+    for reason, n in result.kept.items():
+        kept[reason] = kept.get(reason, 0) + n
+    lines.extend(f"kept {kept[reason]}: {reason}" for reason in sorted(kept))
+    if apply:
+        lines.append("applied")
+    else:
+        lines.append("dry run: nothing was linked (pass --apply to link)")
+    return "\n".join(lines)
