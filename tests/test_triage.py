@@ -655,22 +655,20 @@ def test_read_failure_log_symlink_out_of_workspace_is_outside(tmp_path: Path) ->
 
 
 @pytest.mark.unit
-def test_read_failure_log_extra_roots(tmp_path: Path) -> None:
+def test_read_failure_log_single_workspace_root(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    other = tmp_path / "other"
-    third = tmp_path / "third"
-    other.mkdir()
-    third.mkdir()
-    in_other = other / "x.log"
-    in_other.write_text("hello\n")
-    in_third = third / "y.log"
-    in_third.write_text("hello\n")
-    (other / "escape.log").symlink_to(in_third)
+    sibling = tmp_path / "sibling"
+    sibling.mkdir()
+    inside = workspace / "x.log"
+    inside.write_text("hello\n")
+    beside = sibling / "y.log"
+    beside.write_text("hello\n")
+    (workspace / "escape.log").symlink_to(beside)
 
-    assert read_failure_log(str(in_other), workspace, extra_roots=[other]).state == "read"
-    assert read_failure_log(str(in_third), workspace, extra_roots=[other]).state == "outside"
-    assert read_failure_log(str(other / "escape.log"), workspace, extra_roots=[other]).state == "outside"
+    assert read_failure_log(str(inside), workspace).state == "read"
+    assert read_failure_log(str(beside), workspace).state == "outside"
+    assert read_failure_log(str(workspace / "escape.log"), workspace).state == "outside"
 
 
 @pytest.mark.unit

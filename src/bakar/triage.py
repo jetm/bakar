@@ -15,13 +15,10 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from bakar.fork_race_signatures import FORK_RACE_SUGGESTION, scan
 from bakar.observability import STOPPED_ERROR, STOPPED_STEP, last_run_event, read_stop_request, step_fail_text
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
 
 _ERROR_REPORT_FILENAME = "error-report.json"
 
@@ -220,36 +217,23 @@ class FailureLog:
 def read_failure_log(
     logfile: object,
     workspace: Path,
-    extra_roots: Sequence[Path] = (),
     *,
     translate_root: Path | None = None,
 ) -> FailureLog:
     """Read the tail of a recorded failure logfile, refusing paths outside the build tree.
 
     ``bitbake-events.json`` is untrusted and may name any file, so the resolved
-    path must sit under ``workspace`` or one of ``extra_roots`` (directories the
-    caller trusts; a run record never supplies one) before it is opened.
-    ``translate_root`` only changes where a ``/work/`` path maps to; it is never
-    a containment root.
+    path must sit under ``workspace`` before it is opened. ``translate_root``
+    only changes where a ``/work/`` path maps to; it is never a containment
+    root.
     """
     if not isinstance(logfile, str) or not logfile:
         return FailureLog(None, [], "none", [])
     host_path = Path(translate_container_path(logfile, translate_root or workspace))
-    contained = False
     try:
-        resolved = host_path.resolve()
-        try:
-            resolved.relative_to(workspace.resolve())
-            contained = True
-        except ValueError:
-            for root in extra_roots:
-                try:
-                    resolved.relative_to(root.resolve())
-                except ValueError:
-                    continue
-                contained = True
-                break
-    except OSError:
+        host_path.resolve().relative_to(workspace.resolve())
+        contained = True
+    except ValueError, OSError:
         contained = False
     if not contained:
         return FailureLog(host_path, [], "outside", [])
