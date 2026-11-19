@@ -82,8 +82,12 @@ def test_large_listing_completes(tmp_path: Path) -> None:
 
 
 def test_large_output_through_runner_pipe_is_killed(tmp_path: Path) -> None:
-    """Without a file redirect 200 KB fills the 64 KiB pipe: the child blocks and is killed."""
-    argv = ["sh", "-c", "head -c 200000 /dev/zero"]
+    """Without a file redirect the output outgrows any pipe: the child blocks and is killed.
+
+    4 MiB exceeds the 1 MiB ceiling an unprivileged process can give a pipe, so the result
+    does not depend on the kernel's default pipe capacity (a CI runner buffered 200 KB).
+    """
+    argv = ["sh", "-c", "head -c 4194304 /dev/zero"]
     path = tmp_path / "p"
 
     start = time.monotonic()
