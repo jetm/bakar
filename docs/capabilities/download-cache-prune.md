@@ -1,4 +1,4 @@
-# `download-cache-prune`: the `prune-downloads` verb: the three removal classes, how each is verified, the per-file lock, dry-run and apply behaviour, and what is reported.
+# `download-cache-prune`: the `prune-downloads` verb: the three removal classes, how each is verified, the per-file lock, dry-run and apply behaviour, and what is reported
 
 **Delivered by:** dl-dir-space-sharing
 **Modules touched:** other, tests

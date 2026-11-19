@@ -1,4 +1,4 @@
-# `hub-store-host-config`: the hub exports its download store read-only to the build hosts, pc2 and pc3 mount it lazily with client-local locks, and their rendered configuration names the mounted directories while PC1's does not.
+# `hub-store-host-config`: the hub exports its download store read-only to the build hosts, pc2 and pc3 mount it lazily with client-local locks, and their rendered configuration names the mounted directories while PC1's does not
 
 **Delivered by:** dl-dir-space-sharing
 **Modules touched:** other, tests

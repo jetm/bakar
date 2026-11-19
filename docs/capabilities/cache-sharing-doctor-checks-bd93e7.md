@@ -1,4 +1,4 @@
-# `cache-sharing-doctor-checks`: two added rows, one for mirror directory readiness and one for local downloads size, both warning-only.
+# `cache-sharing-doctor-checks`: two added rows, one for mirror directory readiness and one for local downloads size, both warning-only
 
 **Delivered by:** dl-dir-space-sharing
 **Modules touched:** other, tests

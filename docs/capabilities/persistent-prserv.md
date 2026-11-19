@@ -1,4 +1,4 @@
-# `persistent-prserv`: the per-workspace PR service start, status and stop contract, which today has no specification: the daemon on the derived port is the state key's own, a foreign or unbindable port is refused with a recorded reason, and an orphaned daemon is reachable by stop and status.
+# `persistent-prserv`: the per-workspace PR service start, status and stop contract, which today has no specification: the daemon on the derived port is the state key's own, a foreign or unbindable port is refused with a recorded reason, and an orphaned daemon is reachable by stop and status
 
 **Delivered by:** hashserv-orphan-adoption
 **Modules touched:** other, tests

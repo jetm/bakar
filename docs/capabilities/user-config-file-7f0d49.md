@@ -1,4 +1,4 @@
-# `user-config-file`: the loaded `[build]` keys gain `dl_mirror_paths`, validated as whitespace-separated absolute directories.
+# `user-config-file`: the loaded `[build]` keys gain `dl_mirror_paths`, validated as whitespace-separated absolute directories
 
 **Delivered by:** dl-dir-space-sharing
 **Modules touched:** other, tests

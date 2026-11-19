@@ -1,4 +1,4 @@
-# `persistent-hashserv`: adds the requirement that a live daemon of the state key with no PID file is adopted on start, reached by stop, and refused with a named process when it cannot be adopted.
+# `persistent-hashserv`: adds the requirement that a live daemon of the state key with no PID file is adopted on start, reached by stop, and refused with a named process when it cannot be adopted
 
 **Delivered by:** hashserv-orphan-adoption
 **Modules touched:** other, tests

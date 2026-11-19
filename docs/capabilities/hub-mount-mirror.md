@@ -1,4 +1,4 @@
-# `hub-mount-mirror`: the read-only mount used as a file premirror: the overlay and its ordering against the http store, the per-directory readiness probe and its warning, the environment passthrough, the host-mode-only scope, and what BitBake does on a hit, on a corrupt file and when the mount disappears.
+# `hub-mount-mirror`: the read-only mount used as a file premirror: the overlay and its ordering against the http store, the per-directory readiness probe and its warning, the environment passthrough, the host-mode-only scope, and what BitBake does on a hit, on a corrupt file and when the mount disappears
 
 **Delivered by:** dl-dir-space-sharing
 **Modules touched:** other, tests

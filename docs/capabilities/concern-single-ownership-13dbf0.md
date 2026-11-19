@@ -1,4 +1,4 @@
-# `concern-single-ownership`: adds the requirement that identifying a daemon's own process has one implementation shared by the hashserv and prserv modules.
+# `concern-single-ownership`: adds the requirement that identifying a daemon's own process has one implementation shared by the hashserv and prserv modules
 
 **Delivered by:** hashserv-orphan-adoption
 **Modules touched:** other, tests
