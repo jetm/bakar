@@ -157,22 +157,22 @@ def link_mirror(
     ] = False,
 ) -> None:
     """Link files held by the mirror directories into the downloads directory."""
-    dl_dir = _dir("DL_DIR", _configured("dl_dir"))
-    if dl_dir is None:
-        console.print("[red]no downloads directory: set DL_DIR or build.dl_dir to an existing directory[/]")
-        raise typer.Exit(code=1)
-    if not dl_dir.is_dir():
-        console.print(f"[red]downloads path is not a directory: {escape(str(dl_dir))}[/]")
-        raise typer.Exit(code=1)
-    value = _configured("dl_mirror_paths")
-    if not value:
-        console.print("[red]no mirror directories: set build.dl_mirror_paths[/]")
-        raise typer.Exit(code=1)
     if _configured("container") is True:
         console.print(
             "[red]the user configuration selects the container build; "
             "mirror directories are not used in a container build[/]"
         )
+        raise typer.Exit(code=1)
+    dl_dir = _dir("DL_DIR", _configured("dl_dir"))
+    if dl_dir is None:
+        console.print("[red]no downloads directory: set DL_DIR or build.dl_dir to an existing directory[/]")
+        raise typer.Exit(code=1)
+    if not dl_dir.is_dir():
+        console.print(f"[red]the downloads path (DL_DIR or build.dl_dir) is not a directory: {escape(str(dl_dir))}[/]")
+        raise typer.Exit(code=1)
+    value = _configured("dl_mirror_paths")
+    if not value:
+        console.print("[red]no mirror directories: set build.dl_mirror_paths[/]")
         raise typer.Exit(code=1)
     statuses = hub_mount.probe_dirs(hub_mount.parse_dirs(value))
     for status in statuses:

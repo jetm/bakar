@@ -2844,7 +2844,8 @@ def check_dl_mirror_links(cfg: BuildConfig) -> CheckResult:
         return _fail(
             name,
             Severity.WARN,
-            f"{failed} link(s) could not be created in {dl_dir}; run bakar cache link-mirror{note}",
+            f"{failed} link(s) could not be created in {dl_dir} ({result.first_error}); "
+            f"run bakar cache link-mirror{note}",
         )
     if result.linked:
         names = ", ".join(neutralize(n) for n in sorted(result.linked_names)[:_DL_MIRROR_LINKS_NAME_MAX])
@@ -4366,12 +4367,14 @@ def run_all(  # noqa: PLR0913 - keyword-only options on one runner entry point
     post_build: bool = False,
     on_check: Callable[[CheckEvent], None] | None = None,
     only: Collection[str] | None = None,
+    exclude: Collection[str] | None = None,
     deadline: float | None = None,
 ) -> list[CheckResult]:
     """Run every applicable check, return results in order.
 
     ``only``, when given, keeps just the checks whose registered name is in
-    it, applied after every other filter. ``deadline`` replaces
+    it, applied after every other filter; ``exclude`` drops the checks whose
+    name is in it, after ``only``. ``deadline`` replaces
     ``_CHECK_DEADLINE_SECONDS`` for every per-check join and the cache-mount
     pre-phase join; post-build checks still run with no deadline.
 
@@ -4422,6 +4425,8 @@ def run_all(  # noqa: PLR0913 - keyword-only options on one runner entry point
         checks = tuple(c for c in checks if c not in _POST_BUILD_CHECKS)
     if only is not None:
         checks = tuple(c for c in checks if _CHECK_NAME.get(c, getattr(c, "__name__", "unknown")) in only)
+    if exclude:
+        checks = tuple(c for c in checks if _CHECK_NAME.get(c, getattr(c, "__name__", "unknown")) not in exclude)
     check_deadline = _CHECK_DEADLINE_SECONDS if deadline is None else deadline
     results: list[CheckResult] = []
 

@@ -62,6 +62,7 @@ class ApplyResult:
     linked: int = 0
     linked_names: list[str] = field(default_factory=list)
     kept: dict[str, int] = field(default_factory=dict)
+    first_error: str = ""
 
 
 def _local_names(dl_dir: Path) -> set[str]:
@@ -122,8 +123,9 @@ def apply_links(plan: LinkPlan, dl_dir: Path) -> ApplyResult:
             os.symlink(item.target, dl_dir / item.name)
         except FileExistsError:
             reason = KEPT_PRESENT
-        except OSError:
+        except OSError as exc:
             reason = KEPT_LINK_FAILED
+            result.first_error = result.first_error or exc.strerror or type(exc).__name__
         else:
             result.linked += 1
             result.linked_names.append(item.name)
@@ -143,6 +145,8 @@ def render_report(plan: LinkPlan, result: ApplyResult, *, apply: bool) -> str:
     for reason, n in result.kept.items():
         kept[reason] = kept.get(reason, 0) + n
     lines.extend(f"kept {kept[reason]}: {reason}" for reason in sorted(kept))
+    if apply and result.first_error:
+        lines.append(f"first link error: {result.first_error}")
     if apply:
         lines.append("applied")
     else:

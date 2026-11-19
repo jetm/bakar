@@ -257,6 +257,8 @@ Outcomes:
 | `dl-mirror-links` | No mirror directory is ready (names `dl-mirror-paths-ready`), no ready directory could be listed, or the downloads directory cannot be read | SKIP / INFO |
 | `dl-mirror-links` | A mirror directory's listing took longer than 10 seconds: the directory is named in the message, nothing is linked from it, and the others are still linked | PASS / INFO |
 
+`bakar build --dry-run` leaves `dl-mirror-links` out, because it is the one check that writes to the filesystem; `bakar doctor` and every real build run it.
+
 Only the http-over-NFS `sstate-mirror-shared-mount` outcome can stop a build: a
 mirror fetch into a shared sstate directory takes a lock inside it. An inactive
 or lagging pusher is advisory because builds keep passing; the cost is that

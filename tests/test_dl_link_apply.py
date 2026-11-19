@@ -144,3 +144,9 @@ def test_render_applied_merges_result_reasons() -> None:
         "kept 3: no stamp",
         "applied",
     ]
+
+
+def test_render_applied_names_the_first_link_error() -> None:
+    result = ApplyResult(kept={KEPT_LINK_FAILED: 2}, first_error="No space left on device")
+    out = render_report(_plan(), result, apply=True).splitlines()
+    assert out[-2:] == ["first link error: No space left on device", "applied"]

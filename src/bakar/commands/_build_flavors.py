@@ -245,7 +245,7 @@ def _run_byo_build(
 
     Called inside an active RunLogger context from ``build()``.
     """
-    _run_doctor_gate(cfg, log, ctx.bsp)
+    _run_doctor_gate(cfg, log, ctx.bsp, dry_run=ctx.dry_run)
 
     # BYO skips sync/setup-env, so kas generates bblayers.conf during run_build.
     # Layer hashes are only on disk once the build has run; only --dry-run can
@@ -287,7 +287,7 @@ def _run_manifest_build(
 
     Called inside an active RunLogger context from ``build()``.
     """
-    _run_doctor_gate(cfg, log, ctx.bsp)
+    _run_doctor_gate(cfg, log, ctx.bsp, dry_run=ctx.dry_run)
 
     # A dry run never reaches run_build's live layer panel; print best-effort
     # from any pre-existing bblayers.conf up front (mirrors the BYO path).

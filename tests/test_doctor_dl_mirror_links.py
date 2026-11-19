@@ -143,7 +143,8 @@ def test_non_writable_dl_dir_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         dl.chmod(0o755)
     assert r.status == Status.FAIL
     assert r.severity == Severity.WARN
-    assert "3" in r.message
+    assert "3 link(s)" in r.message
+    assert "Permission denied" in r.message
     assert "bakar cache link-mirror" in r.message
     assert _entries(dl) == set()
 
@@ -312,3 +313,28 @@ def test_linked_names_are_neutralized(tmp_path: Path, monkeypatch: pytest.Monkey
     assert r.status == Status.PASS
     assert bidi not in r.message
     assert csi not in r.message
+
+
+def test_dry_run_gate_leaves_the_link_check_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    from bakar.commands import _helpers
+
+    seen: list[object] = []
+
+    def fake_run_all(cfg, bsp, **kw):
+        seen.append(kw.get("exclude"))
+        return []
+
+    monkeypatch.setattr(_helpers, "run_all", fake_run_all)
+    monkeypatch.setattr(_helpers, "_print_diagnosis", lambda *_a, **_k: None)
+    log = types.SimpleNamespace(
+        run_dir=tmp_path,
+        step_start=lambda *_a, **_k: None,
+        step_ok=lambda *_a, **_k: None,
+        check_start=lambda *_a, **_k: None,
+        check_end=lambda *_a, **_k: None,
+    )
+    _helpers._run_doctor_gate(_cfg(None, None), log, None, dry_run=True)
+    _helpers._run_doctor_gate(_cfg(None, None), log, None)
+    assert seen == [{"dl-mirror-links"}, None]

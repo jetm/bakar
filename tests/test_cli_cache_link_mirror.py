@@ -168,3 +168,11 @@ def test_unreadable_downloads_directory_exits_1(monkeypatch: pytest.MonkeyPatch,
     assert result.exit_code == 1
     assert "cannot read the downloads directory" in result.output
     assert _listing(dl_dir) == []
+
+
+def test_container_config_refused_before_the_directory_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    _config(monkeypatch, container=True)
+    result = runner.invoke(app, ["cache", "link-mirror"])
+    assert result.exit_code == 1
+    assert "container" in result.output
+    assert "downloads" not in result.output

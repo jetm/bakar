@@ -56,6 +56,12 @@ def test_only_returns_exactly_the_named_checks(monkeypatch: pytest.MonkeyPatch) 
     assert [r.name for r in results] == ["a", "b"]
 
 
+def test_exclude_drops_the_named_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(monkeypatch, [_make_stub("a"), _make_stub("b"), _make_stub("c")])
+    results = run_all(_cfg(), exclude={"b"})
+    assert [r.name for r in results] == ["a", "c"]
+
+
 def test_default_call_returns_every_stub_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
     _install(monkeypatch, [_make_stub("a"), _make_stub("b"), _make_stub("c")])
     assert [r.name for r in run_all(_cfg())] == ["a", "b", "c"]

@@ -602,8 +602,11 @@ def _print_diagnosis(results: list[CheckResult]) -> None:
             console.print(f"[yellow]fix[/] [bold]{r.name}[/]: {markup_safe(r.fix_hint)}")
 
 
-def _run_doctor_gate(cfg: BuildConfig, log, bsp: BspModel | None) -> None:
+def _run_doctor_gate(cfg: BuildConfig, log, bsp: BspModel | None, *, dry_run: bool = False) -> None:
     """Run pre-flight checks; raise typer.Exit(2) on any blocking failure.
+
+    A dry run leaves out ``dl-mirror-links``, the one check that writes to the
+    filesystem, so ``--dry-run`` creates nothing.
 
     Checks always run. The full report is printed unless the report is hidden
     (the global ``--hide-doctor-report`` flag or ``[build] show_doctor_report =
@@ -619,7 +622,7 @@ def _run_doctor_gate(cfg: BuildConfig, log, bsp: BspModel | None) -> None:
             log.check_end(event.name, status=event.status, severity=event.severity, seconds=event.seconds)
 
     log.step_start("doctor")
-    results = run_all(cfg, bsp, on_check=_on_check)
+    results = run_all(cfg, bsp, on_check=_on_check, exclude={"dl-mirror-links"} if dry_run else None)
     diag_path = log.run_dir / "diagnosis.txt"
     diag_path.write_text(
         "\n".join(f"{r.severity.value:5} {r.status.value:4} {r.name:22} {r.message}" for r in results) + "\n"

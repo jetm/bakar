@@ -155,7 +155,7 @@ kept 2: no stamp
 dry run: nothing was linked (pass --apply to link)
 ```
 
-The `unlisted: <dir>` line appears once per directory whose listing did not finish. `would link` reads `linked` with `--apply`, and the last line then reads `applied`. The `kept N: <reason>` lines carry one of `no stamp`, `git mirror tarball`, `unchecked tarball`, `reserved name`, `local stamp without payload`, `unsafe name`, `already present` or `link failed`.
+The `unlisted: <dir>` line appears once per directory whose listing did not finish. `would link` reads `linked` with `--apply`, and the last line then reads `applied`. The `kept N: <reason>` lines carry one of `no stamp`, `git mirror tarball`, `unchecked tarball`, `reserved name`, `local stamp without payload`, `unsafe name`, `already present` or `link failed`. With `--apply`, a `first link error: <reason>` line follows when a link could not be created, giving the operating system's reason for the first failure.
 
 See [features/dl-mirror.md](features/dl-mirror.md) for why a local name matters and for the limits.
 
