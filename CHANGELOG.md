@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added the hidden `bakar feed describe` verb, which `bakar feed refresh --from` runs on the host to describe a finished run as one JSON document without changing anything
 - Added a `source` record (`host`, `run_id`, `pulled_at`, `observed_layers`, `pin_override`) to `delta.json` for a delta published from a remote build
 - Changed `bakar build --on` to record the delivered kas path and workspace in the host run's environment as `BAKAR_DISPATCH_KAS` and `BAKAR_DISPATCH_WORKSPACE`, for meta-avocado and layer-repository dispatches
+- Changed `bakar cache link-mirror` to print an `empty:` line for each ready mirror directory that lists no regular files, which is usually a share that is not mounted, and changed the `dl-mirror-links` doctor row to report a warning instead of passing with `nothing to link` when every mirror directory it listed is empty; a partly empty mirror names the empty directories beside the row's normal result, and the verb's exit code is unchanged
+- Documented the limits of the mirror link restore: svn, cvs and bzr tarballs can still be linked, a run has no cap on links, and dangling links are never removed
 
 ### Removed
 
