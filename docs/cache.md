@@ -15,6 +15,7 @@ bakar cache push --watch
 bakar cache status
 bakar cache capture
 bakar cache prune-downloads [--apply] [--clone-older-than DAYS]
+bakar cache link-mirror [--apply]
 ```
 
 `bakar cache` with no verb prints help. The group never launches kas and is excluded from the global container flag.
@@ -114,6 +115,48 @@ dry run: nothing was removed (pass --apply to remove)
 
 With `--apply` the verbs read `removed` instead of `would remove`, apply-time keep reasons are added to the `kept` lines, and the last line is `applied`.
 
+When an `--apply` removed at least one `hub` item and `dl_mirror_paths` is configured, the output ends by naming `bakar cache link-mirror --apply`: a build directory that fetched a removed file earlier fails at unpack until a link replaces it.
+
+### link-mirror
+
+```text
+bakar cache link-mirror [--apply]
+```
+
+Links files from the mounted mirror directories into the downloads directory, so a name the hub holds is also on disk locally. Without `--apply` the verb is a dry run: it prints what it would link and creates nothing. `--apply` is the only option.
+
+The downloads directory comes from `DL_DIR`, else `dl_dir` in config. The mirror directories come from `dl_mirror_paths` only; the `BAKAR_DL_MIRROR_PATHS` variable is ignored. A directory that is not ready prints one yellow warning line and the others are used.
+
+What it links: regular files directly inside a ready mirror directory that have a `<name>.done` stamp beside them in that directory. The first directory listed in `dl_mirror_paths` wins a name. Each link points at `<configured mirror dir>/<name>`, unresolved.
+
+What it never does:
+
+- Link `git2_` or `gitshallow_` names, or names ending `.tmp`, `.lock` or `.done`.
+- Replace an existing entry: a file, a directory, and a live or dangling link are all left as they are.
+- Create a stamp or a lock file.
+- Read the contents of a mirror file.
+
+| Exit | Meaning |
+|------|---------|
+| 0 | The run completed, including a dry run and a run that linked nothing |
+| 1 | A message is printed and nothing is created: no downloads directory, the path is not a directory, `dl_mirror_paths` unset, the user config selects the container build, or no mirror directory is ready |
+
+Report lines, in order:
+
+```text
+2 mirror directories listed, 412 payloads examined
+unlisted: /mnt/hub/downloads-incoming
+would link 3 file(s)
+kept 8: already present
+kept 5: git mirror tarball
+kept 2: no stamp
+dry run: nothing was linked (pass --apply to link)
+```
+
+The `unlisted: <dir>` line appears once per directory whose listing did not finish. `would link` reads `linked` with `--apply`, and the last line then reads `applied`. The `kept N: <reason>` lines carry one of `no stamp`, `git mirror tarball`, `unsafe name`, `already present` or `link failed`.
+
+See [features/dl-mirror.md](features/dl-mirror.md) for why a local name matters and for the limits.
+
 ## Queue location
 
 The queue is a SQLite database under the XDG state directory, `$XDG_STATE_HOME/bakar/cache-push` (default `~/.local/state/bakar/cache-push`), created with mode 0700. It is deliberately never placed under the downloads, sstate or ccache directories, which may be NFS-backed and unsafe for SQLite locking.
@@ -132,13 +175,14 @@ The push target is a separate receiving directory on the store host (for example
 
 ## Doctor rows
 
-`bakar doctor` carries five rows for this feature. See [doctor.md](doctor.md) for pass and fail conditions.
+`bakar doctor` carries six rows for this feature. See [doctor.md](doctor.md) for pass and fail conditions.
 
 | Row | Severity | Fails when |
 |-----|----------|------------|
 | `cache-push-service` | WARN (INFO past 15 minutes) | The unit is inactive, or the oldest queued entry is over 60 minutes old (over 15 minutes is INFO) |
 | `sstate-mirror-shared-mount` | BLOCK (WARN when undetermined) | An http(s) sstate mirror is set while the sstate directory is on NFS |
 | `dl-mirror-paths-ready` | WARN | A directory listed in `dl_mirror_paths` is not ready for a host-mode build (skipped for container builds and when the key is unset) |
+| `dl-mirror-links` | WARN | Host mode only, skipped when `dl_mirror_paths` or the downloads directory is unset. It creates the links `bakar cache link-mirror --apply` would create and reports INFO `linked N file(s) from the mirror: <up to 10 names>` or `nothing to link`. WARN only when a link could not be created (`N link(s) could not be created in <dir>; run bakar cache link-mirror`). INFO skip for a container build, and INFO when no mirror directory is ready (see `dl-mirror-paths-ready`). The mirror listing is bounded to 10 seconds. Never BLOCK |
 | `store-stale-tarballs` | WARN | A `git2_*.tar.gz.tmp` file over an hour old sits at the top of the downloads directory |
 | `dl-dir-size` | WARN | On a pusher host (`cache_push_target` set), the regular files in the downloads directory total over 60 GB; the message points at `bakar cache prune-downloads`. Skipped when the walk takes over 5 seconds |
 

@@ -34,6 +34,21 @@ A hit becomes a symbolic link in the local downloads directory, so no copy is ma
 
 Downloads already on disk that the store holds are not removed automatically. Run `bakar cache prune-downloads` to list what can be reclaimed; it removes nothing unless you add `--apply`.
 
+### Keep a local name for every hub file
+
+A build directory whose `do_fetch` stamp is current skips the fetch, so a source that was fetched earlier is never looked up again. If its file is not on disk (for example after `bakar cache prune-downloads --apply` removed it because the hub holds it), the build fails at unpack. Keeping a link in the local downloads directory for every file the hub holds prevents that.
+
+The `dl-mirror-links` doctor row creates the missing links itself at every build pre-flight and every `bakar doctor` run, so nothing needs to be done by hand. `bakar cache link-mirror` exists for a dry run (no `--apply`, nothing is created) and for a host that wants the links without starting a build. See [cache.md](../cache.md) for the verb.
+
+Integrity trade-off: a linked file is not checked against a recipe while a stale stamp skips the fetch. BitBake still checks the checksum at any later fetch of that source.
+
+Limits:
+
+- `git` and `gitsm` sources are never linked. A build that lacks one needs a refetch of that recipe.
+- A source that a fetcher stores in a subdirectory of the downloads directory is not linked; only files directly inside a mirror directory are.
+- A dangling link is left as it is; the verb never replaces an existing entry.
+- A hub that drops during a build stalls reads through the links like any other read through the mount (see the limit below).
+
 ### Known limit: a hub that drops during a build
 
 The readiness probe only protects builds that start while the mount is down. If the hub stops answering NFS while a build is running, an access to a link or a mirror file blocks until the NFS timeout, and each source fetch can wait that long. Measured on pc2 with the hub's NFS port blocked: a cold `stat` and a one-file fetch both stalled past 40 s and 150 s, at `timeo=600` and at `timeo=50`, and a `stat` on the existing sstate mount stalled the same way. A hub outage already stalls a build through the sstate share, so the mirror joins that dependency and does not add a new one. To stop using the directories, remove `dl_mirror_paths` from your user config.
