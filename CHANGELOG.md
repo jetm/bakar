@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-11-19
+
 ### Added
 
 - Added `bakar feed refresh --from HOST --run RUN_ID`, which builds nothing and publishes the delta feed from the packages of a build that `bakar build --on HOST` already finished. It copies only the named recipes' package files, the repository map and the image test-data by exact path, with size caps and checksums, and describes the host again after the copy so a live or changed build refuses the pull. It compares the commit each host build layer holds with the pins the local kas file declares (`--allow-pin-mismatch` overrides; `meta-avocado` only warns), checks the release and channel, and takes `--yes` to override a bakar version mismatch. Both machines need this version, and a run dispatched by an older bakar must be dispatched again
@@ -15,6 +17,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Changed `bakar build --on` to record the delivered kas path and workspace in the host run's environment as `BAKAR_DISPATCH_KAS` and `BAKAR_DISPATCH_WORKSPACE`, for meta-avocado and layer-repository dispatches
 - Changed `bakar cache link-mirror` to print an `empty:` line for each ready mirror directory that lists no regular files, which is usually a share that is not mounted, and changed the `dl-mirror-links` doctor row to report a warning instead of passing with `nothing to link` when every mirror directory it listed is empty; a partly empty mirror names the empty directories beside the row's normal result, and the verb's exit code is unchanged
 - Documented the limits of the mirror link restore: svn, cvs and bzr tarballs can still be linked, a run has no cap on links, and dangling links are never removed
+- Added the `[build] dl_mirror_paths` setting, a whitespace-separated list of absolute directories (no `..` components) holding a read-only download store. Host-mode builds list each directory that answers a bounded readiness probe as a `file://` premirror ahead of the http hub mirror, so a hit becomes a symbolic link in the downloads directory instead of a second copy. A directory that is not ready is dropped with a warning, container builds ignore the setting, and git sources are never taken from it. A `BAKAR_DL_MIRROR_PATHS` value in the caller's environment is ignored
+- Added `bakar cache prune-downloads`, which reports the local downloads that the hub store already holds and removes nothing unless `--apply` is given. A plain file is removed only when the hub answers 2xx on the file and its stamp with a matching length, a git mirror tarball only beside a valid clone, and a clone only with `--clone-older-than`. Three consecutive unanswered probes withdraw the hub class, and each removal takes BitBake's own lock for that source and skips the item when it is held
+- Added `bakar cache link-mirror`, which restores symbolic links to hub files that the local downloads directory lacks, so a build directory with a current fetch stamp no longer fails at unpack. It is a dry run unless `--apply` is given, never replaces an existing entry, creates no stamp, and refuses under a container configuration. After a prune that removed hub files, the report names this verb
+- Added the `dl-mirror-paths-ready` doctor row, which names each configured mirror directory that is not ready and never blocks a build
+- Added the `dl-dir-size` doctor row, which warns when the local downloads directory holds more than 60 GB and points at `prune-downloads`
+- Added the `dl-mirror-links` doctor row, which creates the missing mirror links during pre-flight, reports what it linked, and warns only when a link could not be created, with the reason
+- Added adoption of an orphaned `bitbake-hashserv` daemon: when its PID file is lost, `bakar hashserv start` now finds the live daemon serving the workspace database, reuses its port and rewrites the PID file instead of spawning a second daemon on the same database. `bakar hashserv stop` now finds and stops such a daemon by its command line
+- Added the same lookup by database path to `bakar prserv stop`, so a `bitbake-prserv` daemon whose pidfile was removed is stopped with SIGTERM and never SIGKILL, which protects the accumulated PR history
+
+### Changed
+
+- Changed `bakar hashserv start` to test the derived port before spawning the daemon. A port held by a client connection, a connection closed within the last 60 s, or a foreign listener is now refused with the reason written to `hashserv.stderr`. A live daemon that cannot be adopted is refused with its process id and a `bakar hashserv stop` hint. The start failure text names both causes
+- Changed `bakar prserv start` to refuse a derived port the daemon cannot bind, recording the reason in `prserv.stderr` and returning at once instead of waiting out the startup probe. A daemon that is still starting keeps its pidfile after a probe timeout. The failure text names a busy or foreign-held port
+- Changed `bakar build --dry-run` to leave the `dl-mirror-links` doctor row out, so a dry run no longer creates links in the downloads directory
+- Changed the bounded mount probes behind `bakar doctor` to poll with a 1 to 50 ms backoff instead of a fixed 50 ms, so quick probes return sooner
+
+### Fixed
+
+- Fixed `bakar hashserv start` returning a URL for a dead daemon when a foreign process listened on the derived port, and failing with no explanation when a client connection held it
+- Fixed `bakar prserv start` and `bakar prserv status` accepting any listener on the derived port as the PR server, which could point builds at a server with the wrong database
+- Fixed `bakar cache link-mirror` printing a traceback when the downloads directory could not be read; it now prints a message and exits 1
 
 ### Removed
 
@@ -1161,7 +1184,8 @@ repos in the `bbsetup` kas translation now emit only the SHA, omitting the branc
 - `bakar triage` post-mortem with keyed failure-pattern suggestions.
 - Vendor config layer at `~/.config/bakar/vendors.toml` for custom board families.
 
-[Unreleased]: https://github.com/jetm/bakar/compare/v0.42.0...HEAD
+[Unreleased]: https://github.com/jetm/bakar/compare/v0.43.0...HEAD
+[0.43.0]: https://github.com/jetm/bakar/compare/v0.42.0...v0.43.0
 [0.42.0]: https://github.com/jetm/bakar/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/jetm/bakar/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/jetm/bakar/compare/v0.39.0...v0.40.0
