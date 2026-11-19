@@ -228,7 +228,7 @@ store host and the mounted downloads directories (see
 | `store-stale-tarballs` | WARN | On a host with `cache_push_target` unset, no `git2_*.tar.gz.tmp` file in the top level of the downloads directory is older than one hour | Remove the named temp files |
 | `dl-mirror-paths-ready` | WARN | On a host-mode build with `dl_mirror_paths` set, every listed directory exists and answers a bounded `stat -f` (it does not prove a share is mounted on it) | See [the dl-mirror feature](features/dl-mirror.md) |
 | `dl-dir-size` | WARN | On a host with `cache_push_target` set, the regular files in the downloads directory total 60 GB or less | `bakar cache prune-downloads` |
-| `dl-mirror-links` | WARN | On a host-mode build with `dl_mirror_paths` set, every file in a ready mirror directory that is not yet in the downloads directory is linked there. This check creates symbolic links in the downloads directory, never replaces an existing entry and creates no stamp, and runs in `bakar doctor` and every build pre-flight. It is the only part of `bakar doctor`, besides the uninative cache repair, that writes into a cache directory. Git and gitsm mirror tarballs, and files with no `.done` stamp beside them in the mirror, are never linked | `bakar cache link-mirror` |
+| `dl-mirror-links` | WARN | On a host-mode build with `dl_mirror_paths` set, every file in a ready mirror directory that is not yet in the downloads directory is linked there. This check creates symbolic links in the downloads directory, never replaces an existing entry and creates no stamp, and runs in `bakar doctor` and every build pre-flight. It is the only part of `bakar doctor`, besides the uninative cache repair, that writes into a cache directory. Git and gitsm mirror tarballs, and files with no `.done` stamp beside them in the mirror, are never linked. The row warns when every mirror directory it listed lists no files, and names an empty directory in the message of any other outcome. That warning clears when the directory gains files or is removed from `dl_mirror_paths`. | Mount the share or remove the directory from `dl_mirror_paths`; `bakar cache link-mirror` shows the report |
 
 Outcomes:
 
@@ -251,11 +251,12 @@ Outcomes:
 | `dl-dir-size` | Downloads directory at or under 60 GB | PASS / INFO |
 | `dl-dir-size` | Not measured (walk exceeded 5 s, or directory unreadable), or `cache_push_target` unset (store host) | SKIP / INFO |
 | `dl-mirror-links` | Linked one or more files from the mirror (count and up to 10 names) | PASS / INFO |
-| `dl-mirror-links` | Nothing to link | PASS / INFO |
+| `dl-mirror-links` | Nothing to link, and a mirror directory holds files | PASS / INFO |
+| `dl-mirror-links` | Every mirror directory it listed lists no regular files (the message names each directory; a share that is not mounted lists this way) | FAIL / WARN |
 | `dl-mirror-links` | One or more links could not be created | FAIL / WARN |
 | `dl-mirror-links` | `dl_mirror_paths` unset, downloads directory unset, or a container build | SKIP / INFO |
 | `dl-mirror-links` | No mirror directory is ready (names `dl-mirror-paths-ready`), no ready directory could be listed, or the downloads directory cannot be read | SKIP / INFO |
-| `dl-mirror-links` | A mirror directory's listing took longer than 10 seconds: the directory is named in the message, nothing is linked from it, and the others are still linked | PASS / INFO |
+| `dl-mirror-links` | A mirror directory's listing took longer than 10 seconds: the directory is named in the message, nothing is linked from it, and the others are still linked | PASS / INFO, or FAIL / WARN instead when every directory that was listed is empty |
 
 `bakar build --dry-run` leaves `dl-mirror-links` out, because it is the one check that writes to the filesystem; `bakar doctor` and every real build run it.
 
