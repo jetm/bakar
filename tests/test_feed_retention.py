@@ -16,6 +16,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+from compression import zstd
 from typing import TYPE_CHECKING
 
 import pytest
@@ -37,8 +38,14 @@ def _pool_add(channel: Path, content: bytes) -> str:
     return digest
 
 
-def _render(
-    repo_root: Path, shas: list[str], *, depth: int, stale: int = 0, primary_bytes: bytes | None = None
+def _render(  # noqa: PLR0913 - keyword-only fixture knobs, one per metadata shape under test
+    repo_root: Path,
+    shas: list[str],
+    *,
+    depth: int,
+    stale: int = 0,
+    primary_bytes: bytes | None = None,
+    zstd_primary: bool = False,
 ) -> Path:
     """Write a repository whose live metadata names ``shas`` in the pool.
 
@@ -47,6 +54,8 @@ def _render(
     from the repository to the channel. ``stale`` adds that many previous
     metadata generations, which the index does NOT name. ``primary_bytes``
     replaces the live primary's contents, for the corrupt-metadata cases.
+    ``zstd_primary`` writes the live primary as ``*-primary.xml.zst``, the form
+    ``createrepo_c`` and ``avocado feed index`` produce by default.
     """
     repodata = repo_root / "repodata"
     repodata.mkdir(parents=True, exist_ok=True)
@@ -57,8 +66,12 @@ def _render(
 
     live_names = []
     for kind in ("primary", "other", "filelists"):
-        name = f"{hashlib.sha256(body + kind.encode()).hexdigest()}-{kind}.xml.gz"
-        payload = primary_bytes if (kind == "primary" and primary_bytes is not None) else gzip.compress(body)
+        as_zstd = zstd_primary and kind == "primary"
+        name = f"{hashlib.sha256(body + kind.encode()).hexdigest()}-{kind}.xml.{'zst' if as_zstd else 'gz'}"
+        if kind == "primary" and primary_bytes is not None:
+            payload = primary_bytes
+        else:
+            payload = zstd.compress(body) if as_zstd else gzip.compress(body)
         (repodata / name).write_bytes(payload)
         live_names.append(name)
 
@@ -287,6 +300,61 @@ def test_a_primary_with_bad_gzip_magic_suppresses_pool_reclaim(tmp_path: Path) -
 
     assert plan.pool_reclaim_suppressed is True
     assert plan.orphan_pool == []
+    assert len(plan.unreadable_primaries) == 1
+
+    feed_retention.apply_retention(plan, feed_root=root, confirm=True)
+    assert (channel / "_pkgs" / live[:2] / f"{live}.rpm").exists()
+
+
+def test_a_zstd_primary_is_read_so_reclaim_runs_and_keeps_its_package(tmp_path: Path) -> None:
+    """``createrepo_c`` and ``avocado feed index`` write zstd metadata by default.
+
+    A feed root holding such a repository used to suppress pool reclamation for
+    every channel, because the primary was read as gzip and failed. Read by its
+    magic bytes, the primary names its package, so that package survives while a
+    package nothing names is reclaimed.
+    """
+    root = tmp_path / "feed"
+    channel = root / "2024" / "edge"
+    channel.mkdir(parents=True)
+    live = _pool_add(channel, b"a package a zstd repo needs")
+    orphan = _pool_add(channel, b"a package nothing names")
+    _render(channel / "target" / "qemux86-64", [live], depth=2, zstd_primary=True)
+    _pin(channel, "20260803T000000Z")
+
+    plan = feed_retention.plan_retention(channel, feed_root=root, keep=1)
+
+    assert plan.pool_reclaim_suppressed is False
+    assert plan.unreadable_primaries == []
+
+    feed_retention.apply_retention(plan, feed_root=root, confirm=True)
+    assert (channel / "_pkgs" / live[:2] / f"{live}.rpm").exists()
+    assert not (channel / "_pkgs" / orphan[:2] / f"{orphan}.rpm").exists()
+
+
+def test_a_corrupt_zstd_payload_suppresses_reclaim_without_crashing(tmp_path: Path) -> None:
+    """Correct zstd magic, garbage payload: the zstd twin of the corrupt-deflate case.
+
+    ``compression.zstd.ZstdError`` is not an ``OSError`` either, so an unhandled
+    one would abort the run mid-way. The repository stays live, reclamation is
+    suppressed, and its package survives.
+    """
+    root = tmp_path / "feed"
+    channel = root / "2024" / "edge"
+    channel.mkdir(parents=True)
+    live = _pool_add(channel, b"a package the corrupt zstd repo needs")
+    _render(
+        channel / "target" / "qemux86-64",
+        [live],
+        depth=2,
+        zstd_primary=True,
+        primary_bytes=b"\x28\xb5\x2f\xfd" + b"garbage that is not a zstd frame",
+    )
+    _pin(channel, "20260803T000000Z")
+
+    plan = feed_retention.plan_retention(channel, feed_root=root, keep=1)
+
+    assert plan.pool_reclaim_suppressed is True
     assert len(plan.unreadable_primaries) == 1
 
     feed_retention.apply_retention(plan, feed_root=root, confirm=True)

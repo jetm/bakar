@@ -36,6 +36,12 @@ something other than gzip is caught by an ordinary handler and silently skipped.
 a corrupt deflate payload raises straight past every ``OSError`` handler and
 aborts the run mid-way. :func:`_read_primary` catches both.
 
+Primaries are gzip or zstd, told apart by their magic bytes rather than their
+file name: ``createrepo_c`` and ``avocado feed index`` write zstd by default, and
+a feed root holding one such repository would otherwise suppress pool
+reclamation for every channel. ``compression.zstd.ZstdError`` is not an
+``OSError`` either, so it is caught beside ``zlib.error``.
+
 Pool orphans are computed against the POST-removal reference set, not measured
 after the fact, so a preview and the run that follows it are one computation
 rather than two that can disagree.
@@ -54,6 +60,7 @@ import gzip
 import json
 import re
 import zlib
+from compression import zstd
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -68,6 +75,7 @@ _POINTER = "snapshots-latest.json"
 _SNAPSHOTS_DIR = "snapshots"
 _REPODATA = "repodata"
 _INDEX = "repomd.xml"
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 _POOL_DIR = "_pkgs"
 _TARGET_DIR = "target"
 
@@ -300,17 +308,22 @@ def live_metadata(repodata: Path) -> set[Path] | None:
 
 
 def _read_primary(path: Path) -> str | None:
-    """Decompress a primary, or None when it cannot be read.
+    """Decompress a gzip or zstd primary, or None when it cannot be read.
 
-    ``zlib.error`` is caught explicitly because it does NOT subclass
-    ``OSError``: gzip raises it for a file with correct magic and a corrupt
+    The codec is chosen by magic bytes, not by file name. ``zlib.error`` and
+    ``zstd.ZstdError`` are caught explicitly because they do NOT subclass
+    ``OSError``: each is raised for a file with correct magic and a corrupt
     payload, which would otherwise escape every handler here. See the module
     docstring on why that difference matters.
     """
     try:
+        with path.open("rb") as handle:
+            magic = handle.read(len(_ZSTD_MAGIC))
+        if magic == _ZSTD_MAGIC:
+            return zstd.decompress(path.read_bytes()).decode("utf-8")
         with gzip.open(path) as handle:
             return handle.read().decode("utf-8")
-    except OSError, ValueError, EOFError, zlib.error:
+    except OSError, ValueError, EOFError, zlib.error, zstd.ZstdError:
         return None
 
 

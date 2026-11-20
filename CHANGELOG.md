@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `bakar feed gc` suppressing pool reclamation for every channel when any repository under the feed root had zstd metadata, which `createrepo_c` and `avocado feed index` write by default. gc now reads a primary as gzip or zstd by its magic bytes. A zstd primary with a corrupt payload is reported as unreadable and still suppresses reclamation, as a corrupt gzip one does
+
 ## [0.43.0] - 2026-11-19
 
 ### Added
