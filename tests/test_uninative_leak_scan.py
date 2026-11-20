@@ -210,6 +210,14 @@ def _leak_pair() -> _LeakPair | None:
     return fallback
 
 
+# The first call per xdist worker walks the host's /usr/bin and /bin and reads
+# every entry's magic bytes, so its cost is the host filesystem's, not the code
+# under test's: about 0.2 s on a warm workstation, and over the suite's 30 s
+# default once on a cold CI runner (test (3.14), run of 2026-11-20). The tests
+# that call it get this wider budget; the rest of the module keeps the default.
+_HOST_SCAN_TIMEOUT = 120
+
+
 def _require_leak_pair() -> _LeakPair:
     pair = _leak_pair()
     if pair is None:
@@ -744,6 +752,7 @@ def test_own_high_node_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 
 @pytest.mark.unit
 @requires_objdump
+@pytest.mark.timeout(_HOST_SCAN_TIMEOUT)
 def test_leak_via_dt_needed_edge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The ``DT_NEEDED`` walk runs: a clean artifact leaks through its libc edge.
 
@@ -775,6 +784,7 @@ def test_leak_via_dt_needed_edge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 
 @pytest.mark.unit
 @requires_objdump
+@pytest.mark.timeout(_HOST_SCAN_TIMEOUT)
 def test_dt_needed_edge_counts_requirements_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The libc edge contributes what libc REQUIRES, and nothing more.
 
@@ -813,6 +823,7 @@ def test_dt_needed_edge_counts_requirements_only(monkeypatch: pytest.MonkeyPatch
 
 @pytest.mark.unit
 @requires_objdump
+@pytest.mark.timeout(_HOST_SCAN_TIMEOUT)
 def test_dependency_inside_buildtools_sysroot_is_sanctioned(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The same edge resolved inside the uninative sysroot produces no finding.
 
